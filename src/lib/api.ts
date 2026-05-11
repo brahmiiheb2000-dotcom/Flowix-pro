@@ -65,6 +65,23 @@ export const api = {
     }
   },
 
+  async postFile(url: string, file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    const res = await this.fetchWithRetry(url, {
+      method: 'POST',
+      body: formData,
+      credentials: 'include'
+    });
+    
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: 'Erreur API' }));
+      throw new Error(error.error || 'Erreur API');
+    }
+    return res.json();
+  },
+
   async patch(url: string, data: any) {
     const res = await this.fetchWithRetry(url, {
       method: 'PATCH',

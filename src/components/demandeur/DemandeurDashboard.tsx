@@ -137,7 +137,7 @@ export const DemandeurDashboard = () => {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Mes Demandes</h1>
+          <h1 className="text-2xl font-bold text-slate-800">Interface Demandeur</h1>
           <p className="text-slate-500 text-sm">Suivez l'état de vos demandes d'archives à distance</p>
         </div>
         <div className="flex bg-white p-1 rounded-xl border border-slate-200 w-fit overflow-x-auto max-w-full">

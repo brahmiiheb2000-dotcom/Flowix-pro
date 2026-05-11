@@ -1,0 +1,15 @@
+[
+  { "reference": "E.I. 01", "title": "Budget prévisionnel", "direction": "Direction Equipements et Affaires Immobilières", "activeYears": 2, "semiActiveYears": 3, "finalDisposition": "D" },
+  { "reference": "E.I. 02", "title": "Etats de caisse", "direction": "Direction Equipements et Affaires Immobilières", "activeYears": 2, "semiActiveYears": 5, "finalDisposition": "D" },
+  { "reference": "E.I. 03", "title": "Contrats/Conventions", "direction": "Direction Equipements et Affaires Immobilières", "activeYears": 1, "semiActiveYears": 10, "finalDisposition": "CP" },
+  { "reference": "E.I. 04", "title": "Dossier d'acquisition d'Engins roulant et Immobilisations", "direction": "Direction Equipements et Affaires Immobilières", "activeYears": 5, "semiActiveYears": 5, "finalDisposition": "CP" },
+  { "reference": "C.C 01", "title": "Rapport hebdomadaire RAIS QYC", "direction": "Direction Contrôle de la Conformité", "activeYears": 3, "semiActiveYears": 5, "finalDisposition": "D" },
+  { "reference": "C.C 02", "title": "Rapport annuels LAB-FT (GAFI/BCT/CGA)", "direction": "Direction Contrôle de la Conformité", "activeYears": 3, "semiActiveYears": 5, "finalDisposition": "D" },
+  { "reference": "C.C 03", "title": "Feuilles de Pointage de présence", "direction": "Direction Contrôle de la Conformité", "activeYears": 2, "semiActiveYears": 3, "finalDisposition": "D" },
+  { "reference": "F.C 01", "title": "Factures fournisseurs / Prestataires (réglées)", "direction": "Direction Finance et Comptabilité", "activeYears": 2, "semiActiveYears": 10, "finalDisposition": "D" },
+  { "reference": "F.C 02", "title": "Factures d'Intermédiaires / Agents / Courtiers (réglées)", "direction": "Direction Finance et Comptabilité", "activeYears": 2, "semiActiveYears": 10, "finalDisposition": "D" },
+  { "reference": "F.C 03", "title": "Etats de rapprochements bancaires", "direction": "Direction Finance et Comptabilité", "activeYears": 2, "semiActiveYears": 3, "finalDisposition": "D" },
+  { "reference": "F.C 04", "title": "Grand livres / Balance / Journaux auxiliaires", "direction": "Direction Finance et Comptabilité", "activeYears": 2, "semiActiveYears": 10, "finalDisposition": "D" },
+  { "reference": "S.M 01", "title": "Dossier Sinistre Matériel (Clos)", "direction": "Direction Sinistre Matériels", "activeYears": 2, "semiActiveYears": 3, "finalDisposition": "D" },
+  { "reference": "S.C 01", "title": "Dossier Sinistre Corporel (Clos)", "direction": "Direction Sinistre Corporel", "activeYears": 5, "semiActiveYears": 10, "finalDisposition": "CP" }
+]

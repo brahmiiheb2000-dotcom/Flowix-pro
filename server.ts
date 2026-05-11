@@ -4,6 +4,171 @@ import path from "path";
 import fs from "fs";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
+import Database from 'better-sqlite3';
+import multer from "multer";
+import crypto from "node:crypto";
+
+// SQLite Large Data Storage
+console.log("SERVER: Starting initialization...");
+const DB_PATH = path.resolve(process.cwd(), 'data', 'mass_inventory.db');
+console.log("SERVER: Opening database at", DB_PATH);
+const db = new Database(DB_PATH);
+console.log("SERVER: Database opened.");
+
+// Initialize SQLite Schema
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mass_inventory (
+    id TEXT PRIMARY KEY,
+    reference TEXT,
+    intitule TEXT,
+    direction TEXT,
+    numBoite TEXT,
+    localisation TEXT,
+    dateDebut TEXT,
+    dateFin TEXT,
+    dossier TEXT,
+    codeAgence TEXT,
+    sin TEXT,
+    police TEXT,
+    adherant TEXT,
+    dateDeclaration TEXT,
+    typeSinistre TEXT,
+    dateCloture TEXT,
+    etatSinistre TEXT,
+    paquet TEXT,
+    ruleId TEXT,
+    expiryDate TEXT,
+    archivalStatus TEXT, -- 'Active', 'SemiActive', 'Expired'
+    rawData TEXT,
+    createdAt TEXT
+  );
+`);
+
+// Migration: Add new columns if missing
+const newCols = [
+  'dossier', 'codeAgence', 'sin', 'police', 'adherant', 
+  'dateDeclaration', 'typeSinistre', 'dateCloture', 
+  'etatSinistre', 'paquet', 'ruleId', 'expiryDate', 'archivalStatus', 'rawData'
+];
+newCols.forEach(col => {
+  try {
+    db.exec(`ALTER TABLE mass_inventory ADD COLUMN ${col} TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+});
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS archival_directory (
+    id TEXT PRIMARY KEY,
+    reference TEXT,
+    title TEXT,
+    direction TEXT,
+    activeYears INTEGER,
+    semiActiveYears INTEGER,
+    finalDisposition TEXT,
+    createdAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS elimination_requests (
+    id TEXT PRIMARY KEY,
+    inventoryId TEXT,
+    status TEXT, -- 'Pending', 'Approved', 'Rejected', 'Eliminated'
+    requestedBy TEXT,
+    approvedBy TEXT,
+    eliminationDate TEXT,
+    certificateFilename TEXT,
+    createdAt TEXT
+  );
+  CREATE TABLE IF NOT EXISTS import_history (
+    id TEXT PRIMARY KEY,
+    filename TEXT,
+    direction TEXT,
+    itemsCount INTEGER,
+    createdAt TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_mass_ref ON mass_inventory(reference);
+  CREATE INDEX IF NOT EXISTS idx_mass_intitule ON mass_inventory(intitule);
+  CREATE INDEX IF NOT EXISTS idx_mass_direction ON mass_inventory(direction);
+  CREATE INDEX IF NOT EXISTS idx_mass_expiry ON mass_inventory(expiryDate);
+  CREATE INDEX IF NOT EXISTS idx_mass_status ON mass_inventory(archivalStatus);
+`);
+
+// Prepared statements for performance
+const insertMassItem = db.prepare(`
+  INSERT INTO mass_inventory (
+    id, reference, intitule, direction, numBoite, localisation, dateDebut, dateFin,
+    dossier, codeAgence, sin, police, adherant, dateDeclaration, typeSinistre, dateCloture, etatSinistre, paquet,
+    ruleId, expiryDate, archivalStatus, rawData,
+    createdAt
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertImportHistory = db.prepare(`
+  INSERT INTO import_history (id, filename, direction, itemsCount, createdAt)
+  VALUES (?, ?, ?, ?, ?)
+`);
+
+const searchMassInventory = db.prepare(`
+  SELECT * FROM mass_inventory 
+  WHERE (reference LIKE ? OR intitule LIKE ? OR numBoite LIKE ? OR localisation LIKE ?)
+  AND (direction = ? OR ? = 'all')
+  LIMIT 50
+`);
+
+const countMassInventory = db.prepare(`SELECT COUNT(*) as count FROM mass_inventory`);
+
+// --- Archival Engine Helpers ---
+const getAllRules = () => db.prepare("SELECT * FROM archival_directory").all() as any[];
+
+const calculateArchivalStatus = (item: any, rules: any[]) => {
+  if (!item.dateCloture && !item.dateFin) return { ruleId: null, expiryDate: null, status: 'Active' };
+  
+  const reference = (item.reference || '').replace(/[\s\.]/g, '').toUpperCase();
+  const rule = rules.find(r => r.reference.replace(/[\s\.]/g, '').toUpperCase() === reference);
+  
+  if (!rule) return { ruleId: null, expiryDate: null, status: 'Active' };
+
+  const dateStr = item.dateCloture || item.dateFin;
+  let year = 0;
+  
+  if (dateStr.includes('/')) {
+    year = parseInt(dateStr.split('/').pop() || '0');
+  } else if (dateStr.includes('-')) {
+    year = parseInt(dateStr.split('-').shift() || '0');
+  } else {
+    year = parseInt(dateStr);
+  }
+
+  if (isNaN(year) || year === 0) return { ruleId: rule.id, expiryDate: null, status: 'Active' };
+
+  const expiryYear = year + (rule.activeYears || 0) + (rule.semiActiveYears || 0);
+  const currentYear = new Date().getFullYear();
+  
+  let status = 'Active';
+  if (currentYear >= expiryYear) {
+    status = 'Expired';
+  } else if (currentYear >= (year + (rule.activeYears || 0))) {
+    status = 'SemiActive';
+  }
+
+  return { ruleId: rule.id, expiryDate: String(expiryYear), status };
+};
+
+// File Storage Setup
+const UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'mass_inventories');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => { cb(null, UPLOADS_DIR); },
+  filename: (req, file, cb) => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    cb(null, `${timestamp}_${file.originalname}`);
+  }
+});
+const upload = multer({ storage });
 
 // Local JSON Database Helper
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -41,7 +206,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ limit: '100mb', extended: true }));
   app.use(cookieParser());
 
   // --- Request Logger ---
@@ -165,6 +331,426 @@ async function startServer() {
     res.json({ status: "ok", mode: process.env.NODE_ENV });
   });
 
+  // --- Mass Inventory Management (SQLite Powered) ---
+  app.get("/api/mass-inventory/archival-stats", authenticate, (req, res) => {
+    try {
+      const stats = db.prepare(`
+        SELECT archivalStatus as status, COUNT(*) as count 
+        FROM mass_inventory 
+        GROUP BY archivalStatus
+      `).all() as any[];
+      
+      const result = {
+        total: 0,
+        active: 0,
+        semiActive: 0,
+        expired: 0,
+        unlinked: 0
+      };
+
+      stats.forEach(s => {
+        const count = s.count;
+        result.total += count;
+        if (s.status === 'Active') result.active = count;
+        else if (s.status === 'SemiActive') result.semiActive = count;
+        else if (s.status === 'Expired') result.expired = count;
+        else if (!s.status) result.unlinked = count;
+      });
+
+      res.json(result);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/mass-inventory/stats", authenticate, (req, res) => {
+    try {
+      const row = db.prepare("SELECT COUNT(*) as count FROM mass_inventory").get() as any;
+      res.json({ total: row ? row.count : 0 });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/mass-inventory/clear", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      db.prepare("DELETE FROM mass_inventory").run();
+      db.prepare("DELETE FROM import_history").run();
+      res.json({ success: true });
+    } catch (err: any) { 
+      console.error("Clear error:", err);
+      res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.get("/api/mass-inventory/monitoring", authenticate, (req, res) => {
+    try {
+      const { status } = req.query;
+      const query = status ? "SELECT * FROM mass_inventory WHERE archivalStatus = ? LIMIT 100" : "SELECT * FROM mass_inventory LIMIT 100";
+      const results = status ? db.prepare(query).all(status) : db.prepare(query).all();
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/mass-inventory", authenticate, (req: any, res) => {
+    try {
+      const searchTerm = req.query.search ? `%${req.query.search}%` : null;
+      const direction = req.query.direction || 'all';
+
+      // Search-First: If no search term and not browsing a specific direction explicitly
+      // If no search AND direction IS 'all', return the latest 100 items
+      const query = `
+        SELECT * FROM mass_inventory 
+        WHERE (
+          ? IS NULL OR
+          reference LIKE ? OR 
+          intitule LIKE ? OR 
+          dossier LIKE ? OR 
+          numBoite LIKE ? OR 
+          localisation LIKE ? OR 
+          sin LIKE ? OR 
+          police LIKE ? OR 
+          adherant LIKE ?
+        )
+        AND (direction = ? OR ? = 'all')
+        ORDER BY createdAt DESC
+        LIMIT 100
+      `;
+
+      const results = db.prepare(query).all(
+        searchTerm,
+        searchTerm, searchTerm, searchTerm, searchTerm, 
+        searchTerm, searchTerm, searchTerm, searchTerm,
+        direction, direction
+      );
+      
+      res.json(results || []);
+    } catch (err: any) { 
+      console.error("Mass search error:", err);
+      res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.post("/api/mass-inventory/import", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit. Rôles autorisés: Admin, Agent, Archiviste." });
+    }
+    try {
+      const { items, filename, direction, isFinalBatch } = req.body;
+      const createdAt = new Date().toISOString();
+      const rules = getAllRules();
+      
+      const insertMany = db.transaction((rows) => {
+        for (const item of rows) {
+          const id = crypto.randomUUID();
+          const archival = calculateArchivalStatus(item, rules);
+
+          insertMassItem.run(
+            id, 
+            String(item.reference || ''), 
+            String(item.intitule || ''), 
+            String(item.direction || ''), 
+            String(item.numBoite || ''), 
+            String(item.localisation || ''), 
+            String(item.dateDebut || ''),
+            String(item.dateFin || ''),
+            String(item.dossier || ''),
+            String(item.codeAgence || ''),
+            String(item.sin || ''),
+            String(item.police || ''),
+            String(item.adherant || ''),
+            String(item.dateDeclaration || ''),
+            String(item.typeSinistre || ''),
+            String(item.dateCloture || ''),
+            String(item.etatSinistre || ''),
+            String(item.paquet || ''),
+            archival.ruleId,
+            archival.expiryDate,
+            archival.status,
+            JSON.stringify(item),
+            createdAt
+          );
+        }
+        
+        // Log history ONLY on the final batch with the TOTAL count
+        if (filename && isFinalBatch) {
+          const histId = crypto.randomUUID();
+          const totalItemsImported = req.body.totalCount || rows.length;
+          insertImportHistory.run(histId, filename, direction || 'Inconnu', totalItemsImported, createdAt);
+        }
+      });
+
+      insertMany(items);
+      res.json({ success: true, count: items.length });
+    } catch (err: any) { 
+      console.error("Import error:", err);
+      res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.get("/api/mass-inventory/history", authenticate, (req, res) => {
+    try {
+      const history = db.prepare("SELECT * FROM import_history ORDER BY createdAt DESC").all();
+      res.json(history);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.patch("/api/mass-inventory/:id/location", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { id } = req.params;
+      const { localisation, numBoite } = req.body;
+      
+      const result = db.prepare("UPDATE mass_inventory SET localisation = ?, numBoite = ? WHERE id = ?").run(localisation, numBoite, id);
+      
+      if (result.changes === 0) {
+        return res.status(404).json({ error: "Élément non trouvé" });
+      }
+      
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Update location/box error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+  
+  app.patch("/api/mass-inventory/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+      delete updates.id;
+      delete updates.createdAt;
+      
+      const keys = Object.keys(updates);
+      const values = Object.values(updates);
+      
+      if (keys.length === 0) return res.json({ success: true });
+      
+      const setClause = keys.map(k => `${k} = ?`).join(', ');
+      const query = `UPDATE mass_inventory SET ${setClause} WHERE id = ?`;
+      
+      const result = db.prepare(query).run(...values, id);
+      
+      if (result.changes === 0) {
+        return res.status(404).json({ error: "Élément non trouvé" });
+      }
+      
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Update mass item error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/mass-inventory/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      db.prepare("DELETE FROM mass_inventory WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/elimination/analyze", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const rules = getAllRules();
+      const allItems = db.prepare("SELECT * FROM mass_inventory WHERE archivalStatus != 'Expired' OR archivalStatus IS NULL").all();
+      
+      let updatedCount = 0;
+      const updateStmt = db.prepare("UPDATE mass_inventory SET archivalStatus = ?, ruleId = ?, expiryDate = ? WHERE id = ?");
+      
+      db.transaction(() => {
+        for (const item of allItems) {
+          const archival = calculateArchivalStatus(item, rules);
+          if (archival.status !== item.archivalStatus || archival.ruleId !== item.ruleId) {
+            updateStmt.run(archival.status, archival.ruleId, archival.expiryDate, item.id);
+            updatedCount++;
+          }
+        }
+      })();
+      
+      res.json({ success: true, updatedCount });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/elimination/propose-bulk", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const { inventoryIds } = req.body;
+      const createdAt = new Date().toISOString();
+      const insert = db.prepare(`
+        INSERT INTO elimination_requests (id, inventoryId, status, requestedBy, createdAt)
+        VALUES (?, ?, 'Pending', ?, ?)
+      `);
+      
+      db.transaction(() => {
+        for (const invId of inventoryIds) {
+          const id = "PROP-" + crypto.randomUUID().toUpperCase();
+          insert.run(id, invId, req.user.email, createdAt);
+        }
+      })();
+      
+      res.json({ success: true, count: inventoryIds.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/elimination/download-bordereau/:id", authenticate, (req, res) => {
+    // This would typically generate a real PDF. For now, we return data for frontend PDF generation.
+    res.json({ message: "Utilisez le générateur PDF du frontend." });
+  });
+
+  app.get("/api/mass-inventory/download-file/:filename", authenticate, (req: any, res) => {
+    const filename = req.params.filename;
+    const filePath = path.join(UPLOADS_DIR, filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Fichier non trouvé sur le stockage sécurisé" });
+    }
+    
+    res.download(filePath, filename.split('_').slice(1).join('_')); // Remove timestamp prefix for user download
+  });
+
+  // --- Archival Directory ---
+  // Seed initial rules if empty
+  try {
+    const countRow = db.prepare("SELECT COUNT(*) as count FROM archival_directory").get() as any;
+    const count = countRow ? countRow.count : 0;
+    if (count === 0) {
+      const initialRulesPath = path.join(process.cwd(), 'src/data/initial_rules.json');
+      if (fs.existsSync(initialRulesPath)) {
+        const initialRules = JSON.parse(fs.readFileSync(initialRulesPath, 'utf8'));
+        const insertDir = db.prepare(`
+          INSERT INTO archival_directory (id, reference, title, direction, activeYears, semiActiveYears, finalDisposition, createdAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        db.transaction(() => {
+          for (const r of initialRules) {
+            insertDir.run(crypto.randomUUID(), r.reference, r.title, r.direction, r.activeYears, r.semiActiveYears, r.finalDisposition, new Date().toISOString());
+          }
+        })();
+        console.log("Archival directory seeded with initial rules.");
+      }
+    }
+  } catch (e) {
+    console.error("Failed to seed archival directory:", e);
+  }
+
+  app.get("/api/archival-directory", authenticate, (req, res) => {
+    try {
+      const results = db.prepare("SELECT * FROM archival_directory ORDER BY reference ASC").all();
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/archival-directory/import", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit. Rôles autorisés: Admin, Agent, Archiviste." });
+    }
+    try {
+      const { entries } = req.body;
+      const insert = db.prepare(`
+        INSERT OR REPLACE INTO archival_directory (id, reference, title, direction, activeYears, semiActiveYears, finalDisposition, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const transaction = db.transaction((rows) => {
+        for (const r of rows) {
+          const id = r.id || crypto.randomUUID();
+          insert.run(id, r.reference, r.title, r.direction, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition || 'EL', new Date().toISOString());
+        }
+      });
+      transaction(entries);
+      res.json({ success: true, count: entries.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // --- Elimination Management ---
+  app.get("/api/elimination/stats", authenticate, (req, res) => {
+    try {
+      const stats = db.prepare(`
+        SELECT status, COUNT(*) as count FROM elimination_requests GROUP BY status
+      `).all();
+      
+      const statsObj = { pending: 0, approved: 0, rejected: 0 };
+      stats.forEach((s: any) => {
+        if (s.status === 'Pending') statsObj.pending = s.count;
+        if (s.status === 'Approved') statsObj.approved = s.count;
+        if (s.status === 'Rejected') statsObj.rejected = s.count;
+      });
+      
+      res.json(statsObj);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/elimination/eligible", authenticate, (req, res) => {
+    try {
+      // Very fast query thanks to index on archivalStatus
+      const results = db.prepare(`
+        SELECT mi.*, ad.title as ruleTitle, ad.finalDisposition
+        FROM mass_inventory mi
+        LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
+        LEFT JOIN elimination_requests er ON mi.id = er.inventoryId
+        WHERE mi.archivalStatus = 'Expired' AND er.id IS NULL
+        GROUP BY mi.id
+        LIMIT 500
+      `).all();
+      
+      res.json(results);
+    } catch (err: any) { 
+      console.error("Elimination eligibility error:", err);
+      res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  // --- Elimination Management ---
+  app.get("/api/elimination-requests", authenticate, (req, res) => {
+    try {
+      const results = db.prepare(`
+        SELECT er.*, mi.reference, mi.intitule, mi.direction, mi.numBoite
+        FROM elimination_requests er
+        JOIN mass_inventory mi ON er.inventoryId = mi.id
+        ORDER BY er.createdAt DESC
+      `).all();
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/elimination-requests", authenticate, (req: any, res) => {
+    try {
+      const { inventoryIds } = req.body; // Array of IDs
+      const createdAt = new Date().toISOString();
+      const insert = db.prepare(`
+        INSERT INTO elimination_requests (id, inventoryId, status, requestedBy, createdAt)
+        VALUES (?, ?, 'Pending', ?, ?)
+      `);
+      
+      const transaction = db.transaction((ids) => {
+        for (const invId of ids) {
+          const id = crypto.randomUUID();
+          insert.run(id, invId, req.user.email, createdAt);
+        }
+      });
+      transaction(inventoryIds);
+      res.json({ success: true, count: inventoryIds.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.patch("/api/elimination-requests/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const { status, approvedBy, eliminationDate, certificateFilename } = req.body;
+      db.prepare(`
+        UPDATE elimination_requests 
+        SET status = ?, approvedBy = ?, eliminationDate = ?, certificateFilename = ?
+        WHERE id = ?
+      `).run(status, approvedBy || req.user.email, eliminationDate, certificateFilename, req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // --- Returns Management ---
   app.get("/api/returns/inventory", authenticate, (req: any, res) => {
     try { res.json(readData('returns_inventory')); } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -183,7 +769,7 @@ async function startServer() {
       const existingRefs = new Set(data.map((i: any) => i.reference));
       const newItems = items.filter((i: any) => i.reference && !existingRefs.has(i.reference)).map((i: any) => ({
         ...i,
-        id: Math.random().toString(36).substring(2, 11),
+        id: crypto.randomUUID(),
         createdAt: new Date().toISOString()
       }));
       const updated = [...data, ...newItems];
@@ -201,7 +787,7 @@ async function startServer() {
       const data = readData('returns_history');
       const newEntry = {
         ...req.body,
-        id: Math.random().toString(36).substring(2, 11),
+        id: crypto.randomUUID(),
         returnedAt: new Date().toISOString()
       };
       data.push(newEntry);
@@ -245,7 +831,7 @@ async function startServer() {
       const demandNumber = getNextDemandNumber();
       const newRequest = {
         ...req.body,
-        id: Math.random().toString(36).substring(2, 15),
+        id: crypto.randomUUID(),
         demandNumber, // This is the sequential reference like 001/2026
         agentId: req.user.uid,
         agentName: req.user.displayName,
@@ -325,7 +911,7 @@ async function startServer() {
       const demandNumber = getNextDemandNumber();
       const newRequest = {
         ...req.body,
-        id: Math.random().toString(36).substring(2, 15),
+        id: crypto.randomUUID(),
         demandNumber,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -384,7 +970,7 @@ async function startServer() {
       items.forEach((item: any) => {
         data.push({
           ...item,
-          id: Math.random().toString(36).substring(2, 15),
+          id: crypto.randomUUID(),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
@@ -520,7 +1106,7 @@ async function startServer() {
       const data = readData('archives');
       const newItems = items.map((item: any) => ({
         ...item,
-        id: Math.random().toString(36).substring(2, 15),
+        id: crypto.randomUUID(),
         createdAt: item.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }));
@@ -542,6 +1128,62 @@ async function startServer() {
   // --- Start Listening ---
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // --- Automatic Archival Surveillance Task ---
+    const runArchivalCheck = () => {
+      console.log("[SURVEILLANCE] Starting daily archival status check...");
+      try {
+        const rules = getAllRules();
+        const currentYear = new Date().getFullYear();
+        
+        // This transaction updates all items efficiently
+        // For massive volumes, we use rule metadata to target updates
+        db.transaction(() => {
+          for (const rule of rules) {
+            const activeThreshold = currentYear - rule.activeYears;
+            const semiThreshold = currentYear - (rule.activeYears + rule.semiActiveYears);
+            
+            // Move to SemiActive
+            db.prepare(`
+              UPDATE mass_inventory 
+              SET archivalStatus = 'SemiActive' 
+              WHERE ruleId = ? 
+                AND archivalStatus = 'Active'
+                AND (
+                  CASE 
+                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
+                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
+                    ELSE CAST(dateCloture AS INTEGER)
+                  END
+                ) <= ?
+            `).run(rule.id, activeThreshold);
+
+            // Move to Expired
+            db.prepare(`
+              UPDATE mass_inventory 
+              SET archivalStatus = 'Expired' 
+              WHERE ruleId = ? 
+                AND archivalStatus IN ('Active', 'SemiActive')
+                AND (
+                  CASE 
+                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
+                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
+                    ELSE CAST(dateCloture AS INTEGER)
+                  END
+                ) <= ?
+            `).run(rule.id, semiThreshold);
+          }
+        })();
+        console.log("[SURVEILLANCE] Completed archival status check.");
+      } catch (err) {
+        console.error("[SURVEILLANCE] Error during daily check:", err);
+      }
+    };
+
+    // Run once on startup
+    setTimeout(runArchivalCheck, 5000);
+    // Then every 24 hours
+    setInterval(runArchivalCheck, 24 * 60 * 60 * 1000);
   });
 
   // --- Vite Middleware ---

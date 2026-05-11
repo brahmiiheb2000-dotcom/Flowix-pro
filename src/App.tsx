@@ -167,7 +167,7 @@ export default function App() {
           console.error("Badge polling error", err);
         }
       });
-    }, 20000); // 20s instead of 10s
+    }, 45000); // 45s instead of 20s
 
     return () => {
       isMounted = false;
@@ -313,7 +313,7 @@ export default function App() {
                             : "text-slate-500 hover:text-slate-800"
                         )}
                       >
-                        {r === 'Demandeur' ? 'Client' : r}
+                        {r === 'Demandeur' ? 'Interface Demandeur' : r}
                       </button>
                     ))}
                   </div>

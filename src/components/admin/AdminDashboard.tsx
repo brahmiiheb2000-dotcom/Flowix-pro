@@ -99,6 +99,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
   const [eliminationSubTab, setEliminationSubTab] = useState<'pending' | 'history' | 'calendar' | 'reports'>('pending');
   const [selectedForElimination, setSelectedForElimination] = useState<string[]>([]);
+  const [isEditingRule, setIsEditingRule] = useState(false);
+  const [editedRule, setEditedRule] = useState<any>(null);
 
   const handleUpdateMassItem = async () => {
     if (!editedDetailItem) return;
@@ -191,7 +193,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
-  const [filteredRequests, setFilteredRequests] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -248,6 +249,32 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const data = await api.get('/api/archival-directory');
       setArchivalDirectory(data);
     } catch (err) { console.error(err); }
+  };
+
+  const handleSaveRule = async (rule: any) => {
+    try {
+      if (rule.id) {
+        await api.patch(`/api/archival-directory/${rule.id}`, rule);
+      } else {
+        await api.post('/api/archival-directory', rule);
+      }
+      setIsEditingRule(false);
+      setEditedRule(null);
+      fetchArchivalDirectory();
+      alert("Règle de conservation enregistrée avec succès.");
+    } catch (err) {
+      alert("Erreur lors de l'enregistrement de la règle.");
+    }
+  };
+
+  const handleDeleteRule = async (id: number) => {
+    if (!confirm("Supprimer cette règle de conservation ?")) return;
+    try {
+      await api.delete(`/api/archival-directory/${id}`);
+      fetchArchivalDirectory();
+    } catch (err) {
+      alert("Erreur lors de la suppression.");
+    }
   };
 
   const fetchArchivalMonitoring = async () => {
@@ -462,6 +489,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           items: chunk,
           filename: uploadedServerFilename || importFileName,
           direction: importingDirection,
+          ruleId: importingRule,
           isFinalBatch,
           totalCount: mappedItems.length
         });
@@ -736,7 +764,27 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     window.open(`/api/mass-inventory/download-file/${encodeURIComponent(filename)}`, '_blank');
   };
 
-  useEffect(() => {
+  const cleanRequests = React.useMemo(() => {
+    const seen = new Set();
+    return requests.filter(item => {
+      const id = item.id || item.virtualId;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }, [requests]);
+
+  const cleanRemoteRequests = React.useMemo(() => {
+    const seen = new Set();
+    return remoteRequests.filter(item => {
+      const id = item.id || item.virtualId;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }, [remoteRequests]);
+
+  const filteredRequests = React.useMemo(() => {
     let listToFilter = [];
     const dedup = (list: any[]) => {
       const seen = new Set();
@@ -749,10 +797,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     };
 
     if (activeTab === 'requests') {
-      // Deduplicate AFTER merging to handle requests that might be in both lists
       const all = dedup([...requests, ...remoteRequests]);
-      
-      // Filter out items that are already in the archive (to avoid duplicates and clarify active status)
       const archivedIds = new Set(archivedComms.filter(a => a.requestId).map(a => a.requestId));
       const active = all.filter(r => !archivedIds.has(r.id));
 
@@ -761,38 +806,34 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       } else {
         listToFilter = active;
       }
-      listToFilter = listToFilter.sort((a, b) => {
+      listToFilter.sort((a, b) => {
         const dateA = toSafeDate(a.createdAt)?.getTime() || 0;
         const dateB = toSafeDate(b.createdAt)?.getTime() || 0;
         return dateB - dateA;
       });
     } else if (activeTab === 'communication' || activeTab === 'returns') {
-      // Merge all "signed" or "communicated" requests + imports
-      const signedAgents = cleanRequests.filter(r => r.status === 'signed');
-      const communicatedRemote = cleanRemoteRequests.filter(r => r.status === 'Prêt / Communiqué');
+      const signedAgents = cleanRequests.filter((r: any) => r.status === 'signed');
+      const communicatedRemote = cleanRemoteRequests.filter((r: any) => r.status === 'Prêt / Communiqué');
       
-      // Expand live requests: one row per reference
       const expandedLive: any[] = [];
       [...signedAgents, ...communicatedRemote].forEach(r => {
         const refs = Array.isArray(r.references) && r.references.length > 0 ? r.references : [r.intitule || '-'];
-        refs.forEach((ref, idx) => {
+        refs.forEach((ref: string, idx: number) => {
           expandedLive.push({
             ...r,
-            intitule: ref, // For display logic later
-            virtualId: `live_${r.id}_${idx}` // Always use a unique prefix
+            intitule: ref,
+            virtualId: `live_${r.id}_${idx}`
           });
         });
       });
 
-      // Deduplicate archives vs live
       const liveSourceIds = new Set([
-        ...signedAgents.map(r => r.id),
-        ...communicatedRemote.map(r => r.id)
+        ...signedAgents.map((r: any) => r.id),
+        ...communicatedRemote.map((r: any) => r.id)
       ]);
 
       const uniqueArchives = archivedComms.filter(a => !a.requestId || !liveSourceIds.has(a.requestId));
       
-      // Expand archives too if they have multiple refs in 'intitule' (common in imports)
       const expandedArchives: any[] = [];
       uniqueArchives.forEach((a, aIdx) => {
         const val = String(a.intitule || '');
@@ -817,12 +858,11 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       
       listToFilter = [...expandedLive, ...expandedArchives];
 
-      // If in "returns" tab, filter for NOT returned yet
       if (activeTab === 'returns') {
         listToFilter = listToFilter.filter(item => !item.dateRetour || item.dateRetour === '');
       }
 
-      listToFilter = listToFilter.sort((a, b) => {
+      listToFilter.sort((a, b) => {
         const dateA = toSafeDate(a.updatedAt || a.createdAt)?.getTime() || 0;
         const dateB = toSafeDate(b.updatedAt || b.createdAt)?.getTime() || 0;
         return dateB - dateA;
@@ -836,10 +876,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       result = result.filter(r => {
         const title = r.title || r.intitule || r.motif || '';
         const requester = r.requesterName || r.nomDemandeur || r.nom || '';
-        
-        // For expanded rows, r.intitule holds the specific reference
         const specificRef = String(r.intitule || '');
-        
         return (
           String(title).toLowerCase().includes(term) ||
           String(requester).toLowerCase().includes(term) ||
@@ -860,8 +897,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       }
     }
 
-    setFilteredRequests(result.slice(0, 15000)); // Increased limit for 11k lines
-  }, [searchTerm, filterStatus, requests, remoteRequests, archivedComms, activeTab]);
+    return result.slice(0, 500); 
+  }, [searchTerm, filterStatus, requests, remoteRequests, archivedComms, activeTab, requestSubTab, cleanRequests, cleanRemoteRequests]);
+
 
   const stats = {
     total: requests.length,
@@ -2636,6 +2674,33 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </div>
                   </div>
 
+                  <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 mb-8">
+                    <div className="flex items-center justify-between mb-6">
+                      <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">Workflow de Validation d'Élimination</h4>
+                      <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-100 shadow-sm">4 ÉTAPES RÉGLEMENTAIRES</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {[
+                        { label: "Proposition", status: "completed", color: "bg-red-500" },
+                        { label: "Archiviste", status: "current", color: "bg-red-500" },
+                        { label: "Commission", status: "pending", color: "bg-red-200" },
+                        { label: "PV Final", status: "pending", color: "bg-slate-200" }
+                      ].map((step, idx, arr) => (
+                        <React.Fragment key={step.label}>
+                          <div className="flex flex-col items-center gap-2 flex-1 relative">
+                            <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center text-white text-xs font-black shadow-sm z-10 transition-all", step.color)}>
+                               {idx + 1}
+                            </div>
+                            <span className="text-[10px] font-black text-slate-800 uppercase tracking-tighter text-center">{step.label}</span>
+                          </div>
+                          {idx < arr.length - 1 && (
+                            <div className="h-[2px] bg-slate-200 flex-1 mb-8"></div>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+
                   {eligibleItems.length > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                       {eligibleByDirection.map(group => (
@@ -2893,53 +2958,102 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               >
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div className="flex flex-col gap-1">
-                    <h3 className="text-xl font-bold text-slate-800">Calendrier de Conservation</h3>
-                    <p className="text-slate-500 text-sm">Règles de conservation archivées par direction.</p>
+                    <h3 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+                       <Library className="text-orange-600" size={24} />
+                       Calendrier de Conservation Intelligent
+                    </h3>
+                    <p className="text-slate-500 text-sm">Gestion des règles de conservation et des délais légaux.</p>
                   </div>
                   <div className="flex gap-2">
                     <button 
-                      onClick={syncRetentionCalendar}
-                      className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-2"
+                      onClick={() => {
+                        setEditedRule({ reference: '', title: '', direction: '', activeYears: '5', semiActiveYears: '10', finalDisposition: 'EL', support: 'Papier', trigger: 'Clôture' });
+                        setIsEditingRule(true);
+                      }}
+                      className="px-6 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-800 transition-all shadow-lg flex items-center gap-2"
                     >
-                      <RotateCw size={14} />
-                      Synchroniser & Archiver Tout
+                      <Plus size={16} />
+                      NOUVELLE RÈGLE
                     </button>
                     <button 
                       onClick={() => {
-                        setMassSubTab('view');
-                        setActiveTab('massInventory');
+                        setIsImportingRules(true);
+                        setTimeout(() => {
+                           syncRetentionCalendar();
+                           setIsImportingRules(false);
+                        }, 2000);
                       }}
-                      className="px-4 py-2 bg-orange-50 text-orange-600 rounded-xl text-xs font-bold hover:bg-orange-100 transition-all border border-orange-100"
+                      disabled={isImportingRules}
+                      className="px-6 py-3 bg-red-50 text-red-600 border border-red-100 rounded-2xl text-xs font-black hover:bg-red-100 transition-all flex items-center gap-2"
                     >
-                      Gérer l'Inventaire
+                      {isImportingRules ? <RotateCw className="animate-spin" size={16} /> : <FileText size={16} />}
+                      {isImportingRules ? 'ANALYSE...' : 'IMPORTER PDF'}
+                    </button>
+                    <button 
+                      onClick={syncRetentionCalendar}
+                      className="px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center gap-2"
+                    >
+                      <RotateCw size={16} />
+                      SYNCHRONISER TOUT
                     </button>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {archivalByDirection.map(dir => (
-                    <Card key={dir.name} className="p-6 border-slate-100 hover:shadow-lg transition-all group">
-                      <div className="flex items-center gap-3 mb-4">
-                        <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-xl flex items-center justify-center font-bold text-xs">
-                          {dir.code}
+                    <Card key={dir.name} className="p-0 border-slate-100 hover:shadow-xl transition-all group overflow-hidden rounded-[2rem]">
+                      <div className="p-5 bg-slate-50 flex items-center justify-between border-b border-slate-100">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-white border border-slate-200 text-slate-800 rounded-xl flex items-center justify-center font-black text-xs shadow-sm">
+                            {dir.code}
+                          </div>
+                          <h3 className="font-black text-slate-800 text-xs tracking-tight leading-tight uppercase max-w-[200px] truncate">{dir.name}</h3>
                         </div>
-                        <h3 className="font-bold text-slate-800 leading-tight group-hover:text-orange-600 transition-colors line-clamp-2">{dir.name}</h3>
+                        <span className="bg-slate-200 text-slate-600 text-[9px] font-black px-2 py-0.5 rounded-full">{dir.rules.length}</span>
                       </div>
-                      <div className="space-y-3">
+                      <div className="p-4 space-y-3 max-h-[400px] overflow-y-auto custom-scrollbar">
                         {dir.rules.map(rule => (
-                          <div key={rule.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100/50">
-                            <div className="flex justify-between items-start mb-1">
-                              <p className="text-xs font-bold text-slate-700 pr-2">{rule.title}</p>
-                              <span className="text-[9px] text-slate-400 font-mono">{rule.reference}</span>
+                          <div key={rule.id} className="p-4 bg-white rounded-2xl border border-slate-100/80 hover:border-orange-200 transition-all group/rule">
+                            <div className="flex justify-between items-start mb-2">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-black text-slate-800 line-clamp-2">{rule.title}</p>
+                                <p className="text-[9px] font-bold text-orange-600 mt-0.5 tracking-wider">{rule.reference}</p>
+                              </div>
+                              <div className="flex gap-1 ml-2 opacity-0 group-hover/rule:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => {
+                                    setEditedRule(rule);
+                                    setIsEditingRule(true);
+                                  }}
+                                  className="p-1.5 text-slate-300 hover:text-slate-600 transition-colors"
+                                >
+                                  <Edit2 size={14} />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteRule(rule.id)}
+                                  className="p-1.5 text-slate-300 hover:text-red-500 transition-colors"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                              <span className="text-[9px] font-black bg-white px-1.5 py-0.5 rounded text-indigo-600 border border-indigo-100">ACTIF: {rule.activeYears} ans</span>
-                              <span className="text-[9px] font-black bg-white px-1.5 py-0.5 rounded text-emerald-600 border border-emerald-100">SEMI: {rule.semiActiveYears} ans</span>
-                              <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${
-                                rule.finalDisposition === 'D' || rule.finalDisposition === 'CP' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-red-50 text-red-600 border-red-100'
-                              }`}>
-                                {rule.finalDisposition}
-                              </span>
+                            <div className="grid grid-cols-2 gap-2 mt-3">
+                               <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                  <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">D.U.A (Actif)</p>
+                                  <p className="text-[10px] font-black text-indigo-600">{rule.activeYears} Ans</p>
+                               </div>
+                               <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                  <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">Semi-Actif</p>
+                                  <p className="text-[10px] font-black text-emerald-600">{rule.semiActiveYears} Ans</p>
+                               </div>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between">
+                               <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${
+                                 rule.finalDisposition === 'D' || rule.finalDisposition === 'CP' || rule.finalDisposition === 'ECH' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-red-50 text-red-600 border-red-100'
+                               }`}>
+                                 {rule.finalDisposition === 'EL' ? 'ÉLIMINATION' : rule.finalDisposition === 'CP' ? 'CONS. PERMANENTE' : 'ÉCHANTILLON'}
+                               </span>
+                               <span className="text-[9px] font-bold text-slate-400 italic capitalize">{rule.support || 'Papier'}</span>
                             </div>
                           </div>
                         ))}
@@ -2947,8 +3061,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </Card>
                   ))}
                   {archivalByDirection.length === 0 && (
-                    <div className="col-span-full py-12 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200 text-slate-400">
-                      Aucune règle de conservation trouvée. Veuillez en importer dans le répertoire.
+                    <div className="col-span-full py-24 text-center bg-slate-50 rounded-[3rem] border-2 border-dashed border-slate-200">
+                       <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center text-slate-200 shadow-sm mx-auto mb-6">
+                         <Library size={40} />
+                       </div>
+                       <h3 className="text-xl font-bold text-slate-600 mb-2">Aucune donnée archivée</h3>
+                       <p className="text-slate-400 max-w-sm mx-auto">Veuillez synchroniser avec le catalogue ou importer vos calendriers PDF.</p>
                     </div>
                   )}
                 </div>
@@ -3831,6 +3949,149 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </>
             )}
           </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Rule Editing Modal */}
+      <AnimatePresence>
+        {isEditingRule && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 font-sans">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsEditingRule(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="relative bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden"
+            >
+              <div className="p-8 space-y-6">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center">
+                      <Library size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight">
+                        {editedRule?.id ? 'Modifier la Règle' : 'Nouvelle Règle de Conservation'}
+                      </h3>
+                      <p className="text-xs font-bold text-slate-400">Configuration des délais et du sort final.</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setIsEditingRule(false)}
+                    className="w-10 h-10 rounded-full hover:bg-slate-50 flex items-center justify-center text-slate-400 transition-colors"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-1.5 col-span-full">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Intitulé de la Série / Type Documentaire</label>
+                    <Input 
+                      value={editedRule?.title || ''}
+                      onChange={(e) => setEditedRule({ ...editedRule, title: e.target.value })}
+                      placeholder="Ex: Dossiers du Personnel, Factures Fournisseurs..."
+                      className="h-12 border-slate-100 bg-slate-50/50 rounded-2xl font-bold focus:ring-orange-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Référence (Code)</label>
+                    <Input 
+                      value={editedRule?.reference || ''}
+                      onChange={(e) => setEditedRule({ ...editedRule, reference: e.target.value })}
+                      placeholder="Ex: R.H. 01"
+                      className="h-12 border-slate-100 bg-slate-50/50 rounded-2xl font-bold focus:ring-orange-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Direction</label>
+                    <select 
+                      value={editedRule?.direction || ''}
+                      onChange={(e) => setEditedRule({ ...editedRule, direction: e.target.value })}
+                      className="w-full h-12 bg-slate-50/50 border border-slate-100 rounded-2xl px-4 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="">Sélectionner...</option>
+                      {RETENTION_CALENDAR.map(d => (
+                        <option key={d.code} value={d.name}>{d.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Durée d'Utilité Administrative (DUA)</label>
+                    <Input 
+                      type="number"
+                      value={editedRule?.activeYears || ''}
+                      onChange={(e) => setEditedRule({ ...editedRule, activeYears: e.target.value })}
+                      placeholder="Ans"
+                      className="h-12 border-slate-100 bg-slate-50/50 rounded-2xl font-bold focus:ring-orange-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Délai Semi-Actif (Archives)</label>
+                    <Input 
+                      type="number"
+                      value={editedRule?.semiActiveYears || ''}
+                      onChange={(e) => setEditedRule({ ...editedRule, semiActiveYears: e.target.value })}
+                      placeholder="Ans"
+                      className="h-12 border-slate-100 bg-slate-50/50 rounded-2xl font-bold focus:ring-orange-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Sort Final</label>
+                    <select 
+                      value={editedRule?.finalDisposition || 'EL'}
+                      onChange={(e) => setEditedRule({ ...editedRule, finalDisposition: e.target.value })}
+                      className="w-full h-12 bg-slate-50/50 border border-slate-100 rounded-2xl px-4 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="EL">EL (Élimination)</option>
+                      <option value="CP">CP (Conservation Permanente)</option>
+                      <option value="ECH">ECH (Échantillonnage)</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Support</label>
+                    <select 
+                      value={editedRule?.support || 'Papier'}
+                      onChange={(e) => setEditedRule({ ...editedRule, support: e.target.value })}
+                      className="w-full h-12 bg-slate-50/50 border border-slate-100 rounded-2xl px-4 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="Papier">Papier</option>
+                      <option value="Numérique">Numérique</option>
+                      <option value="Hybride">Hybride</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="pt-6 flex gap-3">
+                  <Button 
+                    onClick={() => setIsEditingRule(false)}
+                    variant="ghost" 
+                    className="flex-1 font-bold text-slate-400 py-3 rounded-2xl"
+                  >
+                    Annuler
+                  </Button>
+                  <Button 
+                    onClick={() => handleSaveRule(editedRule)}
+                    className="flex-[2] bg-slate-900 text-white hover:bg-slate-800 py-3 rounded-2xl font-black text-xs tracking-widest uppercase shadow-xl shadow-slate-200"
+                  >
+                    Confirmer l'Enregistrement
+                  </Button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

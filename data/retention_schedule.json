@@ -1,0 +1,102 @@
+[
+  {
+    "id": "A.I.O. 01",
+    "direction": "Direction Audit Interne et Organisation",
+    "title": "Mission d'audit",
+    "description": "Ordre de mission, Convention, Contrats clients, Note d'organisation, Manuel des procédures, Rapport d'audit, Note de synthèse, Correspondances",
+    "activeYears": 5,
+    "semiActiveYears": 15,
+    "finalAction": "CP",
+    "trigger": "Fermeture du dossier"
+  },
+  {
+    "id": "A.I.O. 02",
+    "direction": "Direction Audit Interne et Organisation",
+    "title": "Suivi de mission d'audit",
+    "description": "Rapport de suivi des missions d'audit",
+    "activeYears": 5,
+    "semiActiveYears": 15,
+    "finalAction": "CP",
+    "trigger": "Fermeture du dossier"
+  },
+  {
+    "id": "A.I.O. 03",
+    "direction": "Direction Audit Interne et Organisation",
+    "title": "Suivi de la lettre du contrôle interne",
+    "description": "Lettre de contrôle interne, Lettre d'insuffisance constatée, Correspondances, Réponse des structures",
+    "activeYears": 5,
+    "semiActiveYears": 15,
+    "finalAction": "CP",
+    "trigger": "Fermeture du dossier"
+  },
+  {
+    "id": "COM 01",
+    "direction": "Direction Commerciale",
+    "title": "Remboursement de prime",
+    "description": "Contrat de vente, Demande, Lettre de chèque, Fiche de dépenses, Avenant de résiliation",
+    "activeYears": 2,
+    "semiActiveYears": 1,
+    "finalAction": "EL",
+    "trigger": "Tant que le contrat est en vigueur"
+  },
+  {
+    "id": "COM 02",
+    "direction": "Direction Commerciale",
+    "title": "Appel d'Offres",
+    "description": "Cahier des charges, Offres, Contrat",
+    "activeYears": 1,
+    "semiActiveYears": 10,
+    "finalAction": "EL",
+    "trigger": "Tant que le contrat est en vigueur"
+  },
+  {
+    "id": "C. 01",
+    "direction": "Direction Comptabilité",
+    "title": "Journal de caisse des agences",
+    "description": "Brouillard de caisse, Versement, Fiche de dépense, Etat de Rapprochement bancaire",
+    "activeYears": 2,
+    "semiActiveYears": 8,
+    "finalAction": "EL",
+    "trigger": "Clôture de l'exercice"
+  },
+  {
+    "id": "R.H. 01",
+    "direction": "Direction Ressources Humaines",
+    "title": "Dossier administratif du personnel",
+    "description": "Recrutement, CIN, Diplômes, Lettre de motivation, RIB, Dossier des décisions",
+    "activeYears": 0,
+    "semiActiveYears": 15,
+    "finalAction": "CP",
+    "trigger": "Départ définitif de l'agent"
+  },
+  {
+    "id": "R.H. 04",
+    "direction": "Direction Ressources Humaines",
+    "title": "Paie",
+    "description": "Bordereau mensuel de paie, Etat de virement, Heures supplémentaires, Demande d'avance",
+    "activeYears": 1,
+    "semiActiveYears": 5,
+    "finalAction": "EL",
+    "trigger": "Un an après le départ définitif"
+  },
+  {
+    "id": "S.I. 02",
+    "direction": "Direction Informatique",
+    "title": "Contrat de maintenance",
+    "description": "Contrats et avenants de maintenance informatique",
+    "activeYears": 1,
+    "semiActiveYears": 10,
+    "finalAction": "EL",
+    "trigger": "Tant que le contrat est en vigueur"
+  },
+  {
+    "id": "J. 01",
+    "direction": "Direction Juridique",
+    "title": "Contentieux général",
+    "description": "PV de sommation, Lettre de désignation d'avocat, Grosse de jugement, Correspondances",
+    "activeYears": 1,
+    "semiActiveYears": 20,
+    "finalAction": "CP",
+    "trigger": "1 an après la clôture définitive"
+  }
+]

@@ -64,11 +64,34 @@ db.exec(`
     reference TEXT,
     title TEXT,
     direction TEXT,
+    docType TEXT,
     activeYears INTEGER,
     semiActiveYears INTEGER,
-    finalDisposition TEXT,
+    finalDisposition TEXT, -- 'EL', 'CP', 'ECH'
+    support TEXT, -- 'Papier', 'Numérique', 'Hybride'
+    retentionTrigger TEXT,
     createdAt TEXT
   );
+  CREATE TABLE IF NOT EXISTS elimination_steps (
+    id TEXT PRIMARY KEY,
+    requestId TEXT,
+    step TEXT, -- 'Proposition', 'Verification', 'Validation', 'Final'
+    status TEXT, -- 'Pending', 'Completed'
+    actor TEXT,
+    comment TEXT,
+    updatedAt TEXT
+  );
+`);
+
+// Migration: Add new columns to archival_directory
+const archivalCols = ['docType', 'support', 'retentionTrigger'];
+archivalCols.forEach(col => {
+  try {
+    db.exec(`ALTER TABLE archival_directory ADD COLUMN ${col} TEXT`);
+  } catch (e) {}
+});
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS elimination_requests (
     id TEXT PRIMARY KEY,
     inventoryId TEXT,
@@ -121,17 +144,52 @@ const countMassInventory = db.prepare(`SELECT COUNT(*) as count FROM mass_invent
 // --- Archival Engine Helpers ---
 const getAllRules = () => db.prepare("SELECT * FROM archival_directory").all() as any[];
 
-const calculateArchivalStatus = (item: any, rules: any[]) => {
-  if (!item.dateCloture && !item.dateFin) return { ruleId: null, expiryDate: null, status: 'Active' };
+const calculateArchivalStatus = (item: any, rules: any[], overrideRuleId?: string | null) => {
+  const dateStr = item.dateCloture || item.dateFin || item.dateDebut || item.createdAt;
+  if (!dateStr) return { ruleId: null, expiryDate: null, status: 'Active' };
   
-  const reference = (item.reference || '').replace(/[\s\.]/g, '').toUpperCase();
-  const rule = rules.find(r => r.reference.replace(/[\s\.]/g, '').toUpperCase() === reference);
-  
-  if (!rule) return { ruleId: null, expiryDate: null, status: 'Active' };
+  // Intelligent matching
+  const itemDirection = String(item.direction || '').toLowerCase();
+  const itemIntitule = String(item.intitule || item.dossier || '').toLowerCase();
+  const itemDocType = String(item.typeSinistre || item.docType || '').toLowerCase();
 
-  const dateStr = item.dateCloture || item.dateFin;
-  let year = 0;
+  // Try to find the best matching rule
+  let bestRule = null;
   
+  // 0. Manual Override
+  if (overrideRuleId) {
+    bestRule = rules.find(r => r.id === overrideRuleId);
+  }
+
+  // 1. Precise reference match
+  if (!bestRule && item.ruleId) {
+    bestRule = rules.find(r => r.id === item.ruleId);
+  }
+
+  if (!bestRule && item.reference) {
+    const ref = String(item.reference).replace(/[\s\.]/g, '').toUpperCase();
+    bestRule = rules.find(r => String(r.reference).replace(/[\s\.]/g, '').toUpperCase() === ref);
+  }
+
+  // 2. Fuzzy matching by keywords if no reference match
+  if (!bestRule) {
+    bestRule = rules.find(r => {
+      const ruleDir = String(r.direction).toLowerCase();
+      const ruleTitle = String(r.title).toLowerCase();
+      const ruleDocType = String(r.docType || '').toLowerCase();
+
+      // Check direction match first
+      if (itemDirection && !itemDirection.includes(ruleDir) && !ruleDir.includes(itemDirection)) return false;
+
+      // Check keywords
+      return itemIntitule.includes(ruleTitle) || ruleTitle.includes(itemIntitule) || 
+             (itemDocType && (itemDocType.includes(ruleDocType) || ruleDocType.includes(itemDocType)));
+    });
+  }
+  
+  if (!bestRule) return { ruleId: null, expiryDate: null, status: 'Active' };
+
+  let year = 0;
   if (dateStr.includes('/')) {
     year = parseInt(dateStr.split('/').pop() || '0');
   } else if (dateStr.includes('-')) {
@@ -140,19 +198,21 @@ const calculateArchivalStatus = (item: any, rules: any[]) => {
     year = parseInt(dateStr);
   }
 
-  if (isNaN(year) || year === 0) return { ruleId: rule.id, expiryDate: null, status: 'Active' };
+  if (isNaN(year) || year === 0) return { ruleId: bestRule.id, expiryDate: null, status: 'Active' };
 
-  const expiryYear = year + (rule.activeYears || 0) + (rule.semiActiveYears || 0);
+  const active = bestRule.activeYears || 0;
+  const semi = bestRule.semiActiveYears || 0;
+  const expiryYear = year + active + semi;
   const currentYear = new Date().getFullYear();
   
   let status = 'Active';
   if (currentYear >= expiryYear) {
     status = 'Expired';
-  } else if (currentYear >= (year + (rule.activeYears || 0))) {
+  } else if (currentYear >= (year + active)) {
     status = 'SemiActive';
   }
 
-  return { ruleId: rule.id, expiryDate: String(expiryYear), status };
+  return { ruleId: bestRule.id, expiryDate: String(expiryYear), status };
 };
 
 // File Storage Setup
@@ -434,14 +494,14 @@ async function startServer() {
       return res.status(403).json({ error: "Interdit. Rôles autorisés: Admin, Agent, Archiviste." });
     }
     try {
-      const { items, filename, direction, isFinalBatch } = req.body;
+      const { items, filename, direction, ruleId, isFinalBatch } = req.body;
       const createdAt = new Date().toISOString();
       const rules = getAllRules();
       
       const insertMany = db.transaction((rows) => {
         for (const item of rows) {
           const id = crypto.randomUUID();
-          const archival = calculateArchivalStatus(item, rules);
+          const archival = calculateArchivalStatus(item, rules, ruleId);
 
           insertMassItem.run(
             id, 
@@ -653,13 +713,25 @@ async function startServer() {
     try {
       const { entries } = req.body;
       const insert = db.prepare(`
-        INSERT OR REPLACE INTO archival_directory (id, reference, title, direction, activeYears, semiActiveYears, finalDisposition, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const transaction = db.transaction((rows) => {
         for (const r of rows) {
           const id = r.id || crypto.randomUUID();
-          insert.run(id, r.reference, r.title, r.direction, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition || 'EL', new Date().toISOString());
+          insert.run(
+            id, 
+            r.reference, 
+            r.title, 
+            r.direction, 
+            r.docType || '',
+            r.activeYears || 0, 
+            r.semiActiveYears || 0, 
+            r.finalDisposition || 'EL', 
+            r.support || 'Papier',
+            r.retentionTrigger || '',
+            new Date().toISOString()
+          );
         }
       });
       transaction(entries);
@@ -685,24 +757,53 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  app.get("/api/elimination/eligible", authenticate, (req, res) => {
+  app.get("/api/elimination/proposals", authenticate, (req: any, res) => {
     try {
-      // Very fast query thanks to index on archivalStatus
       const results = db.prepare(`
-        SELECT mi.*, ad.title as ruleTitle, ad.finalDisposition
+        SELECT mi.*, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef
         FROM mass_inventory mi
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
         LEFT JOIN elimination_requests er ON mi.id = er.inventoryId
-        WHERE mi.archivalStatus = 'Expired' AND er.id IS NULL
-        GROUP BY mi.id
-        LIMIT 500
+        WHERE mi.archivalStatus = 'Expired' AND (er.status IS NULL OR er.status = 'Pending')
+        LIMIT 1000
       `).all();
-      
       res.json(results);
-    } catch (err: any) { 
-      console.error("Elimination eligibility error:", err);
-      res.status(500).json({ error: err.message }); 
-    }
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/archival-directory", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const r = req.body;
+      const id = crypto.randomUUID();
+      db.prepare(`
+        INSERT INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, new Date().toISOString());
+      res.json({ success: true, id });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.patch("/api/archival-directory/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const { id } = req.params;
+      const r = req.body;
+      db.prepare(`
+        UPDATE archival_directory 
+        SET reference = ?, title = ?, direction = ?, docType = ?, activeYears = ?, semiActiveYears = ?, finalDisposition = ?, support = ?, retentionTrigger = ?
+        WHERE id = ?
+      `).run(r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/archival-directory/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      db.prepare("DELETE FROM archival_directory WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   // --- Elimination Management ---
@@ -1008,6 +1109,37 @@ async function startServer() {
       data = data.filter((r: any) => r.id !== req.params.id);
       writeData('remote_requests', data);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/transfer-requests", authenticate, (req: any, res) => {
+    try {
+      const data = readData('transfer_requests');
+      const demandNumber = getNextDemandNumber();
+      const newTransfer = {
+        ...req.body,
+        id: crypto.randomUUID(),
+        demandNumber,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      data.push(newTransfer);
+      writeData('transfer_requests', data);
+      res.json({ id: newTransfer.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/transfer-requests", authenticate, (req: any, res) => {
+    try {
+      let data = readData('transfer_requests');
+      if (req.user.role === 'Demandeur') {
+        data = data.filter((r: any) => r.email === req.user.email);
+      }
+      res.json(data);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

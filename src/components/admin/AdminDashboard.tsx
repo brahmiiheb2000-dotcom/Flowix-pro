@@ -164,7 +164,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     try {
       const [stats, eligible, requests] = await Promise.all([
         api.get('/api/elimination/stats'),
-        api.get('/api/elimination/eligible'),
+        api.get('/api/elimination/proposals'),
         api.get('/api/elimination-requests')
       ]);
       setEliminationStats(stats);

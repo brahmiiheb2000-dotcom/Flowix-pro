@@ -72,21 +72,30 @@ export async function extractArchivalRulesFromPDF(base64Data: string) {
           },
           {
             text: `
-              Tu es un expert en archivage et records management.
-              Analyse ce document PDF (calendrier de conservation des archives) et extrais toutes les règles de conservation.
+              Tu es un expert en archivage et records management de haut niveau.
+              Ton objectif est d'analyser ce document PDF (calendrier de conservation des archives) et d'extraire TOUTES les règles de conservation, même si elles sont présentées de manière complexe ou peu structurée.
+
+              CONSIGNES CRITIQUES :
+              1. Analyse Exhaustive : Ne saute aucune ligne de tableau ou de texte décrivant une règle.
+              2. Catégorisation : Identifie la catégorie (ex: 'Juridique', 'Financier', 'RH', 'Technique', 'Médical', 'Commercial', 'Logistique').
+              3. Criticité : Marque comme 'isCritical: true' tout document ayant une valeur probante forte, une durée de conservation > 10 ans, ou une importance vitale (ex: contrats, bilans, dossiers médicaux, statuts).
+              4. Directions : Identifie la direction tunisienne concernée (ex: Direction Générale, Direction des Finances, Direction de l'Audit, etc.).
+              5. Déduction Intelligente : Si une durée est ambiguë (ex: "Durée légale"), déduis-la si possible ou utilise 10 ans par défaut pour le financier/juridique.
+              6. Format des Durées : Les champs activeYears et semiActiveYears doivent être des ENTIERS (ex: 'Permanent' = 99, 'Illimité' = 99).
 
               Chaque règle doit comporter :
-              - reference: le code ou la référence documentaire (ex: COM-01)
-              - title: l'intitulé du type de document
-              - direction: le service ou la direction concernée
-              - activeYears: durée de conservation en années pour les archives courantes (DUA)
-              - semiActiveYears: durée de conservation en années pour les archives intermédiaires
-              - finalDisposition: le sort final ('EL' pour élimination, 'CP' pour conservation permanente, 'ECH' pour échantillonnage)
-              - docType: description du type de documents (facultatif)
+              - reference: le code ou la référence documentaire (ex: FIN-01)
+              - title: l'intitulé clair du type de document
+              - direction: le nom complet de la direction/service
+              - activeYears: DUA en années (Entier)
+              - semiActiveYears: Conservation intermédiaire en années (Entier)
+              - finalDisposition: 'EL' (Élimination), 'CP' (Conservation Permanente), 'ECH' (Échantillonnage)
+              - docType: description détaillée du contenu
               - support: 'Papier', 'Numérique' ou 'Hybride'
-              - retentionTrigger: l'évènement déclencheur (ex: 'Clôture du dossier', 'Émission', etc.)
+              - retentionTrigger: l'évènement de départ (ex: 'Date de clôture', 'Date d'émission')
+              - isCritical: boolean (indique si c'est un document à haut risque ou haute valeur)
+              - category: 'Juridique', 'Financier', 'RH', 'Technique', etc.
 
-              Assure-toi d'extraire TOUTES les règles présentes dans le document de manière exhaustive.
               Réponds UNIQUEMENT au format JSON (un tableau d'objets).
             `
           }
@@ -107,9 +116,11 @@ export async function extractArchivalRulesFromPDF(base64Data: string) {
               finalDisposition: { type: Type.STRING },
               docType: { type: Type.STRING },
               support: { type: Type.STRING },
-              retentionTrigger: { type: Type.STRING }
+              retentionTrigger: { type: Type.STRING },
+              isCritical: { type: Type.BOOLEAN },
+              category: { type: Type.STRING }
             },
-            required: ["reference", "title", "direction", "activeYears", "semiActiveYears", "finalDisposition"]
+            required: ["reference", "title", "direction", "activeYears", "semiActiveYears", "finalDisposition", "isCritical", "category"]
           }
         }
       }

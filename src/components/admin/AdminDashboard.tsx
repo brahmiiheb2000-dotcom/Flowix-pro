@@ -21,8 +21,9 @@ import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../service
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
   const [requests, setRequests] = useState<any[]>([]);
   const [remoteRequests, setRemoteRequests] = useState<any[]>([]);
+  const [transferRequests, setTransferRequests] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination'>(initialTab);
-  const [requestSubTab, setRequestSubTab] = useState<'all' | 'signed'>('all');
+  const [requestSubTab, setRequestSubTab] = useState<'all' | 'signed' | 'transfers'>('all');
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [archivedComms, setArchivedComms] = useState<any[]>([]);
@@ -49,64 +50,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [monitoringStatus, setMonitoringStatus] = useState<string>('Expired');
   const [searchRule, setSearchRule] = useState("");
   const [showImportRulesModal, setShowImportRulesModal] = useState(false);
-  const [isImportingRules, setIsImportingRules] = useState(false);
-  const pdfInputRef = React.useRef<HTMLInputElement>(null);
   const [fullStats, setFullStats] = useState<any>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
-  const [isClearingDirectory, setIsClearingDirectory] = useState(false);
-  const [selectedCalendarDir, setSelectedCalendarDir] = useState<string | null>(null);
-
-  const handleClearDirectory = async () => {
-    if (!confirm("Êtes-vous sûr de vouloir supprimer TOUTES les règles du calendrier de conservation ? Cette action est irréversible.")) return;
-    
-    setIsClearingDirectory(true);
-    try {
-      await api.delete('/api/archival-directory/clear');
-      const data = await api.get('/api/archival-directory');
-      setArchivalDirectory(data);
-      alert("Calendrier vidé avec succès.");
-    } catch (err) {
-      console.error("Clear directory error:", err);
-      alert("Erreur lors de la suppression des données.");
-    } finally {
-      setIsClearingDirectory(false);
-    }
-  };
-
-  const handlePDFImportSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setIsImportingRules(true);
-    try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = (reader.result as string).split(',')[1];
-        try {
-          const rules = await extractArchivalRulesFromPDF(base64);
-          if (rules && rules.length > 0) {
-            await api.post('/api/archival-directory/import', { entries: rules });
-            const data = await api.get('/api/archival-directory');
-            setArchivalDirectory(data);
-            alert(`${rules.length} règles extraites et importées avec succès.`);
-          } else {
-            alert("Aucune règle n'a pu être extraite du PDF.");
-          }
-        } catch (err) {
-          console.error("Gemini PDF error:", err);
-          alert("Erreur lors de l'analyse du PDF par l'IA.");
-        } finally {
-          setIsImportingRules(false);
-          if (pdfInputRef.current) pdfInputRef.current.value = '';
-        }
-      };
-      reader.readAsDataURL(file);
-    } catch (err) {
-      console.error("File reading error:", err);
-      alert("Erreur lors de la lecture du fichier.");
-      setIsImportingRules(false);
-    }
-  };
   const [importHistory, setImportHistory] = useState<any[]>([]);
   const [importStep, setImportStep] = useState<'upload' | 'preview' | 'importing'>('upload');
   const [importPreviewData, setImportPreviewData] = useState<any[]>([]);
@@ -159,6 +104,10 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [eligibleItems, setEligibleItems] = useState<any[]>([]);
   const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
   const [eliminationSubTab, setEliminationSubTab] = useState<'alerts' | 'proposal' | 'history' | 'calendar'>('alerts');
+  const [isImportingRules, setIsImportingRules] = useState(false);
+  const pdfInputRef = React.useRef<HTMLInputElement>(null);
+  const [isClearingDirectory, setIsClearingDirectory] = useState(false);
+  const [selectedCalendarDir, setSelectedCalendarDir] = useState<string | null>(null);
   const [selectedForElimination, setSelectedForElimination] = useState<string[]>([]);
   const [historicSearch, setHistoricSearch] = useState('');
   const [isEditingRule, setIsEditingRule] = useState(false);
@@ -189,46 +138,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       setIsSearchingLoc(false);
     }
   };
-
-  const syncRetentionCalendar = async () => {
-    try {
-      const entries: any[] = [];
-      RETENTION_CALENDAR.forEach(dir => {
-        dir.rules.forEach(rule => {
-          entries.push({
-            reference: rule.reference,
-            title: rule.title,
-            direction: dir.name,
-            activeYears: parseInt(rule.active) || 0,
-            semiActiveYears: parseInt(rule.semiActive) || 0,
-            finalDisposition: rule.finalDisposition
-          });
-        });
-      });
-
-      await api.post('/api/archival-directory/import', { entries });
-      const data = await api.get('/api/archival-directory');
-      setArchivalDirectory(data);
-      alert(`${entries.length} règles de conservation ont été archivées avec succès.`);
-    } catch (err) {
-      console.error(err);
-      alert("Erreur lors de la synchronisation du calendrier.");
-    }
-  };
-
-  const archivalByDirection = React.useMemo(() => {
-    const groups: Record<string, any[]> = {};
-    archivalDirectory.forEach(rule => {
-      const dirName = rule.direction || "Non spécifié";
-      if (!groups[dirName]) groups[dirName] = [];
-      groups[dirName].push(rule);
-    });
-    return Object.entries(groups).map(([name, rules]) => ({
-      name,
-      rules,
-      code: name.split(' ').map(w => w[0]).join('').toUpperCase().substring(0, 4)
-    })).sort((a, b) => a.name.localeCompare(b.name));
-  }, [archivalDirectory]);
 
   const fetchEliminationData = async () => {
     try {
@@ -280,9 +189,10 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
   const fetchData = async () => {
     try {
-      const [reqs, remoteReqs, inv, hist, stats, elims] = await Promise.all([
+      const [reqs, remoteReqs, transfers, inv, hist, stats, elims] = await Promise.all([
         api.get('/api/requests'),
         api.get('/api/remote-requests'),
+        api.get('/api/transfer-requests'),
         api.get('/api/returns/inventory'),
         api.get('/api/returns/history'),
         api.get('/api/mass-inventory/stats'),
@@ -290,6 +200,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       ]);
       setRequests(reqs);
       setRemoteRequests(remoteReqs);
+      setTransferRequests(transfers);
       setReturnInventory(inv);
       setReturnHistory(hist);
       setMassInventoryStats(stats);
@@ -337,13 +248,24 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     }
   };
 
-  const handleDeleteRule = async (id: number) => {
+  const handleDeleteRule = async (id: string) => {
     if (!confirm("Supprimer cette règle de conservation ?")) return;
     try {
       await api.delete(`/api/archival-directory/${id}`);
       fetchArchivalDirectory();
     } catch (err) {
       alert("Erreur lors de la suppression.");
+    }
+  };
+
+  const handleDeleteDirection = async (direction: string) => {
+    if (!confirm(`Supprimer TOUTES les règles de la direction "${direction}" ?`)) return;
+    try {
+      await api.post('/api/archival-directory/direction/clear', { direction });
+      fetchArchivalDirectory();
+      alert(`Règles de la direction "${direction}" supprimées.`);
+    } catch (err) {
+      alert("Erreur lors de la suppression de la direction.");
     }
   };
 
@@ -887,12 +809,20 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     };
 
     if (activeTab === 'requests') {
-      const all = dedup([...requests, ...remoteRequests]);
+      let all = [];
+      if (requestSubTab === 'transfers') {
+        all = dedup(transferRequests);
+      } else {
+        all = dedup([...requests, ...remoteRequests]);
+      }
+      
       const archivedIds = new Set(archivedComms.filter(a => a.requestId).map(a => a.requestId));
       const active = all.filter(r => !archivedIds.has(r.id));
 
       if (requestSubTab === 'signed') {
         listToFilter = active.filter(r => r.status === 'signed' || r.status === 'Prêt / Communiqué');
+      } else if (requestSubTab === 'transfers') {
+        listToFilter = active;
       } else {
         listToFilter = active;
       }
@@ -1000,6 +930,198 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const date = toSafeDate(r.createdAt);
       return date && isSameDay(date, new Date());
     }).length
+  };
+
+  const archivalByDirection = React.useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    archivalDirectory.forEach(rule => {
+      const dirName = rule.direction || "Non spécifié";
+      if (!groups[dirName]) groups[dirName] = [];
+      groups[dirName].push(rule);
+    });
+    return Object.entries(groups).map(([name, rules]) => ({
+      name,
+      rules,
+      code: name.split(' ').map(w => w[0]).join('').toUpperCase().substring(0, 4)
+    })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [archivalDirectory]);
+
+  const handleClearDirectory = async () => {
+    if (!confirm("Êtes-vous sûr de vouloir supprimer TOUTES les règles du calendrier de conservation ? Les dossiers liés perdront leur lien avec ces règles. Cette action est irréversible.")) return;
+    
+    setIsClearingDirectory(true);
+    try {
+      await api.post('/api/archival-directory/clear', {});
+      setArchivalDirectory([]);
+      await Promise.all([
+        fetchArchivalDirectory(),
+        fetchArchivalMonitoring()
+      ]);
+      alert("Le calendrier de conservation a été vidé et les statuts de dossiers ont été réinitialisés.");
+    } catch (err: any) {
+      console.error("Clear directory error:", err);
+      alert(`Erreur lors de la suppression: ${err.message || "Erreur inconnue"}`);
+    } finally {
+      setIsClearingDirectory(false);
+    }
+  };
+
+  const handleClearEliminationHistory = async () => {
+    if (!confirm("Voulez-vous supprimer TOUTES les demandes d'élimination (en attente et archivées) ?")) return;
+    
+    try {
+      await api.delete('/api/elimination-requests/clear-all');
+      setEliminationRequests([]);
+      setEligibleItems([]);
+      await fetchEliminationData();
+      alert("L'historique des éliminations a été vidé.");
+    } catch (err: any) {
+      alert("Erreur lors de la suppression de l'historique.");
+    }
+  };
+
+  const handlePDFImportSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImportingRules(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = (reader.result as string).split(',')[1];
+        try {
+          const rules = await extractArchivalRulesFromPDF(base64);
+          if (rules && rules.length > 0) {
+            await api.post('/api/archival-directory/import', { entries: rules });
+            const data = await api.get('/api/archival-directory');
+            setArchivalDirectory(data);
+            alert(`${rules.length} règles extraites et importées avec succès.`);
+          } else {
+            alert("Aucune règle n'a pu être extraite du PDF.");
+          }
+        } catch (err) {
+          console.error("Gemini PDF error:", err);
+          alert("Erreur lors de l'analyse du PDF par l'IA.");
+        } finally {
+          setIsImportingRules(false);
+          if (pdfInputRef.current) pdfInputRef.current.value = '';
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error("File reading error:", err);
+      alert("Erreur lors de la lecture du fichier.");
+      setIsImportingRules(false);
+    }
+  };
+
+  const syncRetentionCalendar = async () => {
+    try {
+      const entries: any[] = [];
+      RETENTION_CALENDAR.forEach(dir => {
+        dir.rules.forEach(rule => {
+          entries.push({
+            reference: rule.reference,
+            title: rule.title,
+            direction: dir.name,
+            activeYears: parseInt(rule.active) || 0,
+            semiActiveYears: parseInt(rule.semiActive) || 0,
+            finalDisposition: rule.finalDisposition
+          });
+        });
+      });
+
+      await api.post('/api/archival-directory/import', { entries });
+      const data = await api.get('/api/archival-directory');
+      setArchivalDirectory(data);
+      alert(`${entries.length} règles de conservation ont été archivées avec succès.`);
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors de la synchronisation du calendrier.");
+    }
+  };
+
+  const handleExportCalendarPDF = () => {
+    const doc = new jsPDF('l', 'mm', 'a4');
+    const title = "CALENDRIER DE CONSERVATION DES ARCHIVES";
+    const date = format(new Date(), 'dd/MM/yyyy HH:mm');
+    
+    doc.setFontSize(18);
+    doc.setTextColor(30, 41, 59);
+    doc.text(title, 14, 20);
+    
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Généré le ${date}`, 14, 28);
+
+    const tableData = archivalDirectory
+      .filter(r => selectedCalendarDir === null || r.direction === selectedCalendarDir)
+      .map(r => [
+        r.reference,
+        r.title,
+        r.direction,
+        r.category || 'Général',
+        `${r.activeYears} ans`,
+        `${r.semiActiveYears} ans`,
+        r.finalDisposition === 'EL' ? 'Élimination' : r.finalDisposition === 'CP' ? 'Cons. Permanente' : 'Échantillonnage',
+        r.isCritical ? 'OUI' : 'NON'
+      ]);
+
+    autoTable(doc, {
+      startY: 35,
+      head: [['Réf', 'Intitulé Documentaire', 'Direction', 'Catégorie', 'DUA', 'Semi-Actif', 'Sort Final', 'Critique']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontSize: 8, fontStyle: 'bold' },
+      bodyStyles: { fontSize: 8 },
+      columnStyles: {
+        0: { cellWidth: 20 },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 25 },
+        4: { cellWidth: 15 },
+        5: { cellWidth: 15 },
+        6: { cellWidth: 30 },
+        7: { cellWidth: 15 }
+      },
+      didDrawCell: (data) => {
+        if (data.section === 'body' && data.column.index === 7 && data.cell.raw === 'OUI') {
+          doc.setTextColor(220, 38, 38);
+        }
+      }
+    });
+
+    doc.save(`calendrier_conservation_${format(new Date(), 'yyyyMMdd')}.pdf`);
+  };
+
+  const handleAIClassification = async (item: any) => {
+    try {
+      setIsImportingRules(true);
+      const result = await suggestRetentionRule(item.intitule, item.direction, archivalDirectory);
+      setIsImportingRules(false);
+
+      if (result.match) {
+        if (confirm(`Lien trouvé : ${result.reference} - ${result.title}\nConservation : ${result.retention}\nConfiance : ${Math.round(result.confidence * 100)}%\nVoulez-vous appliquer cette règle ?`)) {
+          await api.patch(`/api/mass-inventory/${item.id}`, { reference: result.reference });
+          setMassInventory(prev => prev.map(i => i.id === item.id ? { ...i, reference: result.reference } : i));
+        }
+      } else {
+        alert("L'IA n'a pas pu identifier de règle précise pour ce dossier.");
+      }
+    } catch (error) {
+      setIsImportingRules(false);
+      console.error(error);
+    }
+  };
+
+  const handleUpdateTransferStatus = async (reqId: string, newStatus: string) => {
+    try {
+      await api.patch(`/api/transfer-requests/${reqId}`, { status: newStatus });
+      setTransferRequests(prev => prev.map(r => r.id === reqId ? { ...r, status: newStatus } : r));
+      alert("Statut de transfert mis à jour.");
+    } catch (err) {
+      alert("Erreur lors de la mise à jour.");
+    }
   };
 
   const handleUpdateRemoteStatus = async (reqId: string, newStatus: string, email: string, name: string) => {
@@ -1440,27 +1562,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     return Object.entries(groups).map(([name, items]) => ({ name, items }));
   }, [eligibleItems]);
 
-  const handleAIClassification = async (item: any) => {
-    try {
-      setIsImportingRules(true); // Re-use loading state or simple alert
-      const result = await suggestRetentionRule(item.intitule, item.direction, archivalDirectory);
-      setIsImportingRules(false);
-
-      if (result.match) {
-        if (confirm(`Lien trouvé : ${result.reference} - ${result.title}\nConservation : ${result.retention}\nConfiance : ${Math.round(result.confidence * 100)}%\nVoulez-vous appliquer cette règle ?`)) {
-          await api.patch(`/api/mass-inventory/${item.id}`, { reference: result.reference });
-          // Refresh list locally
-          setMassInventory(prev => prev.map(i => i.id === item.id ? { ...i, reference: result.reference } : i));
-        }
-      } else {
-        alert("L'IA n'a pas pu identifier de règle précise pour ce dossier.");
-      }
-    } catch (error) {
-      setIsImportingRules(false);
-      console.error(error);
-    }
-  };
-
   return (
     <div className="space-y-8">
       <div className="flex p-1 bg-white rounded-2xl shadow-sm border border-slate-100 w-full overflow-x-auto">
@@ -1470,9 +1571,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         >
           <Inbox size={18} />
           Demandes reçues
-          {(requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length) > 0 && (
-            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center border-2 border-white">
-              {requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length}
+          {(requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length + transferRequests.filter(r => r.status === 'En attente').length) > 0 && (
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center border-2 border-white animate-pulse">
+              {requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length + transferRequests.filter(r => r.status === 'En attente').length}
             </span>
           )}
         </button>
@@ -2806,7 +2907,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </button>
               <button 
                 onClick={() => setEliminationSubTab('calendar')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-slate-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-indigo-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 CALENDRIER
               </button>
@@ -3081,155 +3182,187 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </motion.div>
             )}
 
-
             {eliminationSubTab === 'calendar' && (
               <motion.div
                 key="elim-calendar"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="space-y-8"
+                className="space-y-6"
               >
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                  <div className="flex flex-col gap-1">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
+                  <div>
                     <h3 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-                       <Library className="text-orange-600" size={24} />
-                       Calendrier de Conservation Intelligent
+                      <Library className="text-indigo-600" size={24} />
+                      Référentiel de Conservation
                     </h3>
-                    <p className="text-slate-500 text-sm">Gestion des règles de conservation et des délais légaux.</p>
+                    <p className="text-slate-500 text-sm">Gestion intelligente des durées d'utilité administrative (DUA).</p>
                   </div>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => {
-                        setEditedRule({ reference: '', title: '', direction: '', activeYears: '5', semiActiveYears: '10', finalDisposition: 'EL', support: 'Papier', trigger: 'Clôture' });
-                        setIsEditingRule(true);
-                      }}
-                      className="px-6 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black hover:bg-slate-800 transition-all shadow-lg flex items-center gap-2"
-                    >
-                      <Plus size={16} />
-                      NOUVELLE RÈGLE
-                    </button>
-                    <button 
-                      onClick={() => pdfInputRef.current?.click()}
-                      disabled={isImportingRules}
-                      className="px-6 py-3 bg-red-50 text-red-600 border border-red-100 rounded-2xl text-xs font-black hover:bg-red-100 transition-all flex items-center gap-2"
-                    >
-                      {isImportingRules ? <RotateCw className="animate-spin" size={16} /> : <FileText size={16} />}
-                      {isImportingRules ? 'ANALYSE...' : 'IMPORTER PDF'}
-                    </button>
-                    <button 
-                      onClick={handleClearDirectory}
-                      disabled={isClearingDirectory || isImportingRules}
-                      className="px-6 py-3 bg-white border border-red-200 text-red-600 rounded-2xl text-xs font-black hover:bg-red-50 transition-all flex items-center gap-2"
-                    >
-                      <Trash2 size={16} />
-                      VIDER TOUT
-                    </button>
+                  <div className="flex flex-wrap gap-2 w-full md:w-auto">
                     <input 
                       type="file"
                       ref={pdfInputRef}
-                      className="hidden"
                       accept="application/pdf"
                       onChange={handlePDFImportSelect}
+                      className="hidden"
                     />
                     <button 
-                      onClick={syncRetentionCalendar}
-                      className="px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center gap-2"
+                      onClick={() => pdfInputRef.current?.click()}
+                      disabled={isImportingRules}
+                      className="flex-1 md:flex-none px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      <RotateCw size={16} />
-                      SYNCHRONISER TOUT
+                      {isImportingRules ? <RotateCw className="animate-spin" size={14} /> : <FileText size={14} />}
+                      IMPORT PDF (IA)
+                    </button>
+                    <button 
+                      onClick={syncRetentionCalendar}
+                      className="flex-1 md:flex-none px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-black hover:bg-slate-200 transition-all flex items-center justify-center gap-2"
+                    >
+                      <RotateCw size={14} />
+                      SYNC DEFAUT
+                    </button>
+                    <button 
+                      onClick={handleExportCalendarPDF}
+                      disabled={archivalDirectory.length === 0}
+                      className="flex-1 md:flex-none px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-black hover:bg-slate-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      <Download size={14} />
+                      EXPORT PDF
+                    </button>
+                    <button 
+                      onClick={handleClearDirectory}
+                      disabled={isClearingDirectory || archivalDirectory.length === 0}
+                      className="flex-1 md:flex-none px-4 py-2 bg-white border border-rose-200 text-rose-600 rounded-xl text-xs font-black hover:bg-rose-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      <Trash2 size={14} />
+                      VIDER LE CALENDRIER
                     </button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-2 mb-6 bg-slate-50 p-2 rounded-2xl w-fit">
+                <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => setSelectedCalendarDir(null)}
-                    className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${selectedCalendarDir === null ? 'bg-white text-slate-800 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                    className={cn(
+                      "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                      selectedCalendarDir === null ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                    )}
                   >
-                    TOUTES
+                    Toutes ({archivalDirectory.length})
                   </button>
                   {archivalByDirection.map(dir => (
                     <button
                       key={dir.name}
                       onClick={() => setSelectedCalendarDir(dir.name)}
-                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${selectedCalendarDir === dir.name ? 'bg-white text-orange-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                      className={cn(
+                        "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                        selectedCalendarDir === dir.name ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"
+                      )}
                     >
-                      {dir.name}
+                      {dir.code} ({dir.rules.length})
                     </button>
                   ))}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="space-y-12">
                   {archivalByDirection
                     .filter(dir => selectedCalendarDir === null || dir.name === selectedCalendarDir)
                     .map(dir => (
-                    <Card key={dir.name} className="p-0 border-slate-100 hover:shadow-xl transition-all group overflow-hidden rounded-[2rem]">
-                      <div className="p-5 bg-slate-50 flex items-center justify-between border-b border-slate-100">
+                    <div key={dir.name} className="space-y-4">
+                      <div className="flex items-center justify-between px-2 bg-slate-50/50 p-4 rounded-2xl border border-slate-100">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-white border border-slate-200 text-slate-800 rounded-xl flex items-center justify-center font-black text-xs shadow-sm">
+                          <div className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center font-black text-xs uppercase tracking-tighter shadow-md shadow-indigo-100">
                             {dir.code}
                           </div>
-                          <h3 className="font-black text-slate-800 text-xs tracking-tight leading-tight uppercase max-w-[200px] truncate">{dir.name}</h3>
-                        </div>
-                        <span className="bg-slate-200 text-slate-600 text-[9px] font-black px-2 py-0.5 rounded-full">{dir.rules.length}</span>
-                      </div>
-                      <div className="p-4 space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar">
-                        {dir.rules.map(rule => (
-                          <div key={rule.id} className="p-4 bg-white rounded-2xl border border-slate-100/80 hover:border-orange-200 transition-all group/rule">
-                            <div className="flex justify-between items-start mb-2">
-                              <div className="min-w-0 flex-1">
-                                <p className="text-[11px] font-black text-slate-800 line-clamp-2">{rule.title}</p>
-                                <p className="text-[9px] font-bold text-orange-600 mt-0.5 tracking-wider">{rule.reference}</p>
-                              </div>
-                              <div className="flex gap-1 ml-2 opacity-0 group-hover/rule:opacity-100 transition-opacity">
-                                <button 
-                                  onClick={() => {
-                                    setEditedRule(rule);
-                                    setIsEditingRule(true);
-                                  }}
-                                  className="p-1.5 text-slate-300 hover:text-slate-600 transition-colors"
-                                >
-                                  <Edit2 size={14} />
-                                </button>
-                                <button 
-                                  onClick={() => handleDeleteRule(rule.id)}
-                                  className="p-1.5 text-slate-300 hover:text-red-500 transition-colors"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 mt-3">
-                               <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
-                                  <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">D.U.A (Actif)</p>
-                                  <p className="text-[10px] font-black text-indigo-600">{rule.activeYears} Ans</p>
-                               </div>
-                               <div className="bg-slate-50 p-2 rounded-xl border border-slate-100">
-                                  <p className="text-[8px] font-black text-slate-400 uppercase mb-0.5">Semi-Actif</p>
-                                  <p className="text-[10px] font-black text-emerald-600">{rule.semiActiveYears} Ans</p>
-                               </div>
-                            </div>
-                            <div className="mt-2 flex items-center justify-between">
-                               <span className={`text-[9px] font-black px-2 py-0.5 rounded-full border ${
-                                 rule.finalDisposition === 'D' || rule.finalDisposition === 'CP' || rule.finalDisposition === 'ECH' ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 'bg-red-50 text-red-600 border-red-100'
-                               }`}>
-                                 {rule.finalDisposition === 'EL' ? 'ÉLIMINATION' : rule.finalDisposition === 'CP' ? 'CONS. PERMANENTE' : 'ÉCHANTILLON'}
-                               </span>
-                               <span className="text-[9px] font-bold text-slate-400 italic capitalize">{rule.support || 'Papier'}</span>
-                            </div>
+                          <div>
+                            <h4 className="font-black text-slate-800 text-base tracking-tight uppercase">{dir.name}</h4>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{dir.rules.length} documents enregistrés</p>
                           </div>
-                        ))}
+                        </div>
+                        <button 
+                          onClick={() => handleDeleteDirection(dir.name)}
+                          className="flex items-center gap-2 px-4 py-2 text-rose-600 bg-white border border-rose-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-50 transition-all shadow-sm"
+                        >
+                          <X size={12} />
+                          Supprimer Tout {dir.code}
+                        </button>
                       </div>
-                    </Card>
+
+                      <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden bg-white">
+                        <table className="w-full text-left border-collapse min-w-[800px]">
+                          <thead className="bg-slate-50/50 border-b border-slate-100">
+                            <tr>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest w-[80px]">Référence</th>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Intitulé Documentaire</th>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[60px]">DUA</th>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[80px]">Semi-Actif</th>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[100px]">Sort Final</th>
+                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-[100px]">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-50">
+                            {dir.rules.map((rule: any) => (
+                              <tr key={rule.id} className="hover:bg-slate-50/30 transition-colors group">
+                                <td className="px-6 py-4">
+                                   <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
+                                     {rule.reference}
+                                   </span>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-slate-700">{rule.title}</span>
+                                    {rule.isCritical === 1 && (
+                                      <span className="bg-rose-100 text-rose-600 px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase ring-1 ring-rose-200">Critique</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                  <span className="text-xs font-bold text-slate-600">{rule.activeYears} <span className="text-[10px] text-slate-400">ans</span></span>
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                  <span className="text-xs font-bold text-slate-600">{rule.semiActiveYears} <span className="text-[10px] text-slate-400">ans</span></span>
+                                </td>
+                                <td className="px-6 py-4 text-center">
+                                  <span className={cn(
+                                    "text-[10px] font-black",
+                                    rule.finalDisposition === 'EL' ? "text-rose-600" : "text-emerald-600"
+                                  )}>
+                                    {rule.finalDisposition === 'EL' ? 'ÉLIMINATION' : rule.finalDisposition === 'CP' ? 'CONSERVATION' : 'TRI'}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4 text-right">
+                                  <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button 
+                                      onClick={() => { setEditedRule(rule); setIsEditingRule(true); }}
+                                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                                      title="Modifier"
+                                    >
+                                      <Edit2 size={14} />
+                                    </button>
+                                    <button 
+                                      onClick={() => handleDeleteRule(rule.id)}
+                                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                      title="Supprimer"
+                                    >
+                                      <X size={16} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   ))}
-                  {archivalByDirection.length === 0 && (
-                    <div className="col-span-full py-24 text-center bg-slate-50 rounded-[3rem] border-2 border-dashed border-slate-200">
-                       <div className="w-20 h-20 bg-white rounded-3xl flex items-center justify-center text-slate-200 shadow-sm mx-auto mb-6">
-                         <Library size={40} />
-                       </div>
-                       <h3 className="text-xl font-bold text-slate-600 mb-2">Aucune donnée archivée</h3>
-                       <p className="text-slate-400 max-w-sm mx-auto">Veuillez synchroniser avec le catalogue ou importer vos calendriers PDF.</p>
+                  
+                  {archivalByDirection.filter(dir => selectedCalendarDir === null || dir.name === selectedCalendarDir).length === 0 && (
+                    <div className="py-20 flex flex-col items-center justify-center text-center bg-slate-50 border-2 border-dashed border-slate-200 rounded-[3rem]">
+                      <FileText size={48} className="text-slate-200 mb-4" />
+                      <h4 className="text-lg font-bold text-slate-600 mb-1">Calendrier Vide</h4>
+                      <p className="text-slate-400 text-sm max-w-xs mx-auto">
+                        Importez un PDF via l'IA ou synchronisez les règles par défaut pour commencer.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -3256,6 +3389,17 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'signed' ? 'bg-white text-green-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 <CheckCircle2 size={16} /> Demande Signés
+              </button>
+              <button
+                onClick={() => setRequestSubTab('transfers')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all relative ${requestSubTab === 'transfers' ? 'bg-white text-orange-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                <FileStack size={16} /> Transferts
+                {transferRequests.filter(r => r.status === 'En attente').length > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[8px] rounded-full flex items-center justify-center">
+                    {transferRequests.filter(r => r.status === 'En attente').length}
+                  </span>
+                )}
               </button>
             </div>
           )}
@@ -3408,6 +3552,15 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Signature</th>
                   <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest text-right">Actions</th>
                 </tr>
+              ) : activeTab === 'requests' && requestSubTab === 'transfers' ? (
+                <tr>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">N° Demande</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Type / Direction</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Demandeur</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Volume (Boxes/Doss)</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Statut</th>
+                  <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest text-right">Actions</th>
+                </tr>
               ) : (
                 <tr>
                   <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Demande</th>
@@ -3555,6 +3708,84 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           >
                             <FileText size={14} /> BORDEREAU
                           </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
+
+                if (activeTab === 'requests' && requestSubTab === 'transfers') {
+                  const safeDate = toSafeDate(req.createdAt);
+                  return (
+                    <tr key={req.id} className="hover:bg-gray-50/50 transition-colors">
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-gray-900">{req.demandNumber || req.id.slice(0, 8)}</span>
+                          <span className="text-[10px] text-gray-400 font-medium uppercase">
+                            {safeDate ? format(safeDate, 'dd/MM/yyyy HH:mm') : '-'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-gray-700 uppercase">{req.documentType}</span>
+                          <span className="text-[10px] text-slate-400 font-bold flex items-center gap-1 uppercase">
+                            <Building2 size={10} /> {req.direction}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-gray-700">{req.requester}</span>
+                          <span className="text-xs text-gray-400">{req.email}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-bold text-slate-600">
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1" title="Boîtes"><FileStack size={14} className="text-orange-400" /> {req.boxes || 0}</span>
+                          <span className="flex items-center gap-1" title="Dossiers"><FileText size={14} className="text-blue-400" /> {req.folders || 0}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={cn(
+                          "text-[10px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider",
+                          req.status === 'Traitée' || req.status === 'Validée' ? 'bg-green-50 text-green-700 border-green-100' :
+                          req.status === 'En attente' ? 'bg-amber-50 text-amber-600 border-amber-100' :
+                          req.status === 'Rejetée' ? 'bg-red-50 text-red-600 border-red-100' :
+                          'bg-slate-100 text-slate-500 border-slate-200'
+                        )}>
+                          {req.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {req.status === 'En attente' && (
+                            <>
+                              <button 
+                                onClick={() => handleUpdateTransferStatus(req.id, 'Validée')}
+                                className="p-1.5 text-green-500 hover:bg-green-50 rounded-lg transition-all"
+                                title="Valider le transfert"
+                              >
+                                <CheckCircle size={18} />
+                              </button>
+                              <button 
+                                onClick={() => handleUpdateTransferStatus(req.id, 'Rejetée')}
+                                className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                                title="Rejeter le transfert"
+                              >
+                                <XCircle size={18} />
+                              </button>
+                            </>
+                          )}
+                          {req.hasInventory && (
+                             <button 
+                               onClick={() => alert("L'inventaire est lié à cette demande.")}
+                               className="p-1.5 text-blue-500 hover:bg-blue-50 rounded-lg transition-all"
+                               title="Voir Inventaire"
+                             >
+                               <FileSpreadsheet size={18} />
+                             </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -4259,6 +4490,39 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       <option value="Numérique">Numérique</option>
                       <option value="Hybride">Hybride</option>
                     </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Catégorie</label>
+                    <select 
+                      value={editedRule?.category || 'Général'}
+                      onChange={(e) => setEditedRule({ ...editedRule, category: e.target.value })}
+                      className="w-full h-12 bg-slate-50/50 border border-slate-100 rounded-2xl px-4 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    >
+                      <option value="Général">Général</option>
+                      <option value="Juridique">Juridique</option>
+                      <option value="Financier">Financier</option>
+                      <option value="RH">RH</option>
+                      <option value="Technique">Technique</option>
+                      <option value="Médical">Médical</option>
+                      <option value="Commercial">Commercial</option>
+                      <option value="Logistique">Logistique</option>
+                    </select>
+                  </div>
+
+                  <div className="col-span-full pt-2">
+                    <label className="flex items-center gap-3 cursor-pointer p-4 bg-red-50/50 rounded-2xl border border-red-100 hover:bg-red-50 transition-all">
+                      <input 
+                        type="checkbox"
+                        checked={editedRule?.isCritical || false}
+                        onChange={(e) => setEditedRule({ ...editedRule, isCritical: e.target.checked })}
+                        className="w-5 h-5 rounded-lg border-red-300 text-red-600 focus:ring-red-500"
+                      />
+                      <div>
+                        <p className="text-[10px] font-black text-red-600 uppercase tracking-widest">Document Critique / Probant</p>
+                        <p className="text-[10px] text-red-400 font-medium leading-none mt-0.5">Marque ce document comme ayant une importance vitale ou légale élevée.</p>
+                      </div>
+                    </label>
                   </div>
                 </div>
 

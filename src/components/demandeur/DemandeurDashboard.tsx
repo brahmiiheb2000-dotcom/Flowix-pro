@@ -17,12 +17,22 @@ export const DemandeurDashboard = () => {
   
   // Transfer request state
   const [transferData, setTransferData] = useState({
+    requesterName: '',
     direction: '',
     docType: '',
     boxCount: '',
     folderCount: '',
     inventoryFile: null as File | null
   });
+
+  useEffect(() => {
+    if (profile?.displayName || user?.displayName) {
+      setTransferData(prev => ({
+        ...prev,
+        requesterName: profile?.displayName || user?.displayName || ''
+      }));
+    }
+  }, [profile, user]);
   const transferFileInputRef = useRef<HTMLInputElement>(null);
 
   const [myRequests, setMyRequests] = useState<any[]>([]);
@@ -75,7 +85,7 @@ export const DemandeurDashboard = () => {
         documentType: transferData.docType,
         boxes: transferData.boxCount,
         folders: transferData.folderCount,
-        requester: profile?.displayName || user?.displayName || 'Demandeur',
+        requester: transferData.requesterName || profile?.displayName || user?.displayName || 'Demandeur',
         email: user?.email,
         status: 'En attente',
         createdAt: new Date(),
@@ -84,6 +94,7 @@ export const DemandeurDashboard = () => {
 
       alert("Demande de transfert envoyée avec succès !");
       setTransferData({
+        requesterName: profile?.displayName || user?.displayName || '',
         direction: '',
         docType: '',
         boxCount: '',
@@ -473,6 +484,15 @@ export const DemandeurDashboard = () => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2 col-span-full">
+                  <label className="text-sm font-bold text-slate-700">Nom du demandeur</label>
+                  <Input 
+                    placeholder="Votre nom complet"
+                    value={transferData.requesterName}
+                    onChange={e => setTransferData({...transferData, requesterName: e.target.value})}
+                  />
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-sm font-bold text-slate-700">Direction / Service</label>
                   <select 

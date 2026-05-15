@@ -71,6 +71,8 @@ db.exec(`
     finalDisposition TEXT, -- 'EL', 'CP', 'ECH'
     support TEXT, -- 'Papier', 'Numérique', 'Hybride'
     retentionTrigger TEXT,
+    isCritical INTEGER DEFAULT 0, -- 0 for false, 1 for true
+    category TEXT,
     createdAt TEXT
   );
   CREATE TABLE IF NOT EXISTS elimination_steps (
@@ -85,10 +87,14 @@ db.exec(`
 `);
 
 // Migration: Add new columns to archival_directory
-const archivalCols = ['docType', 'support', 'retentionTrigger'];
+const archivalCols = ['docType', 'support', 'retentionTrigger', 'isCritical', 'category'];
 archivalCols.forEach(col => {
   try {
-    db.exec(`ALTER TABLE archival_directory ADD COLUMN ${col} TEXT`);
+    if (col === 'isCritical') {
+      db.exec(`ALTER TABLE archival_directory ADD COLUMN ${col} INTEGER DEFAULT 0`);
+    } else {
+      db.exec(`ALTER TABLE archival_directory ADD COLUMN ${col} TEXT`);
+    }
   } catch (e) {}
 });
 
@@ -744,11 +750,33 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  app.delete("/api/archival-directory/clear", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin') return res.status(403).json({ error: "Interdit" });
+  app.post("/api/archival-directory/clear", authenticate, (req: any, res) => {
+    const role = req.user.role;
+    if (role !== 'Admin' && role !== 'Agent' && role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
     try {
-      db.prepare("DELETE FROM archival_directory").run();
-      res.json({ success: true });
+      console.log("CLEARING ARCHIVAL DIRECTORY...");
+      db.transaction(() => {
+        db.prepare("DELETE FROM archival_directory").run();
+        // Also reset any items that were linked to these rules
+        db.prepare("UPDATE mass_inventory SET ruleId = NULL, archivalStatus = 'Active'").run();
+      })();
+      res.json({ success: true, message: "Calendrier vidé et statuts réinitialisés." });
+    } catch (err: any) { 
+      console.error("Clear archival directory error:", err);
+      res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.delete("/api/elimination-requests/clear-all", authenticate, (req: any, res) => {
+    const role = req.user.role;
+    if (role !== 'Admin' && role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit. Seuls Admin et Archiviste peuvent vider l'historique d'élimination." });
+    }
+    try {
+      db.prepare("DELETE FROM elimination_requests").run();
+      res.json({ success: true, message: "Historique d'élimination vidé." });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -760,8 +788,8 @@ async function startServer() {
     try {
       const { entries } = req.body;
       const insert = db.prepare(`
-        INSERT OR REPLACE INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, isCritical, category, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       const transaction = db.transaction((rows) => {
         for (const r of rows) {
@@ -777,6 +805,8 @@ async function startServer() {
             r.finalDisposition || 'EL', 
             r.support || 'Papier',
             r.retentionTrigger || '',
+            r.isCritical ? 1 : 0,
+            r.category || 'Général',
             new Date().toISOString()
           );
         }
@@ -892,9 +922,9 @@ async function startServer() {
       const r = req.body;
       const id = crypto.randomUUID();
       db.prepare(`
-        INSERT INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, new Date().toISOString());
+        INSERT INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, isCritical, category, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, r.isCritical ? 1 : 0, r.category || 'Général', new Date().toISOString());
       res.json({ success: true, id });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -906,9 +936,9 @@ async function startServer() {
       const r = req.body;
       db.prepare(`
         UPDATE archival_directory 
-        SET reference = ?, title = ?, direction = ?, docType = ?, activeYears = ?, semiActiveYears = ?, finalDisposition = ?, support = ?, retentionTrigger = ?
+        SET reference = ?, title = ?, direction = ?, docType = ?, activeYears = ?, semiActiveYears = ?, finalDisposition = ?, support = ?, retentionTrigger = ?, isCritical = ?, category = ?
         WHERE id = ?
-      `).run(r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, id);
+      `).run(r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, r.isCritical ? 1 : 0, r.category || 'Général', id);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -917,6 +947,16 @@ async function startServer() {
     if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
       db.prepare("DELETE FROM archival_directory WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/archival-directory/direction/clear", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const { direction } = req.body;
+      if (!direction) return res.status(400).json({ error: "Direction manquante" });
+      db.prepare("DELETE FROM archival_directory WHERE direction = ?").run(direction);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
@@ -1260,7 +1300,23 @@ async function startServer() {
     }
   });
 
-  app.post("/api/remote-requests/clear", authenticate, (req: any, res) => {
+  app.patch("/api/transfer-requests/:id", authenticate, (req: any, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    try {
+      const data = readData('transfer_requests');
+      const idx = data.findIndex((r: any) => r.id === id);
+      if (idx === -1) return res.status(404).json({ error: "Non trouvé" });
+      
+      data[idx] = { ...data[idx], status, updatedAt: new Date().toISOString() };
+      writeData('transfer_requests', data);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/remote-requests/clear", authenticate, (req: any, res) => {
     if (req.user.role !== 'Admin') return res.status(403).json({ error: "Interdit" });
     try {
       writeData('remote_requests', []);

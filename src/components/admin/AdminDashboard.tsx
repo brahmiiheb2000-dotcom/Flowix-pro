@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -97,8 +97,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [eliminationStats, setEliminationStats] = useState({ pending: 0, approved: 0, rejected: 0 });
   const [eligibleItems, setEligibleItems] = useState<any[]>([]);
   const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
-  const [eliminationSubTab, setEliminationSubTab] = useState<'pending' | 'history' | 'calendar' | 'reports'>('pending');
+  const [eliminationSubTab, setEliminationSubTab] = useState<'alerts' | 'proposal' | 'history' | 'calendar'>('alerts');
   const [selectedForElimination, setSelectedForElimination] = useState<string[]>([]);
+  const [historicSearch, setHistoricSearch] = useState('');
   const [isEditingRule, setIsEditingRule] = useState(false);
   const [editedRule, setEditedRule] = useState<any>(null);
 
@@ -106,15 +107,23 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     if (!editedDetailItem) return;
     setIsSearchingLoc(true);
     try {
-      await api.patch(`/api/mass-inventory/${editedDetailItem.id}`, editedDetailItem);
-      setMassInventory(prev => prev.map(item => 
-        item.id === editedDetailItem.id ? { ...item, ...editedDetailItem } : item
-      ));
-      setViewingRequest({ ...viewingRequest, ...editedDetailItem });
+      if (editedDetailItem.id) {
+        await api.patch(`/api/mass-inventory/${editedDetailItem.id}`, editedDetailItem);
+        setMassInventory(prev => prev.map(item => 
+          item.id === editedDetailItem.id ? { ...item, ...editedDetailItem } : item
+        ));
+        if (viewingRequest && viewingRequest.id === editedDetailItem.id) {
+          setViewingRequest({ ...viewingRequest, ...editedDetailItem });
+        }
+        alert("Informations mises à jour avec succès.");
+      } else {
+        await api.post('/api/mass-inventory', editedDetailItem);
+        alert("Nouveau dossier créé avec succès.");
+        fetchData(); // Refresh list
+      }
       setIsEditingDetail(false);
-      alert("Informations mises à jour avec succès.");
     } catch (err) {
-      alert("Erreur lors de la mise à jour.");
+      alert("Erreur lors de l'enregistrement.");
     } finally {
       setIsSearchingLoc(false);
     }
@@ -164,7 +173,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     try {
       const [stats, eligible, requests] = await Promise.all([
         api.get('/api/elimination/stats'),
-        api.get('/api/elimination/proposals'),
+        api.get('/api/elimination/eligible'),
         api.get('/api/elimination-requests')
       ]);
       setEliminationStats(stats);
@@ -1305,11 +1314,38 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     }
     try {
       await api.post('/api/elimination/propose-bulk', { inventoryIds: selectedForElimination });
-      alert(`${selectedForElimination.length} dossiers ont été soumis pour validation d'élimination.`);
+      alert(`${selectedForElimination.length} alertes validées et déplacées vers Proposition Élimination.`);
       setSelectedForElimination([]);
       fetchEliminationData();
+      setEliminationSubTab('proposal');
     } catch (err) {
       alert("Erreur lors de la soumission groupée.");
+    }
+  };
+
+  const handleValidatePV = async () => {
+    const pendingRequests = eliminationRequests.filter(r => r.status === 'Pending').map(r => r.id);
+    if (pendingRequests.length === 0) return;
+    
+    if (!window.confirm(`Voulez-vous valider le PV d'élimination pour ${pendingRequests.length} documents ?\nLes documents seront archivés dans l'historique et ne seront plus affichés dans la base active.`)) return;
+
+    try {
+      await api.post('/api/elimination/validate-pv', { requestIds: pendingRequests });
+      fetchEliminationData();
+      setEliminationSubTab('history');
+      alert("PV d'élimination validé avec succès.");
+    } catch (err) {
+      alert("Erreur lors de la validation du PV.");
+    }
+  };
+
+  const handleRemoveFromPV = async (requestId: string) => {
+    if (!window.confirm("Retirer ce document de la proposition d'élimination ?")) return;
+    try {
+      await api.delete(`/api/elimination-requests/${requestId}`);
+      fetchEliminationData();
+    } catch (err) {
+      alert("Erreur lors du retrait du document.");
     }
   };
 
@@ -1956,9 +1992,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           animate={{ opacity: 1, height: 'auto' }}
                           className="space-y-1"
                         >
-                          <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">2. Type par défaut (Optionnel)</label>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">2. Code du document (Obligatoire)</label>
                           <select 
-                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 shadow-sm"
+                            className="w-full bg-white border-2 border-orange-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 shadow-sm font-bold"
                             value={importingRule?.reference || ""}
                             onChange={(e) => {
                               const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
@@ -1966,7 +2002,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                               setImportingRule(rule || null);
                             }}
                           >
-                            <option value="">Utiliser le type dans le fichier...</option>
+                            <option value="">Sélectionner le code documentaire...</option>
                             {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules.map(r => (
                               <option key={r.reference} value={r.reference}>
                                 {r.reference} - {r.title}
@@ -2195,9 +2231,29 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   </div>
 
                   <div className="flex items-center justify-between pt-2">
-                    <button className="flex items-center gap-2 text-slate-700 font-bold hover:text-orange-600 transition-colors">
-                      <Filter size={18} /> Filtres avancés
-                    </button>
+                    <div className="flex gap-4">
+                      <button className="flex items-center gap-2 text-slate-700 font-bold hover:text-orange-600 transition-colors">
+                        <Filter size={18} /> Filtres avancés
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setEditedDetailItem({
+                            reference: '',
+                            intitule: '',
+                            direction: '',
+                            dateDebut: '',
+                            dateFin: '',
+                            numBoite: '',
+                            localisation: '',
+                            ruleId: null
+                          });
+                          setIsEditingDetail(true);
+                        }}
+                        className="flex items-center gap-2 text-orange-600 font-black hover:text-orange-700 transition-colors bg-orange-50 px-4 py-2 rounded-xl"
+                      >
+                        <Plus size={18} /> Nouveau dossier
+                      </button>
+                    </div>
                     <button 
                       onClick={() => {
                         setMassSearchTerm('');
@@ -2612,35 +2668,35 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 font-sans">
             <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
               <button 
-                onClick={() => setEliminationSubTab('pending')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'pending' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                onClick={() => setEliminationSubTab('alerts')}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'alerts' ? 'bg-white text-red-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
-                À VALIDER
+                ALERTE
+              </button>
+              <button 
+                onClick={() => setEliminationSubTab('proposal')}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'proposal' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                PROPOSITION ÉLIMINATION
               </button>
               <button 
                 onClick={() => setEliminationSubTab('history')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'history' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'history' ? 'bg-white text-green-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 HISTORIQUE
               </button>
               <button 
                 onClick={() => setEliminationSubTab('calendar')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-slate-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
-                CALENDRIER DE CONSERVATION
-              </button>
-              <button 
-                onClick={() => setEliminationSubTab('reports')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'reports' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
-              >
-                BORDEREAUX
+                CALENDRIER
               </button>
             </div>
 
             <AnimatePresence mode="wait">
-              {eliminationSubTab === 'pending' && (
+              {eliminationSubTab === 'alerts' && (
                 <motion.div
-                  key="pend-elim"
+                  key="alerts-elim"
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
@@ -2649,10 +2705,10 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
                     <div>
                       <h3 className="text-xl font-black text-slate-800 tracking-tight text-red-600 flex items-center gap-2">
-                        <Trash2 size={24} />
-                        Moteur d'Analyse d'Élimination Automatique
+                        <Bell size={24} />
+                        Alertes d'Élimination Annuelle
                       </h3>
-                      <p className="text-slate-500 text-sm font-medium">Analyse basée sur les dates de clôture et les règles du calendrier de conservation.</p>
+                      <p className="text-slate-500 text-sm font-medium">Dossiers dont le délai de conservation est expiré, classés par direction.</p>
                     </div>
                     <div className="flex gap-2 w-full md:w-auto">
                       <button 
@@ -2660,44 +2716,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         disabled={isSearchingLoc}
                         className="flex-1 md:flex-none px-6 py-3 bg-red-600 text-white rounded-2xl text-xs font-black hover:bg-red-700 transition-all shadow-lg shadow-red-200 flex items-center justify-center gap-2"
                       >
-                        {isSearchingLoc ? <RotateCw className="animate-spin" size={16} /> : <RotateCcw size={16} />}
-                        LANCER L'ANALYSE ANNUELLE
+                        {isSearchingLoc ? <RotateCw className="animate-spin" size={16} /> : <Search size={16} />}
+                        LANCER L'ANALYSE
                       </button>
-                      <button 
-                        onClick={() => generateEliminationBordereau(eligibleItems.filter(i => selectedForElimination.includes(i.id)), 'Proposition')}
-                        disabled={selectedForElimination.length === 0}
-                        className="flex-1 md:flex-none px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
-                      >
-                        <Download size={16} />
-                        GÉRER BORDEREAU ({selectedForElimination.length})
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100 mb-8">
-                    <div className="flex items-center justify-between mb-6">
-                      <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest">Workflow de Validation d'Élimination</h4>
-                      <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full border border-slate-100 shadow-sm">4 ÉTAPES RÉGLEMENTAIRES</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {[
-                        { label: "Proposition", status: "completed", color: "bg-red-500" },
-                        { label: "Archiviste", status: "current", color: "bg-red-500" },
-                        { label: "Commission", status: "pending", color: "bg-red-200" },
-                        { label: "PV Final", status: "pending", color: "bg-slate-200" }
-                      ].map((step, idx, arr) => (
-                        <React.Fragment key={step.label}>
-                          <div className="flex flex-col items-center gap-2 flex-1 relative">
-                            <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center text-white text-xs font-black shadow-sm z-10 transition-all", step.color)}>
-                               {idx + 1}
-                            </div>
-                            <span className="text-[10px] font-black text-slate-800 uppercase tracking-tighter text-center">{step.label}</span>
-                          </div>
-                          {idx < arr.length - 1 && (
-                            <div className="h-[2px] bg-slate-200 flex-1 mb-8"></div>
-                          )}
-                        </React.Fragment>
-                      ))}
                     </div>
                   </div>
 
@@ -2734,7 +2755,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       onClick={handleBulkPropose}
                       className="bg-slate-900 text-white hover:bg-slate-800 rounded-xl px-6 py-2 text-[10px] font-black"
                     >
-                      SOUMETTRE LA PROPOSITION
+                      VALIDER LES ALERTES
                     </Button>
                   </div>
 
@@ -2769,17 +2790,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                     <p className="text-[10px] text-slate-400">Boîte: <span className="text-slate-700 font-bold">{item.numBoite || '-'}</span></p>
                                     <p className="text-[10px] text-slate-400">Emplacement: <span className="text-slate-700 font-bold">{item.localisation || '-'}</span></p>
                                  </div>
-                                 <div className="mt-3 pt-3 border-t border-slate-50 flex justify-between items-center">
-                                    <span className="text-[9px] font-black text-red-500 bg-red-50 px-2 py-0.5 rounded-full uppercase">Délai Expiré</span>
-                                    <button 
-                                      onClick={() => {
-                                        setViewingRequest(item);
-                                      }}
-                                      className="text-slate-400 hover:text-orange-600 transition-colors"
-                                    >
-                                      <Eye size={14} />
-                                    </button>
-                                 </div>
                                </div>
                             </div>
                           ))}
@@ -2792,67 +2802,83 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                            <Inbox size={40} />
                          </div>
                          <h3 className="text-xl font-bold text-slate-600 mb-2">Tout est à jour</h3>
-                         <p className="text-slate-400 max-w-sm">Aucun dossier à éliminer n'a été détecté automatiquement pour le moment.</p>
+                         <p className="text-slate-400 max-w-sm">Aucune nouvelle alerte d'élimination détectée.</p>
                       </div>
                     )}
                   </div>
                 </motion.div>
               )}
 
-            {eliminationSubTab === 'history' && (
+            {eliminationSubTab === 'proposal' && (
               <motion.div
-                key="elim-history"
+                key="proposal-elim"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                <div>
-                  <h3 className="text-xl font-bold text-slate-800">Historique des Éliminations</h3>
-                  <p className="text-slate-500 text-sm">Suivi des dossiers éliminés ou rejetés par la commission d'archivage.</p>
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
+                  <div>
+                    <h3 className="text-xl font-black text-slate-800 tracking-tight text-orange-600 flex items-center gap-2">
+                      <FileCheck size={24} />
+                      Proposition d'Élimination (PV)
+                    </h3>
+                    <p className="text-slate-500 text-sm font-medium">Consultez et validez le procès-verbal d'élimination groupé.</p>
+                  </div>
+                  <div className="flex gap-2 w-full md:w-auto">
+                    <button 
+                      onClick={() => generateEliminationBordereau(eliminationRequests.filter(r => r.status === 'Pending'), 'PV')}
+                      disabled={eliminationRequests.filter(r => r.status === 'Pending').length === 0}
+                      className="flex-1 md:flex-none px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                    >
+                      <Printer size={16} />
+                      IMPRIMER PV
+                    </button>
+                    <button 
+                      onClick={handleValidatePV}
+                      disabled={eliminationRequests.filter(r => r.status === 'Pending').length === 0}
+                      className="flex-1 md:flex-none px-6 py-3 bg-orange-600 text-white rounded-2xl text-xs font-black hover:bg-orange-700 transition-all shadow-lg shadow-orange-200 flex items-center justify-center gap-2"
+                    >
+                      <CheckDouble size={16} />
+                      VALIDER LE PV
+                    </button>
+                  </div>
                 </div>
 
-                <div className="overflow-x-auto rounded-3xl border border-slate-100 shadow-sm">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50/50 border-b border-slate-100">
+                <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50 border-b border-slate-100">
                       <tr>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date Action</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Dossier / Direction</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Référence</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Status Final</th>
-                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Approuvé Par</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Référence</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Intitulé / Direction</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Boîte</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {eliminationRequests.filter(r => r.status !== 'Pending').map((req: any) => (
+                      {eliminationRequests.filter(r => r.status === 'Pending').map((req: any) => (
                         <tr key={req.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 text-xs font-bold text-slate-400">
-                            {toSafeDate(req.eliminationDate || req.updatedAt || new Date()) ? format(toSafeDate(req.eliminationDate || req.updatedAt || new Date())!, 'dd/MM/yyyy') : '-'}
-                          </td>
+                          <td className="px-6 py-4 text-sm font-bold text-slate-900">{req.reference}</td>
                           <td className="px-6 py-4">
-                            <div className="text-sm font-bold text-slate-700">{req.intitule}</div>
-                            <div className="text-[10px] text-slate-400 mt-0.5">{req.direction}</div>
+                            <p className="text-sm font-bold text-slate-700">{req.intitule}</p>
+                            <p className="text-[10px] text-slate-400 uppercase font-black">{req.direction}</p>
                           </td>
-                          <td className="px-6 py-4 text-sm text-slate-600 text-center font-bold">{req.reference || '-'}</td>
-                          <td className="px-6 py-4 text-center">
-                            <span className={`px-4 py-1.5 rounded-full text-[10px] font-black border ${
-                              req.status === 'Approved' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-red-50 text-red-600 border-red-100'
-                            }`}>
-                              {req.status === 'Approved' ? 'ÉLIMINÉ' : 'REJETÉ'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-right text-xs font-bold text-slate-400">
-                            {req.approvedBy || 'Commission Centrale'}
+                          <td className="px-6 py-4 text-sm text-slate-600">{req.numBoite || '-'}</td>
+                          <td className="px-6 py-4 text-right">
+                            <button 
+                              onClick={() => handleRemoveFromPV(req.id)}
+                              className="p-2 text-slate-400 hover:text-red-600 transition-colors"
+                              title="Retirer du PV"
+                            >
+                              <X size={16} />
+                            </button>
                           </td>
                         </tr>
                       ))}
-                      {eliminationRequests.filter(r => r.status !== 'Pending').length === 0 && (
+                      {eliminationRequests.filter(r => r.status === 'Pending').length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-6 py-20 text-center">
-                            <div className="flex flex-col items-center gap-2 opacity-30">
-                              <History size={40} className="text-slate-400" />
-                              <p className="text-sm font-bold text-slate-500 italic">L'historique est actuellement vide.</p>
-                            </div>
+                          <td colSpan={4} className="px-6 py-20 text-center text-slate-400 italic">
+                            Aucun document dans la proposition actuelle.
                           </td>
                         </tr>
                       )}
@@ -2862,92 +2888,81 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </motion.div>
             )}
 
-            {eliminationSubTab === 'reports' && (
+            {eliminationSubTab === 'history' && (
               <motion.div
-                key="elim-reports"
+                key="elim-history"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                <div className="flex justify-between items-center px-2">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
                   <div>
-                    <h3 className="text-xl font-black text-slate-800">Bordereaux de Destruction</h3>
-                    <p className="text-slate-500 text-sm font-medium">Générez les documents officiels pour les dossiers dont l'élimination a été approuvée.</p>
+                    <h3 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+                      <History className="text-green-600" size={24} />
+                      Historique des Éliminations
+                    </h3>
+                    <p className="text-slate-500 text-sm">Consulation des dossiers officiellement éliminés.</p>
+                  </div>
+                  <div className="relative w-full md:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input 
+                      type="text"
+                      placeholder="Rechercher..."
+                      value={historicSearch}
+                      onChange={(e) => setHistoricSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-green-500 outline-none"
+                    />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                   <Card className="p-8 border-dashed border-2 border-slate-200 flex flex-col items-center justify-center text-center group hover:border-red-400 transition-all bg-slate-50/30">
-                      <div className="w-16 h-16 bg-red-50 text-red-600 rounded-3xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                        <FileText size={32} />
-                      </div>
-                      <h4 className="font-black text-slate-800 mb-2">Bordereau de Destruction (PV)</h4>
-                      <p className="text-xs text-slate-500 mb-6 max-w-[240px]">Génère un Procès-Verbal officiel listant tous les dossiers approuvés et en attente de destruction physique.</p>
-                      <button 
-                        onClick={() => {
-                          const approved = eliminationRequests.filter(r => r.status === 'Approved');
-                          if (approved.length === 0) {
-                            alert("Aucun dossier approuvé n'est en attente de PV.");
-                            return;
-                          }
-                          generateEliminationBordereau(approved, 'PV');
-                        }}
-                        className="px-8 py-3 bg-red-600 text-white rounded-2xl text-xs font-black hover:bg-red-700 transition-all shadow-lg shadow-red-200"
-                      >
-                        GÉNÉRER LE PV ({eliminationRequests.filter(r => r.status === 'Approved').length})
-                      </button>
-                   </Card>
-
-                   <Card className="p-8 border-dashed border-2 border-slate-200 flex flex-col items-center justify-center text-center group hover:border-indigo-400 transition-all bg-slate-50/30">
-                      <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
-                        <Printer size={32} />
-                      </div>
-                      <h4 className="font-black text-slate-800 mb-2">Certificat de Destruction</h4>
-                      <p className="text-xs text-slate-500 mb-6 max-w-[240px]">Document attestant de la destruction effective des archives après validation par la commission.</p>
-                      <button 
-                        onClick={() => alert("Fonctionnalité d'impression directe en cours de développement.")}
-                        className="px-8 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center gap-2"
-                      >
-                        SUIVI DES CERTIFICATS
-                      </button>
-                   </Card>
-                </div>
-
-                <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-sm">
-                   <h4 className="font-black text-slate-800 text-xs uppercase tracking-widest mb-4">Dossiers Approuvés (Prêts pour destruction)</h4>
-                   <div className="overflow-x-auto">
-                     <table className="w-full text-left">
-                        <thead>
-                          <tr className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-50">
-                            <th className="py-4 px-2">Référence</th>
-                            <th className="py-4 px-2">Intitulé</th>
-                            <th className="py-4 px-2">Direction</th>
-                            <th className="py-4 px-2">Approuvé par</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                           {eliminationRequests.filter(r => r.status === 'Approved').map(req => (
-                             <tr key={req.id} className="text-xs font-bold text-slate-600">
-                               <td className="py-4 px-2">{req.reference}</td>
-                               <td className="py-4 px-2">{req.intitule}</td>
-                               <td className="py-4 px-2 italic">{req.direction}</td>
-                               <td className="py-4 px-2 text-slate-400">{req.approvedBy}</td>
-                             </tr>
-                           ))}
-                           {eliminationRequests.filter(r => r.status === 'Approved').length === 0 && (
-                             <tr>
-                               <td colSpan={4} className="py-12 text-center text-slate-400 font-medium italic">
-                                 Aucun dossier approuvé en attente.
-                               </td>
-                             </tr>
-                           )}
-                        </tbody>
-                     </table>
-                   </div>
+                <div className="overflow-x-auto rounded-3xl border border-slate-100 shadow-sm">
+                  <table className="w-full text-left border-collapse">
+                    <thead className="bg-slate-50/50 border-b border-slate-100">
+                      <tr>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date Élimination</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Dossier / Direction</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Référence</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Boîte</th>
+                        <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Approuvé Par</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {eliminationRequests
+                        .filter(r => (r.status === 'Approved' || r.status === 'Eliminated') && 
+                          (r.intitule.toLowerCase().includes(historicSearch.toLowerCase()) || 
+                           r.reference.toLowerCase().includes(historicSearch.toLowerCase()) ||
+                           r.direction.toLowerCase().includes(historicSearch.toLowerCase())))
+                        .map((req: any) => (
+                        <tr key={req.id} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-6 py-4 text-xs font-bold text-slate-400">
+                            {toSafeDate(req.eliminationDate || req.updatedAt || new Date()) ? format(toSafeDate(req.eliminationDate || req.updatedAt || new Date())!, 'dd/MM/yyyy') : '-'}
+                          </td>
+                          <td className="px-6 py-4">
+                            <div className="text-sm font-bold text-slate-700">{req.intitule}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5 uppercase">{req.direction}</div>
+                          </td>
+                          <td className="px-6 py-4 text-sm text-slate-600 text-center font-bold">{req.reference || '-'}</td>
+                          <td className="px-6 py-4 text-sm text-slate-600 text-center">{req.numBoite || '-'}</td>
+                          <td className="px-6 py-4 text-right text-xs font-bold text-slate-500">
+                            {req.approvedBy || 'Commission Centrale'}
+                          </td>
+                        </tr>
+                      ))}
+                      {eliminationRequests.filter(r => (r.status === 'Approved' || r.status === 'Eliminated')).length === 0 && (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-20 text-center text-slate-400 italic">
+                            L'historique est actuellement vide.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </motion.div>
             )}
+
+
             {eliminationSubTab === 'calendar' && (
               <motion.div
                 key="elim-calendar"
@@ -3699,14 +3714,37 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                             <select 
                               className="w-full h-10 bg-white border border-slate-200 rounded-xl px-3 text-sm font-bold text-slate-700 focus:ring-orange-500"
                               value={editedDetailItem.direction}
-                              onChange={(e) => setEditedDetailItem({...editedDetailItem, direction: e.target.value})}
+                              onChange={(e) => setEditedDetailItem({...editedDetailItem, direction: e.target.value, ruleId: null})}
                             >
+                              <option value="">Sélectionner une direction...</option>
                               {RETENTION_CALENDAR.map(dir => (
                                 <option key={dir.name} value={dir.name}>{dir.name}</option>
                               ))}
                             </select>
                           ) : (
                             <p className="text-slate-700 font-bold text-sm uppercase">{viewingRequest.direction || "Inconnue"}</p>
+                          )}
+                       </div>
+                       <div className="space-y-1">
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Code Documentaire</p>
+                          {isEditingDetail ? (
+                            <select 
+                              className="w-full h-10 bg-white border border-slate-200 rounded-xl px-3 text-sm font-bold text-slate-700 focus:ring-orange-500"
+                              value={editedDetailItem.ruleId || ""}
+                              onChange={(e) => setEditedDetailItem({...editedDetailItem, ruleId: e.target.value})}
+                            >
+                              <option value="">Sélectionner un code...</option>
+                              {archivalDirectory
+                                .filter(r => !editedDetailItem.direction || r.direction === editedDetailItem.direction)
+                                .map(rule => (
+                                  <option key={rule.id} value={rule.id}>{rule.reference} - {rule.title}</option>
+                                ))
+                              }
+                            </select>
+                          ) : (
+                            <p className="text-slate-700 font-bold text-sm">
+                              {archivalDirectory.find(r => r.id === viewingRequest.ruleId)?.reference || "Non lié"}
+                            </p>
                           )}
                        </div>
                     </div>

@@ -48,7 +48,8 @@ db.exec(`
 const newCols = [
   'dossier', 'codeAgence', 'sin', 'police', 'adherant', 
   'dateDeclaration', 'typeSinistre', 'dateCloture', 
-  'etatSinistre', 'paquet', 'ruleId', 'expiryDate', 'archivalStatus', 'rawData'
+  'etatSinistre', 'paquet', 'ruleId', 'expiryDate', 'archivalStatus', 'rawData',
+  'isEliminated'
 ];
 newCols.forEach(col => {
   try {
@@ -144,8 +145,8 @@ const countMassInventory = db.prepare(`SELECT COUNT(*) as count FROM mass_invent
 // --- Archival Engine Helpers ---
 const getAllRules = () => db.prepare("SELECT * FROM archival_directory").all() as any[];
 
-const calculateArchivalStatus = (item: any, rules: any[], overrideRuleId?: string | null) => {
-  const dateStr = item.dateCloture || item.dateFin || item.dateDebut || item.createdAt;
+const calculateArchivalStatus = (item: any, rules: any[], overrideRuleIdOrObj?: any | null) => {
+  const dateStr = item.dateFin || item.dateCloture || item.date_cloture || item.dateDebut || item.createdAt;
   if (!dateStr) return { ruleId: null, expiryDate: null, status: 'Active' };
   
   // Intelligent matching
@@ -157,8 +158,9 @@ const calculateArchivalStatus = (item: any, rules: any[], overrideRuleId?: strin
   let bestRule = null;
   
   // 0. Manual Override
-  if (overrideRuleId) {
-    bestRule = rules.find(r => r.id === overrideRuleId);
+  if (overrideRuleIdOrObj) {
+    const idToFind = typeof overrideRuleIdOrObj === 'object' ? overrideRuleIdOrObj.id : overrideRuleIdOrObj;
+    bestRule = rules.find(r => r.id === idToFind);
   }
 
   // 1. Precise reference match
@@ -453,9 +455,8 @@ async function startServer() {
     try {
       const searchTerm = req.query.search ? `%${req.query.search}%` : null;
       const direction = req.query.direction || 'all';
+      const showEliminated = req.query.showEliminated === 'true';
 
-      // Search-First: If no search term and not browsing a specific direction explicitly
-      // If no search AND direction IS 'all', return the latest 100 items
       const query = `
         SELECT * FROM mass_inventory 
         WHERE (
@@ -470,6 +471,7 @@ async function startServer() {
           adherant LIKE ?
         )
         AND (direction = ? OR ? = 'all')
+        AND (? = 1 OR isEliminated IS NULL OR isEliminated = 0)
         ORDER BY createdAt DESC
         LIMIT 100
       `;
@@ -478,13 +480,50 @@ async function startServer() {
         searchTerm,
         searchTerm, searchTerm, searchTerm, searchTerm, 
         searchTerm, searchTerm, searchTerm, searchTerm,
-        direction, direction
+        direction, direction,
+        showEliminated ? 1 : 0
       );
       
       res.json(results || []);
     } catch (err: any) { 
       console.error("Mass search error:", err);
       res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.post("/api/mass-inventory", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const item = req.body;
+      const id = crypto.randomUUID();
+      const rules = getAllRules();
+      const createdAt = new Date().toISOString();
+      const archival = calculateArchivalStatus(item, rules, item.ruleId);
+
+      db.prepare(`
+        INSERT INTO mass_inventory (
+          id, reference, intitule, direction, numBoite, localisation, 
+          dateDebut, dateFin, dossier, codeAgence, sin, police, 
+          adherant, dateDeclaration, typeSinistre, dateCloture, 
+          etatSinistre, paquet, ruleId, expiryDate, archivalStatus, 
+          rawData, createdAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id, item.reference || '', item.intitule || '', item.direction || '', 
+        item.numBoite || '', item.localisation || '', item.dateDebut || '', 
+        item.dateFin || '', item.dossier || '', item.codeAgence || '', 
+        item.sin || '', item.police || '', item.adherant || '', 
+        item.dateDeclaration || '', item.typeSinistre || '', item.dateCloture || '', 
+        item.etatSinistre || '', item.paquet || '', archival.ruleId, 
+        archival.expiryDate, archival.status, JSON.stringify(item), createdAt
+      );
+
+      res.json({ success: true, id });
+    } catch (err: any) {
+      console.error("Create mass item error:", err);
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -759,13 +798,81 @@ async function startServer() {
 
   app.get("/api/elimination/proposals", authenticate, (req: any, res) => {
     try {
+      // Proposals are items with status 'Expired' that are already in elimination_requests with 'Pending' status
+      const results = db.prepare(`
+        SELECT er.id as requestId, mi.*, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef
+        FROM elimination_requests er
+        JOIN mass_inventory mi ON er.inventoryId = mi.id
+        LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
+        WHERE er.status = 'Pending'
+        ORDER BY er.createdAt DESC
+      `).all();
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/elimination/eligible", authenticate, (req: any, res) => {
+    try {
+      // Eligible items are Expired items NOT yet in any elimination_requests
       const results = db.prepare(`
         SELECT mi.*, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef
         FROM mass_inventory mi
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
         LEFT JOIN elimination_requests er ON mi.id = er.inventoryId
-        WHERE mi.archivalStatus = 'Expired' AND (er.status IS NULL OR er.status = 'Pending')
+        WHERE mi.archivalStatus = 'Expired' 
+        AND (er.id IS NULL)
+        AND (mi.isEliminated IS NULL OR mi.isEliminated = 0)
         LIMIT 1000
+      `).all();
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/elimination/validate-pv", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      const { requestIds } = req.body;
+      const today = new Date().toISOString();
+      
+      const updateRequest = db.prepare(`
+        UPDATE elimination_requests 
+        SET status = 'Approved', approvedBy = ?, eliminationDate = ?
+        WHERE id = ?
+      `);
+      
+      const updateInventory = db.prepare(`
+        UPDATE mass_inventory 
+        SET isEliminated = 1, archivalStatus = 'Eliminated'
+        WHERE id = (SELECT inventoryId FROM elimination_requests WHERE id = ?)
+      `);
+
+      db.transaction(() => {
+        for (const rid of requestIds) {
+          updateRequest.run(req.user.email, today, rid);
+          updateInventory.run(rid);
+        }
+      })();
+
+      res.json({ success: true, count: requestIds.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/elimination-requests/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    try {
+      db.prepare("DELETE FROM elimination_requests WHERE id = ?").run(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get("/api/elimination/history", authenticate, (req: any, res) => {
+    try {
+      const results = db.prepare(`
+        SELECT er.*, mi.reference, mi.intitule, mi.direction, mi.numBoite, mi.localisation
+        FROM elimination_requests er
+        JOIN mass_inventory mi ON er.inventoryId = mi.id
+        WHERE er.status = 'Approved' OR er.status = 'Eliminated'
+        ORDER BY er.eliminationDate DESC
       `).all();
       res.json(results);
     } catch (err: any) { res.status(500).json({ error: err.message }); }

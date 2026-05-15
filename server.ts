@@ -744,6 +744,14 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.delete("/api/archival-directory/clear", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin') return res.status(403).json({ error: "Interdit" });
+    try {
+      db.prepare("DELETE FROM archival_directory").run();
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   app.post("/api/archival-directory/import", authenticate, (req: any, res) => {
     const userRole = req.user.role;
     if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
@@ -1365,6 +1373,69 @@ async function startServer() {
   });
 
   // --- Start Listening ---
+  app.get("/api/statistics/full", authenticate, (req: any, res) => {
+    const role = req.user?.role;
+    if (role !== 'Admin' && role !== 'Agent' && role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+
+    try {
+      const requests = readData('requests');
+      const remoteRequests = readData('remote_requests');
+      const returnsHistory = readData('returns_history');
+      const eliminations = db.prepare("SELECT createdAt FROM elimination_requests WHERE status = 'Eliminated'").all() as any[];
+      const massImports = db.prepare("SELECT createdAt FROM mass_inventory").all() as any[];
+
+      const months = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sept", "Oct", "Nov", "Déc"];
+      
+      const getMonthIndex = (dateStr: string) => {
+        if (!dateStr) return -1;
+        const date = new Date(dateStr);
+        return isNaN(date.getTime()) ? -1 : date.getMonth();
+      };
+
+      const monthlyData = months.map((month, index) => {
+        // Communication signed
+        const signedRequests = requests.filter((r: any) => 
+          r.status === 'signed' && getMonthIndex(r.updatedAt || r.createdAt) === index
+        ).length;
+        const signedRemote = remoteRequests.filter((r: any) => 
+          r.status === 'signed' && getMonthIndex(r.updatedAt || r.createdAt) === index
+        ).length;
+
+        // Mass Transfers (Imports)
+        const imports = massImports.filter((m: any) => getMonthIndex(m.createdAt) === index).length;
+
+        // Returns
+        const returns = returnsHistory.filter((r: any) => getMonthIndex(r.returnedAt || r.createdAt) === index).length;
+
+        // Eliminations
+        const elims = eliminations.filter((e: any) => getMonthIndex(e.createdAt) === index).length;
+
+        return {
+          month,
+          communications: signedRequests + signedRemote,
+          transfers: imports,
+          returns: returns,
+          eliminations: elims
+        };
+      });
+
+      res.json({
+        monthly: monthlyData,
+        totals: {
+          communications: monthlyData.reduce((acc, curr) => acc + curr.communications, 0),
+          transfers: monthlyData.reduce((acc, curr) => acc + curr.transfers, 0),
+          returns: monthlyData.reduce((acc, curr) => acc + curr.returns, 0),
+          eliminations: monthlyData.reduce((acc, curr) => acc + curr.eliminations, 0)
+        }
+      });
+    } catch (err: any) {
+      console.error("Stats error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
     

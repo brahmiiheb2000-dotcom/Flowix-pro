@@ -57,3 +57,67 @@ export async function suggestRetentionRule(title: string, direction?: string, di
     return { match: false, confidence: 0 };
   }
 }
+
+export async function extractArchivalRulesFromPDF(base64Data: string) {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: "application/pdf",
+              data: base64Data
+            }
+          },
+          {
+            text: `
+              Tu es un expert en archivage et records management.
+              Analyse ce document PDF (calendrier de conservation des archives) et extrais toutes les règles de conservation.
+
+              Chaque règle doit comporter :
+              - reference: le code ou la référence documentaire (ex: COM-01)
+              - title: l'intitulé du type de document
+              - direction: le service ou la direction concernée
+              - activeYears: durée de conservation en années pour les archives courantes (DUA)
+              - semiActiveYears: durée de conservation en années pour les archives intermédiaires
+              - finalDisposition: le sort final ('EL' pour élimination, 'CP' pour conservation permanente, 'ECH' pour échantillonnage)
+              - docType: description du type de documents (facultatif)
+              - support: 'Papier', 'Numérique' ou 'Hybride'
+              - retentionTrigger: l'évènement déclencheur (ex: 'Clôture du dossier', 'Émission', etc.)
+
+              Assure-toi d'extraire TOUTES les règles présentes dans le document de manière exhaustive.
+              Réponds UNIQUEMENT au format JSON (un tableau d'objets).
+            `
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              reference: { type: Type.STRING },
+              title: { type: Type.STRING },
+              direction: { type: Type.STRING },
+              activeYears: { type: Type.INTEGER },
+              semiActiveYears: { type: Type.INTEGER },
+              finalDisposition: { type: Type.STRING },
+              docType: { type: Type.STRING },
+              support: { type: Type.STRING },
+              retentionTrigger: { type: Type.STRING }
+            },
+            required: ["reference", "title", "direction", "activeYears", "semiActiveYears", "finalDisposition"]
+          }
+        }
+      }
+    });
+
+    return JSON.parse(response.text);
+  } catch (error) {
+    console.error("PDF Extraction error:", error);
+    throw error;
+  }
+}

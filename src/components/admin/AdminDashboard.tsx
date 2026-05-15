@@ -11,8 +11,12 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { api } from '../../lib/api';
 import { RETENTION_CALENDAR } from '../../constants/retentionCalendar';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  AreaChart, Area
+} from 'recharts';
 
-import { suggestRetentionRule } from '../../services/archiveAIService';
+import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../services/archiveAIService';
 
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
   const [requests, setRequests] = useState<any[]>([]);
@@ -46,6 +50,63 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [searchRule, setSearchRule] = useState("");
   const [showImportRulesModal, setShowImportRulesModal] = useState(false);
   const [isImportingRules, setIsImportingRules] = useState(false);
+  const pdfInputRef = React.useRef<HTMLInputElement>(null);
+  const [fullStats, setFullStats] = useState<any>(null);
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
+  const [isClearingDirectory, setIsClearingDirectory] = useState(false);
+  const [selectedCalendarDir, setSelectedCalendarDir] = useState<string | null>(null);
+
+  const handleClearDirectory = async () => {
+    if (!confirm("Êtes-vous sûr de vouloir supprimer TOUTES les règles du calendrier de conservation ? Cette action est irréversible.")) return;
+    
+    setIsClearingDirectory(true);
+    try {
+      await api.delete('/api/archival-directory/clear');
+      const data = await api.get('/api/archival-directory');
+      setArchivalDirectory(data);
+      alert("Calendrier vidé avec succès.");
+    } catch (err) {
+      console.error("Clear directory error:", err);
+      alert("Erreur lors de la suppression des données.");
+    } finally {
+      setIsClearingDirectory(false);
+    }
+  };
+
+  const handlePDFImportSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsImportingRules(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = (reader.result as string).split(',')[1];
+        try {
+          const rules = await extractArchivalRulesFromPDF(base64);
+          if (rules && rules.length > 0) {
+            await api.post('/api/archival-directory/import', { entries: rules });
+            const data = await api.get('/api/archival-directory');
+            setArchivalDirectory(data);
+            alert(`${rules.length} règles extraites et importées avec succès.`);
+          } else {
+            alert("Aucune règle n'a pu être extraite du PDF.");
+          }
+        } catch (err) {
+          console.error("Gemini PDF error:", err);
+          alert("Erreur lors de l'analyse du PDF par l'IA.");
+        } finally {
+          setIsImportingRules(false);
+          if (pdfInputRef.current) pdfInputRef.current.value = '';
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error("File reading error:", err);
+      alert("Erreur lors de la lecture du fichier.");
+      setIsImportingRules(false);
+    }
+  };
   const [importHistory, setImportHistory] = useState<any[]>([]);
   const [importStep, setImportStep] = useState<'upload' | 'preview' | 'importing'>('upload');
   const [importPreviewData, setImportPreviewData] = useState<any[]>([]);
@@ -305,6 +366,18 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     } catch (err) { console.error("Monitoring fetch error:", err); }
   };
 
+  const fetchFullStats = async () => {
+    setIsLoadingStats(true);
+    try {
+      const data = await api.get('/api/statistics/full');
+      setFullStats(data);
+    } catch (err) {
+      console.error("Full stats fetch error:", err);
+    } finally {
+      setIsLoadingStats(false);
+    }
+  };
+
   useEffect(() => {
     // 1. Fetch persistent lookup data only once on mount
     if (archivalDirectory.length === 0) {
@@ -339,7 +412,15 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       if (activeTab === 'massInventory' || activeTab === 'elimination') {
         fetchArchivalMonitoring();
       }
+
+      if (activeTab === 'stats') {
+        fetchFullStats();
+      }
     }, 60000); // 1 minute is plenty for polling
+
+    if (activeTab === 'stats') {
+      fetchFullStats();
+    }
     
     return () => {
       clearInterval(interval);
@@ -1439,96 +1520,134 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           className="space-y-6"
         >
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard label="Total Agent" value={stats.total} icon={<FileStack size={24} className="text-blue-500" />} />
-            <StatCard label="A distance" value={stats.remote} icon={<Inbox size={24} className="text-teal-500" />} />
-            <StatCard label="Signés (Agent)" value={stats.signed} icon={<CheckCircle size={24} className="text-green-500" />} />
-            <StatCard label="Nouveaux Aujourd'hui" value={stats.today} icon={<TrendingUp size={24} className="text-purple-500" />} />
+            <StatCard 
+              label="Communications" 
+              value={fullStats?.totals?.communications || 0} 
+              icon={<Users size={24} className="text-blue-500" />} 
+              subLabel="Dossiers signés"
+            />
+            <StatCard 
+              label="Transferts" 
+              value={fullStats?.totals?.transfers || 0} 
+              icon={<FileStack size={24} className="text-orange-500" />} 
+              subLabel="Dossiers importés"
+            />
+            <StatCard 
+              label="Retours" 
+              value={fullStats?.totals?.returns || 0} 
+              icon={<RotateCcw size={24} className="text-green-500" />} 
+              subLabel="Dossiers réintégrés"
+            />
+            <StatCard 
+              label="Éliminations" 
+              value={fullStats?.totals?.eliminations || 0} 
+              icon={<Trash2 size={24} className="text-red-500" />} 
+              subLabel="Dossiers détruits"
+            />
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <Card className="p-6 col-span-2">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card className="p-6">
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h3 className="text-lg font-bold text-slate-800">Aperçu de l'Activité</h3>
-                  <p className="text-sm text-slate-500 text-xs mt-1">Répartition des demandes par canal</p>
+                  <h3 className="text-lg font-bold text-slate-800">Volume d'Activité Mensuel</h3>
+                  <p className="text-sm text-slate-500">Communications signées vs Transferts</p>
                 </div>
                 <div className="p-2 bg-slate-50 rounded-lg">
                   <BarChart3 className="text-slate-400" size={20} />
                 </div>
               </div>
               
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-slate-400">
-                    <span>Agent</span>
-                    <span>{Math.round((stats.total / (stats.total + stats.remote || 1)) * 100)}%</span>
-                  </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <motion.div 
-                      className="bg-blue-500 h-full"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${(stats.total / (stats.total + stats.remote || 1)) * 100}%` }}
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={fullStats?.monthly || []}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      cursor={{ fill: '#f8fafc' }}
                     />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-slate-400">
-                    <span>Distance</span>
-                    <span>{Math.round((stats.remote / (stats.total + stats.remote || 1)) * 100)}%</span>
-                  </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <motion.div 
-                      className="bg-teal-500 h-full"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${(stats.remote / (stats.total + stats.remote || 1)) * 100}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-4 grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-50 rounded-2xl">
-                     <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Taux de signature (Agent)</p>
-                     <p className="text-2xl font-black text-slate-800">
-                       {Math.round((stats.signed / (stats.total || 1)) * 100)}%
-                     </p>
-                  </div>
-                  <div className="p-4 bg-slate-50 rounded-2xl">
-                     <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Dossiers en attente</p>
-                     <p className="text-2xl font-black text-slate-800">{stats.pending}</p>
-                  </div>
-                </div>
+                    <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                    <Bar name="Communications" dataKey="communications" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={20} />
+                    <Bar name="Transferts" dataKey="transfers" fill="#f97316" radius={[4, 4, 0, 0]} barSize={20} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </Card>
 
-            <Card className="p-6 bg-slate-900 text-white border-none shadow-2xl flex flex-col justify-between overflow-hidden relative group">
-              <div className="relative z-10">
-                <h3 className="text-lg font-bold mb-2">Statut Session</h3>
-                <div className="flex items-center gap-2 text-green-400 text-sm font-bold bg-green-400/10 w-fit px-3 py-1 rounded-full border border-green-400/20 mb-6">
-                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  Live Administration
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Flux de Vie des Archives</h3>
+                  <p className="text-sm text-slate-500">Retours et Éliminations mensuels</p>
                 </div>
-                
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Dossiers traités aujourd'hui</p>
-                    <p className="text-3xl font-black">{stats.today}</p>
-                  </div>
-                  <p className="text-slate-400 text-xs leading-relaxed">
-                    Toutes les statistiques sont synchronisées en temps réel avec la base de données centrale Flowix.
-                  </p>
+                <div className="p-2 bg-slate-50 rounded-lg">
+                  <TrendingUp className="text-slate-400" size={20} />
                 </div>
               </div>
-
-              <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:scale-110 transition-transform duration-500">
-                <BarChart3 size={200} />
+              
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={fullStats?.monthly || []}>
+                    <defs>
+                      <linearGradient id="colorReturns" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#22c55e" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                      </linearGradient>
+                      <linearGradient id="colorElims" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                    />
+                    <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                    <Area type="monotone" name="Retours" dataKey="returns" stroke="#22c55e" fillOpacity={1} fill="url(#colorReturns)" strokeWidth={3} />
+                    <Area type="monotone" name="Éliminations" dataKey="eliminations" stroke="#ef4444" fillOpacity={1} fill="url(#colorElims)" strokeWidth={3} />
+                  </AreaChart>
+                </ResponsiveContainer>
               </div>
-
-              <Button className="w-full mt-8 bg-indigo-600 hover:bg-indigo-700 font-bold border-none">
-                Générer Rapport Complet
-              </Button>
             </Card>
           </div>
+
+          <Card className="p-6 bg-slate-900 text-white border-none shadow-2xl flex flex-col justify-between overflow-hidden relative group">
+            <div className="relative z-10">
+              <h3 className="text-lg font-bold mb-2">Santé du Système</h3>
+              <div className="flex items-center gap-2 text-green-400 text-sm font-bold bg-green-400/10 w-fit px-3 py-1 rounded-full border border-green-400/20 mb-6">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                Tableau de bord synchronisé
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div>
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Moyenne signature</p>
+                  <p className="text-3xl font-black">{Math.round((fullStats?.totals?.communications / 12) || 0)} / mois</p>
+                </div>
+                <div>
+                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Flux transferts</p>
+                  <p className="text-3xl font-black">{Math.round((fullStats?.totals?.transfers / 12) || 0)} / mois</p>
+                </div>
+                <div>
+                   <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Dernière mise à jour</p>
+                   <p className="text-3xl font-black">{format(new Date(), 'HH:mm')}</p>
+                </div>
+                <div className="flex items-end">
+                   <p className="text-slate-400 text-xs italic">
+                     Données consolidées basées sur les archives numériques et physiques.
+                   </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:scale-110 transition-transform duration-500">
+              <BarChart3 size={200} />
+            </div>
+          </Card>
         </motion.div>
       )}
 
@@ -2991,19 +3110,28 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       NOUVELLE RÈGLE
                     </button>
                     <button 
-                      onClick={() => {
-                        setIsImportingRules(true);
-                        setTimeout(() => {
-                           syncRetentionCalendar();
-                           setIsImportingRules(false);
-                        }, 2000);
-                      }}
+                      onClick={() => pdfInputRef.current?.click()}
                       disabled={isImportingRules}
                       className="px-6 py-3 bg-red-50 text-red-600 border border-red-100 rounded-2xl text-xs font-black hover:bg-red-100 transition-all flex items-center gap-2"
                     >
                       {isImportingRules ? <RotateCw className="animate-spin" size={16} /> : <FileText size={16} />}
                       {isImportingRules ? 'ANALYSE...' : 'IMPORTER PDF'}
                     </button>
+                    <button 
+                      onClick={handleClearDirectory}
+                      disabled={isClearingDirectory || isImportingRules}
+                      className="px-6 py-3 bg-white border border-red-200 text-red-600 rounded-2xl text-xs font-black hover:bg-red-50 transition-all flex items-center gap-2"
+                    >
+                      <Trash2 size={16} />
+                      VIDER TOUT
+                    </button>
+                    <input 
+                      type="file"
+                      ref={pdfInputRef}
+                      className="hidden"
+                      accept="application/pdf"
+                      onChange={handlePDFImportSelect}
+                    />
                     <button 
                       onClick={syncRetentionCalendar}
                       className="px-6 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl text-xs font-black hover:bg-slate-50 transition-all flex items-center gap-2"
@@ -3014,8 +3142,28 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="flex flex-wrap gap-2 mb-6 bg-slate-50 p-2 rounded-2xl w-fit">
+                  <button
+                    onClick={() => setSelectedCalendarDir(null)}
+                    className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${selectedCalendarDir === null ? 'bg-white text-slate-800 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                  >
+                    TOUTES
+                  </button>
                   {archivalByDirection.map(dir => (
+                    <button
+                      key={dir.name}
+                      onClick={() => setSelectedCalendarDir(dir.name)}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${selectedCalendarDir === dir.name ? 'bg-white text-orange-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                      {dir.name}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {archivalByDirection
+                    .filter(dir => selectedCalendarDir === null || dir.name === selectedCalendarDir)
+                    .map(dir => (
                     <Card key={dir.name} className="p-0 border-slate-100 hover:shadow-xl transition-all group overflow-hidden rounded-[2rem]">
                       <div className="p-5 bg-slate-50 flex items-center justify-between border-b border-slate-100">
                         <div className="flex items-center gap-3">
@@ -3026,7 +3174,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         </div>
                         <span className="bg-slate-200 text-slate-600 text-[9px] font-black px-2 py-0.5 rounded-full">{dir.rules.length}</span>
                       </div>
-                      <div className="p-4 space-y-3 max-h-[400px] overflow-y-auto custom-scrollbar">
+                      <div className="p-4 space-y-3 max-h-[600px] overflow-y-auto custom-scrollbar">
                         {dir.rules.map(rule => (
                           <div key={rule.id} className="p-4 bg-white rounded-2xl border border-slate-100/80 hover:border-orange-200 transition-all group/rule">
                             <div className="flex justify-between items-start mb-2">
@@ -4138,14 +4286,17 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   );
 };
 
-function StatCard({ label, value, icon }: { label: string, value: number, icon: React.ReactNode }) {
+function StatCard({ label, value, icon, subLabel }: { label: string, value: number, icon: React.ReactNode, subLabel?: string }) {
   return (
-    <Card className="flex flex-col gap-2 p-4">
-      <div className="flex items-center justify-between">
-        <div className="p-2 bg-gray-50 rounded-xl">{icon}</div>
-        <span className="text-2xl font-bold text-gray-900">{value}</span>
+    <Card className="p-6 flex items-start gap-4 hover:shadow-lg transition-shadow border-slate-100 group">
+      <div className="p-3 rounded-2xl bg-slate-50 group-hover:scale-110 transition-transform">
+        {icon}
       </div>
-      <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{label}</span>
+      <div>
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+        <p className="text-2xl font-black text-slate-800">{value}</p>
+        {subLabel && <p className="text-[10px] font-medium text-slate-400 mt-1">{subLabel}</p>}
+      </div>
     </Card>
   );
 }

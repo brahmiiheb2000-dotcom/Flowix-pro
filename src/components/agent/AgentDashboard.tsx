@@ -11,7 +11,7 @@ import { toSafeDate, cn } from '../../lib/utils';
 import { api } from '../../lib/api';
 
 export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'remote' }) => {
-  const { user } = useAuth();
+  const { user, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -22,6 +22,11 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    setRequests(sharedPendingRequests);
+    setRemoteRequests(sharedRemoteRequests);
+  }, [sharedPendingRequests, sharedRemoteRequests]);
 
   // Form State matching screenshot
   const [formData, setFormData] = useState({
@@ -52,8 +57,6 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 10000); // Polling every 10s
-    return () => clearInterval(interval);
   }, [user]);
 
   const handleUpdateRemoteStatus = async (reqId: string, newStatus: string, email: string, name: string) => {
@@ -257,7 +260,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
     <div className="space-y-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-3 bg-green-500 rounded-2xl text-white shadow-lg shadow-green-100">
+          <div className="p-3 bg-brand-primary rounded-2xl text-white shadow-lg shadow-brand-primary/20">
             <Layers size={24} strokeWidth={2.5} />
           </div>
           <div>
@@ -271,14 +274,14 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
         <div className="flex p-1 bg-white rounded-2xl shadow-sm border border-slate-100">
           <button
             onClick={() => setActiveTab('new')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'new' ? 'bg-green-600 text-white shadow-md shadow-green-100' : 'text-slate-400 hover:text-slate-600'}`}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'new' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
           >
             <Plus size={18} />
             Ajouter un dossier
           </button>
           <button
             onClick={() => setActiveTab('remote')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all relative ${activeTab === 'remote' ? 'bg-green-600 text-white shadow-md shadow-green-100' : 'text-slate-400 hover:text-slate-600'}`}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all relative ${activeTab === 'remote' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
           >
             <Inbox size={18} />
             Demandes Reçues
@@ -295,7 +298,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8">
           <Card className="p-0 overflow-hidden border-slate-100 shadow-xl shadow-slate-200/50">
-            <div className="bg-[#004d2c] px-8 py-4 flex items-center justify-between">
+            <div className="bg-brand-primary px-8 py-4 flex items-center justify-between">
                <div className="flex items-center gap-3">
                   <FileText className="text-white" size={24} />
                   <h2 className="text-white font-bold text-lg">Nouvelle Demande</h2>
@@ -340,7 +343,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                       variant="secondary"
                       size="sm"
                       onClick={() => fileInputRef.current?.click()}
-                      className="h-9 px-3 text-[11px] font-bold flex items-center gap-2 bg-green-50 text-green-700 border-green-100 hover:bg-green-100"
+                      className="h-9 px-3 text-[11px] font-bold flex items-center gap-2 bg-brand-secondary text-brand-primary border-brand-primary/10 hover:opacity-90"
                     >
                       <FileSpreadsheet size={14} />
                       Importer Excel
@@ -426,7 +429,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                     placeholder="brahmiiheb2000@gmail.com"
                     value={formData.emailDemandeur}
                     onChange={e => setFormData({ ...formData, emailDemandeur: e.target.value })}
-                    className="bg-[#ebf3ff] border-[#d8e7ff] text-slate-700 h-14"
+                    className="bg-brand-secondary border-brand-primary/10 text-slate-700 h-14"
                   />
                 </div>
               </div>
@@ -458,7 +461,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                 <div className="relative">
                    <select
                     required
-                    className="w-full flex h-14 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-green-500/20 focus:border-green-500 transition-all text-slate-700"
+                    className="w-full flex h-14 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary transition-all text-slate-700"
                     value={formData.typeDocument}
                     onChange={e => setFormData({ ...formData, typeDocument: e.target.value })}
                   >
@@ -478,7 +481,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
 
               <div className="pt-4">
                 <Button 
-                  className="w-full h-14 text-lg font-bold rounded-lg bg-[#005e35] hover:bg-[#004a29] text-white transition-all flex items-center justify-center gap-3 border-none"
+                  className="w-full h-14 text-lg font-bold rounded-lg bg-brand-primary hover:opacity-90 text-white transition-all flex items-center justify-center gap-3 border-none shadow-xl shadow-brand-primary/20"
                   isLoading={loading}
                   type="submit"
                 >
@@ -493,9 +496,9 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0 }}
-                    className="p-4 bg-green-50 border border-green-100 rounded-xl flex items-center gap-3 text-green-700 text-sm font-medium"
+                    className="p-4 bg-brand-primary/10 border border-brand-primary/20 rounded-xl flex items-center gap-3 text-brand-primary text-sm font-medium"
                   >
-                    <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white shrink-0">
+                    <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white shrink-0">
                       <Check size={16} />
                     </div>
                     Votre demande a été enregistrée avec succès.
@@ -509,7 +512,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
         <div className="lg:col-span-4 space-y-6">
           <Card className="p-6 border-slate-100">
             <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
-              <Archive className="text-green-600" size={20} />
+              <Archive className="text-brand-primary" size={20} />
               Mes Demandes
             </h3>
             
@@ -532,11 +535,11 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                     <div className="flex items-start justify-between">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded uppercase tracking-wider">
+                          <span className="text-[10px] font-bold text-brand-primary bg-brand-primary/10 px-2 py-0.5 rounded uppercase tracking-wider">
                              {(request.references?.[0] || request.reference).substring(0, 15)}...
                           </span>
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded uppercase ${
-                            request.status === 'signed' ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-600'
+                          <span className={`text-[9px] font-bold px-2.5 py-1 rounded-lg uppercase tracking-wider ${
+                            request.status === 'signed' ? 'bg-brand-primary/10 text-brand-primary border border-brand-primary/20' : 'bg-brand-accent/10 text-brand-accent border border-brand-accent/20'
                           }`}>
                             {request.status}
                           </span>
@@ -561,7 +564,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
       ) : (
         <div className="space-y-6">
           <Card className="p-0 overflow-hidden border-slate-100 shadow-xl">
-             <div className="bg-[#004d2c] px-8 py-5 flex items-center justify-between">
+             <div className="bg-brand-primary px-8 py-5 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                    <Inbox className="text-white" size={24} />
                    <h2 className="text-white font-bold text-lg">Demandes à distance reçues</h2>
@@ -613,7 +616,7 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                            <span className={cn(
                              "text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter",
                              req.priorite === 'Urgente' ? 'bg-red-50 text-red-600 animate-pulse' : 
-                             req.priorite === 'Basse' ? 'bg-slate-100 text-slate-500' : 'bg-blue-50 text-blue-600'
+                             req.priorite === 'Basse' ? 'bg-slate-100 text-slate-500' : 'bg-brand-primary/10 text-brand-primary'
                            )}>
                              {req.priorite}
                            </span>
@@ -622,9 +625,9 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                        <td className="px-6 py-4">
                          <span className={cn(
                            "text-[10px] font-bold px-2.5 py-1 rounded-full border",
-                           req.status === 'En attente' ? 'bg-amber-50 text-amber-600 border-amber-100' :
-                           req.status === 'En cours' ? 'bg-blue-50 text-blue-600 border-blue-100' :
-                           req.status === 'Prêt / Communiqué' ? 'bg-green-50 text-green-600 border-green-100' :
+                           req.status === 'En attente' ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20' :
+                           req.status === 'En cours' ? 'bg-brand-primary/20 text-brand-primary border-brand-primary/30' :
+                           req.status === 'Prêt / Communiqué' ? 'bg-brand-primary/10 text-brand-primary border-brand-primary/20' :
                            req.status === 'Refusé' ? 'bg-red-50 text-red-600 border-red-100' :
                            'bg-slate-100 text-slate-500 border-slate-200'
                          )}>
@@ -635,21 +638,21 @@ export const AgentDashboard = ({ initialTab = 'new' }: { initialTab?: 'new' | 'r
                          <div className="flex items-center gap-1">
                             <button 
                               onClick={() => handlePrint(req)}
-                              className="p-1.5 text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-all"
+                              className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
                               title="Imprimer la demande"
                             >
                               <Printer size={16} />
                             </button>
                            <button 
                              onClick={() => handleUpdateRemoteStatus(req.id, 'En cours', req.email, req.nom)}
-                             className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-all"
+                             className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
                              title="Passer en cours"
                            >
                              <RotateCcw size={16} />
                            </button>
                            <button 
                              onClick={() => handleUpdateRemoteStatus(req.id, 'Prêt / Communiqué', req.email, req.nom)}
-                             className="p-1.5 text-slate-400 hover:text-green-500 hover:bg-green-50 rounded-lg transition-all"
+                             className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
                              title="Marquer comme prêt"
                            >
                              <CheckCircle size={16} />

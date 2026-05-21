@@ -11,7 +11,7 @@ import { format } from 'date-fns';
 import { api } from '../../lib/api';
 
 export const ArchivistDashboard = () => {
-  const { user } = useAuth();
+  const { user, pendingRequests: sharedPendingRequests } = useAuth();
   const [requests, setRequests] = useState<any[]>([]);
   const [selectedRequest, setSelectedRequest] = useState<any | null>(null);
   const [signatureType, setSignatureType] = useState<'digital' | 'photo'>('digital');
@@ -21,11 +21,13 @@ export const ArchivistDashboard = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    setRequests(sharedPendingRequests.filter((r: any) => r.status === 'pending'));
+  }, [sharedPendingRequests]);
+
+  useEffect(() => {
     const fetchData = async () => {
       try {
         const data = await api.get('/api/requests');
-        // Filter pending locally if the API doesn't do it, 
-        // though we should probably filter it on the server for security/perf
         setRequests(data.filter((r: any) => r.status === 'pending'));
       } catch (err) {
         console.error("Archivist requests API error:", err);
@@ -33,8 +35,6 @@ export const ArchivistDashboard = () => {
     };
     
     fetchData();
-    const interval = setInterval(fetchData, 30000); // 30s
-    return () => clearInterval(interval);
   }, []);
 
   const handleCapturePhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -247,7 +247,7 @@ export const ArchivistDashboard = () => {
     <div className="space-y-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-3 bg-green-500 rounded-2xl text-white shadow-lg shadow-green-100">
+          <div className="p-3 bg-brand-primary rounded-2xl text-white shadow-lg shadow-brand-primary/20">
             <Archive size={24} strokeWidth={2.5} />
           </div>
           <div>
@@ -270,23 +270,23 @@ export const ArchivistDashboard = () => {
               exit={{ opacity: 0, scale: 0.95 }}
             >
               <Card 
-                className={`cursor-pointer transition-all hover:shadow-xl hover:-translate-y-1 group overflow-hidden border-slate-100 ${selectedRequest?.id === req.id ? 'ring-2 ring-green-500 border-green-200 bg-green-50/30' : ''}`}
+                className={`cursor-pointer transition-all hover:shadow-xl hover:-translate-y-1 group overflow-hidden border-slate-100 ${selectedRequest?.id === req.id ? 'ring-2 ring-brand-primary border-brand-primary/20 bg-brand-secondary/50' : ''}`}
                 onClick={() => setSelectedRequest(req)}
               >
                 <div className="flex flex-col h-full gap-4 relative">
                   <div className="absolute top-0 right-0 p-4">
-                    <ChevronRight size={20} className="text-slate-200 group-hover:text-green-500 transition-colors" />
+                    <ChevronRight size={20} className="text-slate-200 group-hover:text-brand-primary transition-colors" />
                   </div>
                   
                   <div className="space-y-4">
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold uppercase tracking-wider bg-green-100 text-green-700 px-2.5 py-1 rounded-lg">
+                      <span className="text-[10px] font-bold uppercase tracking-wider bg-brand-primary/10 text-brand-primary px-2.5 py-1 rounded-lg">
                         {req.typeDocument || req.documentType}
                       </span>
                     </div>
 
                     <div className="space-y-1">
-                      <h3 className="font-bold text-slate-800 text-lg leading-tight group-hover:text-green-700 transition-colors">
+                      <h3 className="font-bold text-slate-800 text-lg leading-tight group-hover:text-brand-primary transition-colors">
                         {req.intitule || req.title || 'Demande sans titre'}
                       </h3>
                       <p className="text-sm text-slate-500 flex items-center gap-2">
@@ -318,7 +318,7 @@ export const ArchivistDashboard = () => {
                          {toSafeDate(req.createdAt) ? format(toSafeDate(req.createdAt)!, 'dd MMM, HH:mm') : '...'}
                        </span>
                     </div>
-                    <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded uppercase tracking-wider">En attente</span>
+                    <span className="text-[10px] font-bold text-brand-accent bg-brand-accent/10 px-2 py-0.5 rounded uppercase tracking-wider">En attente</span>
                   </div>
                 </div>
               </Card>
@@ -349,7 +349,7 @@ export const ArchivistDashboard = () => {
             >
               <div className="flex items-center justify-between p-6 border-b border-slate-100">
                 <div className="flex items-center gap-3">
-                  <div className="p-2.5 bg-green-50 text-green-600 rounded-xl">
+                  <div className="p-2.5 bg-brand-primary/10 text-brand-primary rounded-xl">
                     <FileSignature size={24} />
                   </div>
                   <div>
@@ -388,7 +388,7 @@ export const ArchivistDashboard = () => {
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
                          <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Liste des Références</h4>
-                         <span className="text-[10px] font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded">{(selectedRequest.references?.length || 1)} TOTAL</span>
+                         <span className="text-[10px] font-bold text-brand-primary bg-brand-primary/10 px-2 py-0.5 rounded">{(selectedRequest.references?.length || 1)} TOTAL</span>
                       </div>
                       <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                         {selectedRequest.references?.map((r: string, i: number) => (
@@ -455,7 +455,7 @@ export const ArchivistDashboard = () => {
                               </div>
                             ) : (
                               <div className="text-center space-y-4">
-                                <div className="p-6 bg-white rounded-3xl shadow-xl text-green-500 mx-auto w-24 h-24 flex items-center justify-center">
+                                <div className="p-6 bg-white rounded-3xl shadow-xl text-brand-primary mx-auto w-24 h-24 flex items-center justify-center">
                                     <Camera size={40} />
                                 </div>
                                 <div className="space-y-2">
@@ -496,7 +496,7 @@ export const ArchivistDashboard = () => {
                   Annuler
                 </Button>
                 <Button 
-                   className="flex-[2] h-14 bg-[#005e35] hover:bg-[#004d2c] rounded-xl text-lg font-extrabold shadow-lg shadow-green-100" 
+                   className="flex-[2] h-14 bg-brand-primary hover:opacity-90 rounded-xl text-lg font-extrabold shadow-lg shadow-brand-primary/20" 
                    isLoading={isLoading} 
                    onClick={handleSign}
                 >

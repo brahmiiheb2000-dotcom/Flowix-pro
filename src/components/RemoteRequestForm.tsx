@@ -123,13 +123,13 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
       <div className={isEmbedded ? "p-12 text-center" : "min-h-screen bg-slate-50 flex items-center justify-center p-4"}>
         <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
           <Card className={`${isEmbedded ? 'border-none shadow-none' : 'max-w-md shadow-2xl'} w-full text-center p-12 space-y-6`}>
-            <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto">
+            <div className="w-20 h-20 bg-brand-secondary text-brand-primary rounded-full flex items-center justify-center mx-auto">
               <CheckCircle2 size={48} />
             </div>
             <h2 className="text-3xl font-bold text-slate-800">Demande Envoyée !</h2>
             <p className="text-slate-500">Votre demande a été transmise au service des archives. Redirection vers l'historique...</p>
             {!isEmbedded && (
-              <Button className="w-full bg-green-600 hover:bg-green-700" onClick={() => window.location.reload()}>
+              <Button className="w-full bg-brand-primary hover:opacity-90" onClick={() => window.location.reload()}>
                 Nouvelle demande
               </Button>
             )}
@@ -144,7 +144,7 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
       <div className={isEmbedded ? "" : profile ? "space-y-8" : "max-w-3xl mx-auto space-y-8"}>
         {!isEmbedded && !profile && (
           <div className="text-center space-y-2">
-            <div className="inline-flex p-3 bg-green-600 rounded-2xl text-white shadow-lg mb-4">
+            <div className="inline-flex p-3 bg-brand-primary rounded-2xl text-white shadow-lg mb-4">
               <Send size={32} />
             </div>
             <h1 className="text-4xl font-extrabold text-slate-800">Demande d'Archives à Distance</h1>
@@ -154,7 +154,7 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
         
         {profile && (
            <div className="flex items-center gap-4 mb-8">
-             <div className="w-12 h-12 bg-green-100 text-green-600 rounded-2xl flex items-center justify-center">
+             <div className="w-12 h-12 bg-brand-secondary text-brand-primary rounded-2xl flex items-center justify-center">
                <Send size={24} />
              </div>
              <div>
@@ -209,13 +209,13 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
                     onChange={handleImportRefs} 
                   />
                   <div className="relative group">
-                    <Button type="button" variant="ghost" size="sm" onClick={handleManualImport} className="h-9 px-3 text-blue-600 hover:text-blue-700 hover:bg-blue-50">
+                    <Button type="button" variant="ghost" size="sm" onClick={handleManualImport} className="h-9 px-3 text-brand-primary hover:text-brand-primary hover:bg-brand-secondary">
                       <Upload size={16} className="mr-1" /> Importer liste
                     </Button>
                     <button 
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="absolute -right-1 -top-1 bg-blue-600 text-white rounded-full p-1 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="absolute -right-1 -top-1 bg-brand-primary text-white rounded-full p-1 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
                       title="Importer depuis Excel"
                     >
                       <FileSpreadsheet size={10} />
@@ -251,7 +251,7 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700">Priorité</label>
                 <select 
-                  className="w-full h-12 rounded-xl border border-slate-200 px-4 focus:ring-2 focus:ring-green-500 outline-none"
+                  className="w-full h-12 rounded-xl border border-slate-200 px-4 focus:ring-2 focus:ring-brand-primary outline-none"
                   value={formData.priorite}
                   onChange={e => setFormData({ ...formData, priorite: e.target.value })}
                 >
@@ -275,7 +275,7 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
                 <MessageSquare className="absolute left-3 top-4 text-slate-400" size={18} />
                 <textarea 
                   rows={4}
-                  className="w-full rounded-xl border border-slate-200 pl-10 pr-4 py-3 focus:ring-2 focus:ring-green-500 outline-none text-sm"
+                  className="w-full rounded-xl border border-slate-200 pl-10 pr-4 py-3 focus:ring-2 focus:ring-brand-primary outline-none text-sm"
                   placeholder="Justifiez votre demande ici..."
                   value={formData.motif}
                   onChange={e => setFormData({ ...formData, motif: e.target.value })}
@@ -283,7 +283,7 @@ export const RemoteRequestForm = ({ onFinished, isEmbedded }: RemoteRequestProps
               </div>
             </div>
 
-            <Button className="w-full h-14 text-lg font-bold mt-10 bg-green-600 hover:bg-green-700 shadow-lg shadow-green-100" isLoading={loading}>
+            <Button className="w-full h-14 text-lg font-bold mt-10 bg-brand-primary hover:opacity-90 shadow-lg shadow-brand-primary/20" isLoading={loading}>
               <Send className="mr-2" size={20} />
               Envoyer la demande
             </Button>

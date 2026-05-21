@@ -1,12 +1,21 @@
 // Client-side API helpers for full-stack communication
 export const api = {
-  async fetchWithRetry(url: string, options: RequestInit, retries = 2): Promise<Response> {
+  async fetchWithRetry(url: string, options: RequestInit, retries = 2, backoff = 1000): Promise<Response> {
     try {
-      return await fetch(url, options);
+      const res = await fetch(url, options);
+      
+      // Handle Rate Limiting (429)
+      if (res.status === 429 && retries > 0) {
+        console.warn(`Rate limit hit for ${url}. Retrying in ${backoff}ms...`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        return this.fetchWithRetry(url, options, retries - 1, backoff * 2);
+      }
+      
+      return res;
     } catch (err: any) {
       if (retries > 0 && (err.name === 'TypeError' || err.message === 'Failed to fetch')) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return this.fetchWithRetry(url, options, retries - 1);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        return this.fetchWithRetry(url, options, retries - 1, backoff * 2);
       }
       throw err;
     }

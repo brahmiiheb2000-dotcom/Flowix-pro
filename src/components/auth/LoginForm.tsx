@@ -27,10 +27,10 @@ export const LoginForm = () => {
 
   return (
     <Card className="w-full max-w-md p-8 sm:p-10 border-none shadow-2xl relative overflow-hidden">
-      <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-green-300 via-green-500 to-green-300" />
+      <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-brand-primary/40 via-brand-primary to-brand-primary/40" />
       
       <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-50 rounded-2xl mb-6 text-green-600">
+        <div className="inline-flex items-center justify-center w-16 h-16 bg-slate-50 rounded-2xl mb-6 text-brand-primary">
            <User size={32} />
         </div>
         <h1 className="text-3xl font-bold text-gray-900 tracking-tight mb-2">

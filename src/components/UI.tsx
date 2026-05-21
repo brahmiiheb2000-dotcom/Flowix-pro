@@ -10,10 +10,10 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'primary', size = 'md', isLoading, children, ...props }, ref) => {
     const variants = {
-      primary: 'bg-green-500 text-white hover:bg-green-600 shadow-xl shadow-green-100',
-      secondary: 'bg-green-50 text-green-700 hover:bg-green-100',
-      outline: 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50',
-      ghost: 'text-slate-500 hover:bg-slate-50',
+      primary: 'bg-brand-primary text-white hover:opacity-90 shadow-xl shadow-brand-primary/20',
+      secondary: 'bg-brand-secondary text-brand-primary hover:bg-white border border-brand-primary/10',
+      outline: 'border border-slate-200 bg-white text-slate-700 hover:bg-brand-secondary',
+      ghost: 'text-slate-500 hover:bg-brand-secondary',
       danger: 'bg-red-500 text-white hover:bg-red-600 shadow-xl shadow-red-100',
     };
 
@@ -44,18 +44,34 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   }
 );
 
-export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
-  ({ className, ...props }, ref) => {
-    return (
+interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+  label?: string;
+  containerClassName?: string;
+}
+
+export const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, label, containerClassName, ...props }, ref) => {
+    const input = (
       <input
         ref={ref}
         className={cn(
-          'flex w-full rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm ring-offset-white file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-400 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-all',
+          'flex w-full rounded-xl border border-slate-100 bg-white px-4 py-3 text-sm ring-offset-white file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-all shadow-sm',
           className
         )}
         {...props}
       />
     );
+
+    if (label) {
+      return (
+        <div className={cn('space-y-2', containerClassName)}>
+          <label className="text-sm font-bold text-slate-700">{label}</label>
+          {input}
+        </div>
+      );
+    }
+
+    return input;
   }
 );
 

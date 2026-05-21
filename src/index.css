@@ -2,6 +2,11 @@
 
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-brand-primary: #014737;
+  --color-brand-secondary: #fdfaf3;
+  --color-brand-accent: #f97316;
+  
   --color-slate-50: #f8fafc;
   --color-slate-100: #f1f5f9;
   --color-slate-200: #e2e8f0;
@@ -15,7 +20,7 @@
 
 @layer base {
   body {
-    @apply antialiased bg-slate-50 text-slate-800;
+    @apply antialiased bg-brand-secondary text-slate-800;
   }
 }
 

@@ -194,11 +194,11 @@ export const DemandeurDashboard = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'En attente': return 'text-amber-600 bg-amber-50';
-      case 'En cours': return 'text-blue-600 bg-blue-50';
-      case 'Prêt': return 'text-green-600 bg-green-50';
+      case 'En attente': return 'text-brand-accent bg-brand-accent/10';
+      case 'En cours': return 'text-brand-primary bg-brand-primary/10';
+      case 'Prêt': return 'text-teal-600 bg-teal-50';
       case 'Rejeté': return 'text-red-600 bg-red-50';
-      default: return 'text-slate-500 bg-slate-50';
+      default: return 'text-slate-500 bg-brand-secondary';
     }
   };
 
@@ -222,7 +222,7 @@ export const DemandeurDashboard = () => {
           <button
             onClick={() => setActiveView('new')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center gap-2 ${
-              activeView === 'new' ? 'bg-green-600 text-white shadow-md' : 'text-slate-500 hover:text-green-600'
+              activeView === 'new' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-500 hover:text-brand-primary'
             }`}
           >
             <Plus size={14} />
@@ -231,7 +231,7 @@ export const DemandeurDashboard = () => {
           <button
             onClick={() => setActiveView('transfer')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap flex items-center gap-2 ${
-              activeView === 'transfer' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-500 hover:text-amber-600'
+              activeView === 'transfer' ? 'bg-brand-accent text-white shadow-md' : 'text-slate-500 hover:text-brand-accent'
             }`}
           >
             <Upload size={14} />
@@ -245,7 +245,7 @@ export const DemandeurDashboard = () => {
           <button
             onClick={() => setNewSubView('form')}
             className={`px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
-              newSubView === 'form' ? 'bg-white text-green-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              newSubView === 'form' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'
             }`}
           >
             <Send size={12} />
@@ -254,7 +254,7 @@ export const DemandeurDashboard = () => {
           <button
             onClick={() => setNewSubView('references')}
             className={`px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
-              newSubView === 'references' ? 'bg-white text-green-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              newSubView === 'references' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'
             }`}
           >
             <Hash size={12} />
@@ -263,7 +263,7 @@ export const DemandeurDashboard = () => {
           <button
             onClick={() => setNewSubView('excel')}
             className={`px-4 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-2 ${
-              newSubView === 'excel' ? 'bg-white text-green-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+              newSubView === 'excel' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'
             }`}
           >
             <FileSpreadsheet size={12} />
@@ -283,7 +283,7 @@ export const DemandeurDashboard = () => {
           >
             {myRequests.length === 0 ? (
               <Card className="p-12 text-center border-dashed border-2 flex flex-col items-center justify-center space-y-4">
-                <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center">
+                <div className="w-16 h-16 bg-brand-secondary text-slate-300 rounded-xl flex items-center justify-center border border-brand-primary/10">
                   <FileText size={32} />
                 </div>
                 <div>
@@ -291,7 +291,7 @@ export const DemandeurDashboard = () => {
                   <p className="text-slate-500 max-w-sm mx-auto">Vous n'avez pas encore soumis de demande d'archives à distance.</p>
                 </div>
                 <div className="flex gap-4">
-                  <Button onClick={() => setActiveView('new')} className="bg-green-600 hover:bg-green-700">
+                  <Button onClick={() => setActiveView('new')} className="bg-brand-primary hover:opacity-90">
                     Créer une demande
                   </Button>
                   <Button variant="secondary" onClick={() => setActiveView('list')}>
@@ -309,7 +309,7 @@ export const DemandeurDashboard = () => {
                           {req.status}
                         </span>
                         {req.category && (
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${req.category === 'transfer' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${req.category === 'transfer' ? 'bg-brand-accent/10 text-brand-accent' : 'bg-brand-primary/10 text-brand-primary'}`}>
                             {req.category === 'transfer' ? 'Transfert' : 'Communication'}
                           </span>
                         )}
@@ -325,14 +325,14 @@ export const DemandeurDashboard = () => {
                       </h3>
                       {req.category === 'transfer' ? (
                         <div className="flex flex-wrap gap-2 mt-2">
-                          <span className="px-2 py-1 bg-amber-50 text-amber-600 rounded-md text-xs font-bold">
+                          <span className="px-2 py-1 bg-brand-accent/10 text-brand-accent rounded-md text-xs font-bold">
                             Direction: {req.direction}
                           </span>
-                          <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded-md text-xs">
+                          <span className="px-2 py-1 bg-brand-secondary border border-brand-primary/5 text-slate-600 rounded-md text-xs">
                             {req.boxes} boîtes • {req.folders} dossiers
                           </span>
                           {req.hasInventory && (
-                            <span className="px-2 py-1 bg-blue-50 text-blue-600 rounded-md text-xs flex items-center gap-1">
+                            <span className="px-2 py-1 bg-brand-primary/10 text-brand-primary rounded-md text-xs flex items-center gap-1">
                               <FileSpreadsheet size={12} /> Avec Inventaire
                             </span>
                           )}
@@ -349,7 +349,7 @@ export const DemandeurDashboard = () => {
                     </div>
                     <div className="flex items-center gap-3">
                       {req.status === 'Prêt' && (
-                        <div className="text-green-600 flex items-center gap-1 text-sm font-bold animate-pulse">
+                        <div className="text-brand-primary flex items-center gap-1 text-sm font-bold animate-pulse">
                           <CheckCircle2 size={16} />
                           Dossier disponible
                         </div>
@@ -379,7 +379,7 @@ export const DemandeurDashboard = () => {
             {newSubView === 'references' && (
               <Card className="p-8 max-w-2xl mx-auto space-y-6">
                 <div className="flex items-center gap-4 mb-2">
-                  <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center">
+                  <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
                     <Hash size={24} />
                   </div>
                   <div>
@@ -393,7 +393,7 @@ export const DemandeurDashboard = () => {
                     <label className="text-sm font-bold text-slate-700">Liste des références</label>
                     <textarea 
                       rows={8}
-                      className="w-full rounded-xl border border-slate-200 px-4 py-3 focus:ring-2 focus:ring-amber-500 outline-none text-sm font-mono"
+                      className="w-full rounded-xl border border-slate-200 px-4 py-3 focus:ring-2 focus:ring-brand-accent outline-none text-sm font-mono bg-white"
                       placeholder="Ex: 1092231, 9922331, 122331 ..."
                       value={bulkRefs}
                       onChange={e => setBulkRefs(e.target.value)}
@@ -402,7 +402,7 @@ export const DemandeurDashboard = () => {
                   </div>
 
                   <Button 
-                    className="w-full h-12 bg-amber-500 hover:bg-amber-600 font-bold text-white shadow-lg shadow-amber-100"
+                    className="w-full h-12 bg-brand-accent hover:opacity-90 font-bold text-white shadow-lg shadow-brand-accent/20"
                     onClick={handleBulkRefSubmit}
                     isLoading={importing}
                   >
@@ -414,7 +414,7 @@ export const DemandeurDashboard = () => {
 
             {newSubView === 'excel' && (
               <Card className="p-12 text-center space-y-6">
-                <div className="w-20 h-20 bg-blue-50 text-blue-500 rounded-full flex items-center justify-center mx-auto">
+                <div className="w-20 h-20 bg-brand-primary/10 text-brand-primary rounded-3xl flex items-center justify-center mx-auto">
                   <FileSpreadsheet size={40} />
                 </div>
                 <div className="max-w-md mx-auto space-y-2">
@@ -435,25 +435,25 @@ export const DemandeurDashboard = () => {
                   
                   {importing ? (
                     <div className="w-64 space-y-2">
-                      <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-2 bg-brand-secondary border border-brand-primary/10 rounded-full overflow-hidden">
                         <motion.div 
                           initial={{ width: 0 }}
                           animate={{ width: `${importProgress}%` }}
-                          className="h-full bg-blue-500"
+                          className="h-full bg-brand-primary"
                         />
                       </div>
-                      <p className="text-xs text-slate-400 font-bold uppercase">{importProgress}% Importation...</p>
+                      <p className="text-xs text-brand-primary/50 font-bold uppercase">{importProgress}% Importation...</p>
                     </div>
                   ) : (
                     <Button 
-                      className="bg-blue-600 hover:bg-blue-700 h-12 px-8 font-bold"
+                      className="bg-brand-primary hover:opacity-90 h-12 px-8 font-bold"
                       onClick={() => fileInputRef.current?.click()}
                     >
                       Sélectionner un fichier
                     </Button>
                   )}
                   
-                  <div className="mt-4 p-4 bg-slate-50 rounded-xl text-left text-xs text-slate-500 max-w-sm">
+                  <div className="mt-4 p-4 bg-brand-secondary border border-brand-primary/5 rounded-xl text-left text-xs text-slate-500 max-w-sm">
                     <p className="font-bold mb-2">Format attendu :</p>
                     <ul className="list-disc list-inside space-y-1">
                       <li>Colonnes suggérées : <code className="bg-white px-1">Reference</code>, <code className="bg-white px-1">Motif</code></li>
@@ -474,7 +474,7 @@ export const DemandeurDashboard = () => {
           >
             <Card className="p-8 max-w-2xl mx-auto">
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center">
+                <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
                   <Upload size={24} />
                 </div>
                 <div>
@@ -496,7 +496,7 @@ export const DemandeurDashboard = () => {
                 <div className="space-y-2">
                   <label className="text-sm font-bold text-slate-700">Direction / Service</label>
                   <select 
-                    className="w-full h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    className="w-full h-10 px-3 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent bg-white"
                     value={transferData.direction}
                     onChange={e => setTransferData({...transferData, direction: e.target.value})}
                   >
@@ -538,7 +538,7 @@ export const DemandeurDashboard = () => {
                   />
                 </div>
 
-                <div className="col-span-full border-2 border-dashed border-slate-200 rounded-xl p-6 text-center space-y-3 bg-slate-50/50">
+                <div className="col-span-full border-2 border-dashed border-slate-200 rounded-xl p-6 text-center space-y-3 bg-brand-secondary/50">
                   <div className="w-10 h-10 bg-white shadow-sm rounded-full flex items-center justify-center mx-auto text-slate-400">
                     <FileSpreadsheet size={20} />
                   </div>
@@ -563,7 +563,7 @@ export const DemandeurDashboard = () => {
                       Choisir un fichier
                     </Button>
                   ) : (
-                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-green-600 bg-green-50 py-2 rounded-lg">
+                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-teal-600 bg-teal-50 py-2 rounded-lg">
                       <CheckCircle2 size={14} />
                       {transferData.inventoryFile.name}
                       <button 
@@ -578,7 +578,7 @@ export const DemandeurDashboard = () => {
 
                 <div className="col-span-full pt-4">
                   <Button 
-                    className="w-full h-12 bg-amber-600 hover:bg-amber-700 text-white font-bold shadow-lg shadow-amber-100"
+                    className="w-full h-12 bg-brand-accent hover:opacity-90 text-white font-bold shadow-lg shadow-brand-accent/20"
                     onClick={handleTransferSubmit}
                     isLoading={importing}
                   >

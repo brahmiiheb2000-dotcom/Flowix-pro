@@ -42,6 +42,28 @@ db.exec(`
     rawData TEXT,
     createdAt TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS centralized_inventory (
+    reference TEXT PRIMARY KEY,
+    dateCloture TEXT,
+    status TEXT, -- 'pending', 'pointed', 'verified'
+    boxNumber TEXT,
+    pointedAt TEXT,
+    verifiedAt TEXT,
+    updatedAt TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS centralized_boxes (
+    id TEXT PRIMARY KEY,
+    number TEXT,
+    title TEXT,
+    isOpen INTEGER DEFAULT 1,
+    depot TEXT,
+    travee TEXT,
+    tablette TEXT,
+    createdAt TEXT,
+    updatedAt TEXT
+  );
 `);
 
 // Migration: Add new columns if missing
@@ -54,6 +76,16 @@ const newCols = [
 newCols.forEach(col => {
   try {
     db.exec(`ALTER TABLE mass_inventory ADD COLUMN ${col} TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+});
+
+// Migration for centralized_inventory
+const centralizedCols = ['ruleId', 'expiryDate', 'archivalStatus', 'direction', 'intitule', 'isEliminated'];
+centralizedCols.forEach(col => {
+  try {
+    db.exec(`ALTER TABLE centralized_inventory ADD COLUMN ${col} TEXT`);
   } catch (e) {
     // Column already exists
   }
@@ -676,6 +708,23 @@ async function startServer() {
           }
         }
       })();
+
+      // Analyze verified folders in Centralized Inventory
+      const allCentral = db.prepare("SELECT * FROM centralized_inventory WHERE status = 'verified' AND (archivalStatus != 'Expired' OR archivalStatus IS NULL)").all();
+      const updateCentralStmt = db.prepare("UPDATE centralized_inventory SET archivalStatus = ?, expiryDate = ?, direction = ?, intitule = ? WHERE reference = ?");
+      
+      db.transaction(() => {
+        for (const item of allCentral) {
+          const archival = calculateArchivalStatus(item, rules);
+          const matchedRule = rules.find(r => r.id === (archival.ruleId || item.ruleId));
+          const dir = matchedRule ? matchedRule.direction : item.direction;
+          const title = matchedRule ? matchedRule.title : item.intitule;
+          if (archival.status !== item.archivalStatus || archival.expiryDate !== item.expiryDate || dir !== item.direction || title !== item.intitule) {
+            updateCentralStmt.run(archival.status, archival.expiryDate, dir, title, item.reference);
+            updatedCount++;
+          }
+        }
+      })();
       
       res.json({ success: true, updatedCount });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -743,20 +792,22 @@ async function startServer() {
     console.error("Failed to seed archival directory:", e);
   }
 
-  app.get("/api/archival-directory", authenticate, (req, res) => {
+  const getArchivalRules = (req: any, res: any) => {
     try {
       const results = db.prepare("SELECT * FROM archival_directory ORDER BY reference ASC").all();
       res.json(results);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.get("/api/archival-rules", authenticate, getArchivalRules);
+  app.get("/api/archival-directory", authenticate, getArchivalRules);
 
-  app.post("/api/archival-directory/clear", authenticate, (req: any, res) => {
+  const clearArchivalRules = (req: any, res: any) => {
     const role = req.user.role;
     if (role !== 'Admin' && role !== 'Agent' && role !== 'Archivist') {
       return res.status(403).json({ error: "Interdit" });
     }
     try {
-      console.log("CLEARING ARCHIVAL DIRECTORY...");
+      console.log("CLEARING ARCHIVAL DIRECTORY/RULES...");
       db.transaction(() => {
         db.prepare("DELETE FROM archival_directory").run();
         // Also reset any items that were linked to these rules
@@ -764,10 +815,12 @@ async function startServer() {
       })();
       res.json({ success: true, message: "Calendrier vidé et statuts réinitialisés." });
     } catch (err: any) { 
-      console.error("Clear archival directory error:", err);
+      console.error("Clear archival rules error:", err);
       res.status(500).json({ error: err.message }); 
     }
-  });
+  };
+  app.post("/api/archival-rules/clear", authenticate, clearArchivalRules);
+  app.post("/api/archival-directory/clear", authenticate, clearArchivalRules);
 
   app.delete("/api/elimination-requests/clear-all", authenticate, (req: any, res) => {
     const role = req.user.role;
@@ -780,7 +833,7 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post("/api/archival-directory/import", authenticate, (req: any, res) => {
+  const importArchivalRules = (req: any, res: any) => {
     const userRole = req.user.role;
     if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
       return res.status(403).json({ error: "Interdit. Rôles autorisés: Admin, Agent, Archiviste." });
@@ -814,7 +867,9 @@ async function startServer() {
       transaction(entries);
       res.json({ success: true, count: entries.length });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.post("/api/archival-rules/import", authenticate, importArchivalRules);
+  app.post("/api/archival-directory/import", authenticate, importArchivalRules);
 
   // --- Elimination Management ---
   app.get("/api/elimination/stats", authenticate, (req, res) => {
@@ -836,14 +891,23 @@ async function startServer() {
 
   app.get("/api/elimination/proposals", authenticate, (req: any, res) => {
     try {
-      // Proposals are items with status 'Expired' that are already in elimination_requests with 'Pending' status
+      // Proposals from both mass inventory and centralized inventory
       const results = db.prepare(`
-        SELECT er.id as requestId, mi.*, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef
+        SELECT er.id as requestId, mi.id, mi.reference, mi.intitule, mi.direction, mi.numBoite, mi.localisation, mi.dateCloture, mi.archivalStatus, mi.ruleId, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef, 'mass' as src
         FROM elimination_requests er
         JOIN mass_inventory mi ON er.inventoryId = mi.id
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
         WHERE er.status = 'Pending'
-        ORDER BY er.createdAt DESC
+
+        UNION ALL
+
+        SELECT er.id as requestId, ci.reference as id, ci.reference, ci.intitule, ci.direction, ci.boxNumber as numBoite, (cb.depot || ' - ' || cb.travee || ' - T' || cb.tablette) as localisation, ci.dateCloture, ci.archivalStatus, ci.ruleId, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef, 'central' as src
+        FROM elimination_requests er
+        JOIN centralized_inventory ci ON er.inventoryId = ci.reference
+        LEFT JOIN centralized_boxes cb ON ci.boxNumber = cb.number
+        LEFT JOIN archival_directory ad ON ci.ruleId = ad.id
+        WHERE er.status = 'Pending'
+        ORDER BY requestId DESC
       `).all();
       res.json(results);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
@@ -851,15 +915,27 @@ async function startServer() {
 
   app.get("/api/elimination/eligible", authenticate, (req: any, res) => {
     try {
-      // Eligible items are Expired items NOT yet in any elimination_requests
+      // Eligible items are Expired items from both mass_inventory and verified centralized_inventory NOT yet in any elimination_requests
       const results = db.prepare(`
-        SELECT mi.*, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef
+        SELECT mi.id, mi.reference, mi.intitule, mi.direction, mi.numBoite, mi.localisation, mi.dateCloture, mi.archivalStatus, mi.ruleId, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef, 'mass' as src
         FROM mass_inventory mi
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
         LEFT JOIN elimination_requests er ON mi.id = er.inventoryId
         WHERE mi.archivalStatus = 'Expired' 
         AND (er.id IS NULL)
         AND (mi.isEliminated IS NULL OR mi.isEliminated = 0)
+
+        UNION ALL
+
+        SELECT ci.reference as id, ci.reference, ci.intitule, ci.direction, ci.boxNumber as numBoite, (cb.depot || ' - ' || cb.travee || ' - T' || cb.tablette) as localisation, ci.dateCloture, ci.archivalStatus, ci.ruleId, ad.title as ruleTitle, ad.finalDisposition, ad.reference as ruleRef, 'central' as src
+        FROM centralized_inventory ci
+        LEFT JOIN archival_directory ad ON ci.ruleId = ad.id
+        LEFT JOIN centralized_boxes cb ON ci.boxNumber = cb.number
+        LEFT JOIN elimination_requests er ON ci.reference = er.inventoryId
+        WHERE ci.archivalStatus = 'Expired'
+        AND ci.status = 'verified'
+        AND (er.id IS NULL)
+        AND (ci.isEliminated IS NULL OR ci.isEliminated = 0)
         LIMIT 1000
       `).all();
       res.json(results);
@@ -884,17 +960,24 @@ async function startServer() {
         WHERE id = (SELECT inventoryId FROM elimination_requests WHERE id = ?)
       `);
 
+      const updateCentral = db.prepare(`
+        UPDATE centralized_inventory
+        SET isEliminated = 1, archivalStatus = 'Eliminated'
+        WHERE reference = (SELECT inventoryId FROM elimination_requests WHERE id = ?)
+      `);
+ 
       db.transaction(() => {
         for (const rid of requestIds) {
           updateRequest.run(req.user.email, today, rid);
           updateInventory.run(rid);
+          updateCentral.run(rid);
         }
       })();
-
+ 
       res.json({ success: true, count: requestIds.length });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
-
+ 
   app.delete("/api/elimination-requests/:id", authenticate, (req: any, res) => {
     if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
@@ -902,13 +985,21 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
-
+ 
   app.get("/api/elimination/history", authenticate, (req: any, res) => {
     try {
       const results = db.prepare(`
-        SELECT er.*, mi.reference, mi.intitule, mi.direction, mi.numBoite, mi.localisation
+        SELECT er.*, mi.reference, mi.intitule, mi.direction, mi.numBoite, mi.localisation, 'mass' as src
         FROM elimination_requests er
         JOIN mass_inventory mi ON er.inventoryId = mi.id
+        WHERE er.status = 'Approved' OR er.status = 'Eliminated'
+        
+        UNION ALL
+
+        SELECT er.*, ci.reference, ci.intitule, ci.direction, ci.boxNumber as numBoite, (cb.depot || ' - ' || cb.travee || ' - T' || cb.tablette) as localisation, 'central' as src
+        FROM elimination_requests er
+        JOIN centralized_inventory ci ON er.inventoryId = ci.reference
+        LEFT JOIN centralized_boxes cb ON ci.boxNumber = cb.number
         WHERE er.status = 'Approved' OR er.status = 'Eliminated'
         ORDER BY er.eliminationDate DESC
       `).all();
@@ -916,8 +1007,8 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post("/api/archival-directory", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+  const createArchivalRule = (req: any, res: any) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
       const r = req.body;
       const id = crypto.randomUUID();
@@ -927,10 +1018,12 @@ async function startServer() {
       `).run(id, r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, r.isCritical ? 1 : 0, r.category || 'Général', new Date().toISOString());
       res.json({ success: true, id });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.post("/api/archival-rules", authenticate, createArchivalRule);
+  app.post("/api/archival-directory", authenticate, createArchivalRule);
 
-  app.patch("/api/archival-directory/:id", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+  const updateArchivalRule = (req: any, res: any) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
       const { id } = req.params;
       const r = req.body;
@@ -941,25 +1034,31 @@ async function startServer() {
       `).run(r.reference, r.title, r.direction, r.docType, r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition, r.support, r.retentionTrigger, r.isCritical ? 1 : 0, r.category || 'Général', id);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.patch("/api/archival-rules/:id", authenticate, updateArchivalRule);
+  app.patch("/api/archival-directory/:id", authenticate, updateArchivalRule);
 
-  app.delete("/api/archival-directory/:id", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+  const deleteArchivalRule = (req: any, res: any) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
       db.prepare("DELETE FROM archival_directory WHERE id = ?").run(req.params.id);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.delete("/api/archival-rules/:id", authenticate, deleteArchivalRule);
+  app.delete("/api/archival-directory/:id", authenticate, deleteArchivalRule);
 
-  app.post("/api/archival-directory/direction/clear", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+  const clearDirectionArchivalRules = (req: any, res: any) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
       const { direction } = req.body;
       if (!direction) return res.status(400).json({ error: "Direction manquante" });
       db.prepare("DELETE FROM archival_directory WHERE direction = ?").run(direction);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
-  });
+  };
+  app.post("/api/archival-rules/direction/clear", authenticate, clearDirectionArchivalRules);
+  app.post("/api/archival-directory/direction/clear", authenticate, clearDirectionArchivalRules);
 
   // --- Elimination Management ---
   app.get("/api/elimination-requests", authenticate, (req, res) => {
@@ -1063,6 +1162,98 @@ async function startServer() {
       writeData('returns_history', filtered);
       res.json({ success: true });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // --- Centralized Inventory Routes ---
+  app.get("/api/centralized-inventory", authenticate, (req, res) => {
+    try {
+      const folders = db.prepare("SELECT * FROM centralized_inventory").all();
+      const boxes = db.prepare("SELECT * FROM centralized_boxes").all();
+      // Map isOpen from 0/1 to boolean
+      const mappedBoxes = (boxes as any[]).map(b => ({ ...b, isOpen: !!b.isOpen }));
+      res.json({ folders, boxes: mappedBoxes });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/centralized-inventory/sync", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { folders, boxes } = req.body;
+      const updatedAt = new Date().toISOString();
+
+      const syncTransaction = db.transaction(() => {
+        // Clear old ones or perform UPSCERT
+        // Here we'll do UPSERT for folders and boxes
+        
+        const insertFolder = db.prepare(`
+          INSERT INTO centralized_inventory (
+            reference, dateCloture, status, boxNumber, pointedAt, verifiedAt, updatedAt,
+            ruleId, expiryDate, archivalStatus, direction, intitule, isEliminated
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(reference) DO UPDATE SET
+            dateCloture = excluded.dateCloture,
+            status = excluded.status,
+            boxNumber = excluded.boxNumber,
+            pointedAt = excluded.pointedAt,
+            verifiedAt = excluded.verifiedAt,
+            updatedAt = excluded.updatedAt,
+            ruleId = excluded.ruleId,
+            expiryDate = excluded.expiryDate,
+            archivalStatus = excluded.archivalStatus,
+            direction = excluded.direction,
+            intitule = excluded.intitule,
+            isEliminated = excluded.isEliminated
+        `);
+
+        const insertBox = db.prepare(`
+          INSERT INTO centralized_boxes (id, number, title, isOpen, depot, travee, tablette, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            number = excluded.number,
+            title = excluded.title,
+            isOpen = excluded.isOpen,
+            depot = excluded.depot,
+            travee = excluded.travee,
+            tablette = excluded.tablette,
+            updatedAt = excluded.updatedAt
+        `);
+
+        if (Array.isArray(folders)) {
+          for (const f of folders) {
+            insertFolder.run(
+              f.reference, 
+              f.dateCloture || '', 
+              f.status || 'pending', 
+              f.boxNumber || '', 
+              f.pointedAt || null, 
+              f.verifiedAt || null, 
+              updatedAt,
+              f.ruleId || null,
+              f.expiryDate || null,
+              f.archivalStatus || 'Active',
+              f.direction || null,
+              f.intitule || null,
+              f.isEliminated ? 1 : 0
+            );
+          }
+        }
+
+        if (Array.isArray(boxes)) {
+          for (const b of boxes) {
+            insertBox.run(b.id, b.number, b.title || '', b.isOpen ? 1 : 0, b.depot || '', b.travee || '', b.tablette || '', b.createdAt || updatedAt, updatedAt);
+          }
+        }
+      });
+
+      syncTransaction();
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Centralized sync error:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Requests

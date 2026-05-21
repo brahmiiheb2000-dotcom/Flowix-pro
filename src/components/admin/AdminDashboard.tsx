@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -18,7 +19,11 @@ import {
 
 import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../services/archiveAIService';
 
+import { CentralizedInventory } from './CentralizedInventory';
+
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
+  const { remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
+  
   const [requests, setRequests] = useState<any[]>([]);
   const [remoteRequests, setRemoteRequests] = useState<any[]>([]);
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
@@ -40,7 +45,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [selectedDirection, setSelectedDirection] = useState<string>('all');
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
-  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring'>('view');
+  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized'>('view');
   const [isSearchingLoc, setIsSearchingLoc] = useState(false);
   const [isEditingDetail, setIsEditingDetail] = useState(false);
   const [editedDetailItem, setEditedDetailItem] = useState<any>(null);
@@ -60,6 +65,54 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [importFileName, setImportFileName] = useState<string>('');
   const [uploadedServerFilename, setUploadedServerFilename] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<{row: number, error: string}[]>([]);
+
+  // States for adding a missing DUA rule right during import validation
+  const [isAddingImportRule, setIsAddingImportRule] = useState(false);
+  const [newImportRule, setNewImportRule] = useState({
+    reference: '',
+    title: '',
+    direction: '',
+    docType: 'Dossier',
+    activeYears: 5,
+    semiActiveYears: 5,
+    finalDisposition: 'EL',
+    support: 'Papier',
+    retentionTrigger: 'Chambre',
+    category: 'Général',
+    isCritical: false
+  });
+
+  const handleSaveImportRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newImportRule.reference || !newImportRule.title || !newImportRule.direction) {
+      alert("Veuillez remplir les champs obligatoires (Code, Intitulé, Direction).");
+      return;
+    }
+    try {
+      const res = await api.post('/api/archival-directory', newImportRule);
+      if (res && res.id) {
+        alert("Règle de conservation ajoutée avec succès !");
+        
+        // Reload global rules directory
+        await fetchArchivalDirectory();
+        
+        // Automatically select the rule we just created
+        setImportingRule({
+          id: res.id,
+          reference: newImportRule.reference,
+          title: newImportRule.title,
+          direction: newImportRule.direction
+        });
+
+        // Close modal
+        setIsAddingImportRule(false);
+      } else {
+        alert("Erreur lors de l'enregistrement de la règle.");
+      }
+    } catch (err: any) {
+      alert("Erreur réseau: " + err.message);
+    }
+  };
 
   // Function to convert Excel serial dates or strings to JS Date strings (JJ/MM/AAAA)
   const formatExcelDate = (val: any) => {
@@ -112,6 +165,11 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [historicSearch, setHistoricSearch] = useState('');
   const [isEditingRule, setIsEditingRule] = useState(false);
   const [editedRule, setEditedRule] = useState<any>(null);
+
+  // Smart Calendar Intelligence States
+  const [smartSearchQuery, setSmartSearchQuery] = useState('');
+  const [simSelectedRuleId, setSimSelectedRuleId] = useState('');
+  const [simClosureDate, setSimClosureDate] = useState(new Date().toISOString().split('T')[0]);
 
   const handleUpdateMassItem = async () => {
     if (!editedDetailItem) return;
@@ -187,19 +245,20 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     setIsEditingDetail(false);
   }, [viewingRequest]);
 
+  useEffect(() => {
+    setRequests(sharedPendingRequests);
+    setRemoteRequests(sharedRemoteRequests);
+  }, [sharedPendingRequests, sharedRemoteRequests]);
+
   const fetchData = async () => {
     try {
-      const [reqs, remoteReqs, transfers, inv, hist, stats, elims] = await Promise.all([
-        api.get('/api/requests'),
-        api.get('/api/remote-requests'),
+      const [transfers, inv, hist, stats, elims] = await Promise.all([
         api.get('/api/transfer-requests'),
         api.get('/api/returns/inventory'),
         api.get('/api/returns/history'),
         api.get('/api/mass-inventory/stats'),
         api.get('/api/elimination-requests')
       ]);
-      setRequests(reqs);
-      setRemoteRequests(remoteReqs);
       setTransferRequests(transfers);
       setReturnInventory(inv);
       setReturnHistory(hist);
@@ -308,20 +367,34 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   }, []);
 
   useEffect(() => {
-    // 2. Fetch tab-specific data
-    fetchData(); // Basic requests/returns info
-    
-    if (activeTab === 'communication' || activeTab === 'returns') {
-      fetchArchives();
-    }
-    
-    if (activeTab === 'massInventory' || activeTab === 'elimination') {
-      fetchArchivalMonitoring();
-    }
-    
-    if (activeTab === 'elimination') {
-      fetchEliminationData();
-    }
+    // 2. Fetch tab-specific data - staggered to avoid 429
+    const initFetch = async () => {
+      try {
+        await fetchData(); // Basic requests/returns info
+        
+        await new Promise(r => setTimeout(r, 500)); // Stagger
+
+        if (activeTab === 'communication' || activeTab === 'returns') {
+          await fetchArchives();
+        }
+        
+        if (activeTab === 'massInventory' || activeTab === 'elimination') {
+          await fetchArchivalMonitoring();
+        }
+        
+        if (activeTab === 'elimination') {
+          await fetchEliminationData();
+        }
+
+        if (activeTab === 'stats') {
+          await fetchFullStats();
+        }
+      } catch (e) {
+        console.error("Initial fetch staggered error:", e);
+      }
+    };
+
+    initFetch();
 
     // Polling - more conservative
     const interval = setInterval(() => {
@@ -338,16 +411,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       if (activeTab === 'stats') {
         fetchFullStats();
       }
-    }, 60000); // 1 minute is plenty for polling
+    }, 120000); // 2 minutes is plenty for polling since App handles core data
 
-    if (activeTab === 'stats') {
-      fetchFullStats();
-    }
-    
     return () => {
       clearInterval(interval);
     };
-  }, [activeTab]);
+  }, [activeTab, sharedPendingRequests, sharedRemoteRequests]);
 
   const handleMassInventoryImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1564,50 +1633,50 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
   return (
     <div className="space-y-8">
-      <div className="flex p-1 bg-white rounded-2xl shadow-sm border border-slate-100 w-full overflow-x-auto">
+      <div className="flex p-1 bg-brand-secondary border border-slate-200 rounded-2xl shadow-sm w-full overflow-x-auto">
         <button
           onClick={() => setActiveTab('requests')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all relative ${activeTab === 'requests' ? 'bg-green-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all relative ${activeTab === 'requests' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <Inbox size={18} />
           Demandes reçues
           {(requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length + transferRequests.filter(r => r.status === 'En attente').length) > 0 && (
-            <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center border-2 border-white animate-pulse">
+            <span className="absolute -top-1 -right-1 w-5 h-5 bg-brand-accent text-white text-[10px] rounded-full flex items-center justify-center border-2 border-white animate-pulse">
               {requests.filter(r => r.status === 'pending').length + remoteRequests.filter(r => r.status === 'En attente').length + transferRequests.filter(r => r.status === 'En attente').length}
             </span>
           )}
         </button>
         <button
           onClick={() => setActiveTab('communication')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'communication' ? 'bg-green-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'communication' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <FileSpreadsheet size={18} />
           Gestion de communication
         </button>
         <button
           onClick={() => setActiveTab('returns')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'returns' ? 'bg-green-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'returns' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <RotateCcw size={18} />
           Gestion des retours
         </button>
         <button
           onClick={() => setActiveTab('massInventory')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'massInventory' ? 'bg-orange-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'massInventory' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <Library size={18} />
           Gestion des inventaires
         </button>
         <button
           onClick={() => setActiveTab('elimination')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'elimination' ? 'bg-red-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'elimination' ? 'bg-brand-accent text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <Trash2 size={18} />
           Gestion d'élimination
         </button>
         <button
           onClick={() => setActiveTab('stats')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'stats' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
+          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'stats' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <BarChart3 size={18} />
           Statistiques
@@ -1624,19 +1693,19 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             <StatCard 
               label="Communications" 
               value={fullStats?.totals?.communications || 0} 
-              icon={<Users size={24} className="text-blue-500" />} 
+              icon={<Users size={24} className="text-brand-primary" />} 
               subLabel="Dossiers signés"
             />
             <StatCard 
               label="Transferts" 
               value={fullStats?.totals?.transfers || 0} 
-              icon={<FileStack size={24} className="text-orange-500" />} 
+              icon={<FileStack size={24} className="text-brand-accent" />} 
               subLabel="Dossiers importés"
             />
             <StatCard 
               label="Retours" 
               value={fullStats?.totals?.returns || 0} 
-              icon={<RotateCcw size={24} className="text-green-500" />} 
+              icon={<RotateCcw size={24} className="text-brand-primary" />} 
               subLabel="Dossiers réintégrés"
             />
             <StatCard 
@@ -1719,8 +1788,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <Card className="p-6 bg-slate-900 text-white border-none shadow-2xl flex flex-col justify-between overflow-hidden relative group">
             <div className="relative z-10">
               <h3 className="text-lg font-bold mb-2">Santé du Système</h3>
-              <div className="flex items-center gap-2 text-green-400 text-sm font-bold bg-green-400/10 w-fit px-3 py-1 rounded-full border border-green-400/20 mb-6">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+              <div className="flex items-center gap-2 text-brand-primary text-sm font-bold bg-brand-primary/10 w-fit px-3 py-1 rounded-full border border-brand-primary/20 mb-6">
+                <div className="w-2 h-2 bg-brand-primary rounded-full animate-pulse" />
                 Tableau de bord synchronisé
               </div>
               
@@ -1775,7 +1844,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   animate={{ width: `${importProgress}%` }}
                 />
               </div>
-              <p className="text-blue-600 font-bold">{importProgress}% complété</p>
+              <p className="text-brand-primary font-bold">{importProgress}% complété</p>
             </motion.div>
           </div>
         )}
@@ -1786,25 +1855,25 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
               onClick={() => { setReturnSubTab('search'); setSearchResult(null); }}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'search' ? 'bg-white text-green-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'search' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Search size={16} /> RECHERCHE
             </button>
             <button
               onClick={() => setReturnSubTab('import')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'import' ? 'bg-white text-green-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'import' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <FileSpreadsheet size={16} /> IMPORTATION
             </button>
             <button
               onClick={() => setReturnSubTab('history')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'history' ? 'bg-white text-green-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'history' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Clock size={16} /> HISTORIQUE
             </button>
             <button
               onClick={() => setReturnSubTab('inventory')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'inventory' ? 'bg-white text-green-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'inventory' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Inbox size={16} /> INVENTAIRE
             </button>
@@ -1820,7 +1889,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 className="py-12 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50"
               >
                 <div className="bg-white p-4 rounded-full shadow-md mb-4">
-                  <FileSpreadsheet size={32} className="text-green-600" />
+                  <FileSpreadsheet size={32} className="text-brand-primary" />
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-2">Importation de masse</h3>
                 <p className="text-slate-500 text-sm mb-6 max-w-sm text-center">
@@ -1836,7 +1905,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 />
                 <label
                   htmlFor="return-import-file"
-                  className="cursor-pointer bg-green-600 text-white px-8 py-3 rounded-2xl font-bold text-sm shadow-lg shadow-green-100 hover:bg-green-700 transition-all flex items-center gap-2"
+                  className="cursor-pointer bg-brand-primary text-white px-8 py-3 rounded-2xl font-bold text-sm shadow-lg shadow-brand-primary/20 hover:opacity-90 transition-all flex items-center gap-2"
                 >
                   <Download size={18} /> Sélectionner le fichier Excel
                 </label>
@@ -1859,14 +1928,14 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
                     <Input
                       placeholder="Scannez ou saisissez la référence..."
-                      className="pl-12 py-6 text-lg rounded-2xl shadow-sm border-slate-200 focus:ring-green-500"
+                      className="pl-12 py-6 text-lg rounded-2xl shadow-sm border-slate-200 focus:ring-brand-primary"
                       value={returnSearchTerm}
                       onChange={(e) => setReturnSearchTerm(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && performReturnSearch()}
                     />
                   </div>
                   <Button 
-                    className="px-8 bg-green-600 hover:bg-green-700 rounded-2xl text-lg shadow-lg shadow-green-100"
+                    className="px-8 bg-brand-primary hover:opacity-90 rounded-2xl text-lg shadow-lg shadow-brand-primary/20"
                     onClick={performReturnSearch}
                   >
                     RECHERCHER
@@ -1913,7 +1982,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </div>
 
                     <Button 
-                      className="w-full py-4 bg-green-600 hover:bg-green-700 rounded-2xl text-lg font-black shadow-lg shadow-green-100 flex items-center justify-center gap-2"
+                      className="w-full py-4 bg-brand-primary hover:opacity-90 rounded-2xl text-lg font-black shadow-lg shadow-brand-primary/20 flex items-center justify-center gap-2"
                       onClick={() => validatePhysicalReturn(searchResult)}
                     >
                       <RotateCcw size={20} />
@@ -1928,12 +1997,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     animate={{ opacity: 1, y: 0 }}
                     className="max-w-xl mx-auto space-y-6"
                   >
-                    <div className="bg-green-50 border border-green-100 rounded-3xl p-6 text-center">
-                      <div className="w-12 h-12 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <div className="bg-brand-primary/5 border border-brand-primary/10 rounded-3xl p-6 text-center">
+                      <div className="w-12 h-12 bg-brand-primary/10 text-brand-primary rounded-full flex items-center justify-center mx-auto mb-3">
                         <CheckCircle2 size={24} />
                       </div>
-                      <h3 className="text-lg font-bold text-green-800">Retour validé avec succès !</h3>
-                      <p className="text-green-600/80 text-sm">Vous pouvez maintenant imprimer ou télécharger l'étiquette.</p>
+                      <h3 className="text-lg font-bold text-brand-primary">Retour validé avec succès !</h3>
+                      <p className="text-brand-primary/80 text-sm">Vous pouvez maintenant imprimer ou télécharger l'étiquette.</p>
                     </div>
 
                     <div className="bg-white border border-slate-200 rounded-3xl p-10 flex flex-col items-center">
@@ -1989,7 +2058,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           <Download size={20} /> TELECHARGER
                         </Button>
                         <Button 
-                          className="flex-1 bg-green-600 hover:bg-green-700 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                          className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
                           onClick={printLabel}
                         >
                           <Printer size={20} /> IMPRIMER
@@ -2043,7 +2112,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                             <div className="flex justify-end gap-1">
                               <button 
                                 onClick={() => { setValidatedItemLabel(h); setReturnSubTab('search'); }}
-                                className="p-2 text-slate-300 hover:text-green-600 transition-colors"
+                                className="p-2 text-slate-300 hover:text-brand-primary transition-colors"
                                 title="Réimprimer l'étiquette"
                               >
                                 <Printer size={16} />
@@ -2081,7 +2150,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                   <Input 
                     placeholder="Filtrer l'inventaire (Référence, Boîte, Localisation...)" 
-                    className="pl-12 py-3 border-slate-200 focus:ring-green-500 rounded-2xl bg-slate-50/50"
+                    className="pl-12 py-3 border-slate-200 focus:ring-brand-primary rounded-2xl bg-slate-50/50"
                     value={inventorySearchTerm}
                     onChange={(e) => setInventorySearchTerm(e.target.value)}
                   />
@@ -2145,27 +2214,33 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
               onClick={() => setMassSubTab('view')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'view' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'view' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Library size={16} /> INVENTAIRE
             </button>
             <button
               onClick={() => setMassSubTab('import')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'import' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'import' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <FileSpreadsheet size={16} /> IMPORTATION
             </button>
             <button
               onClick={() => setMassSubTab('history')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'history' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'history' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <History size={16} /> SUIVI DES INVENTAIRES
             </button>
             <button
               onClick={() => setMassSubTab('monitoring')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'monitoring' ? 'bg-white text-orange-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'monitoring' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <TrendingUp size={16} /> SURVEILLANCE ARCHI.
+            </button>
+            <button
+              onClick={() => setMassSubTab('centralized')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'centralized' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              <Library size={16} /> INVENTAIRE CENTRALISÉ
             </button>
           </div>
 
@@ -2181,7 +2256,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 {importStep === 'upload' && (
                   <div className="py-12 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
                     <div className="bg-white p-4 rounded-full shadow-md mb-4">
-                      <FileSpreadsheet size={32} className="text-orange-600" />
+                      <FileSpreadsheet size={32} className="text-brand-accent" />
                     </div>
                     <h3 className="text-lg font-bold text-slate-800 mb-2">Gestion des inventaires de masse</h3>
                     <p className="text-slate-500 text-sm mb-8 max-w-sm text-center">
@@ -2192,7 +2267,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">1. Destination (Direction)</label>
                         <select 
-                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 shadow-sm"
+                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm"
                           value={importingDirection}
                           onChange={(e) => {
                             setImportingDirection(e.target.value);
@@ -2213,22 +2288,70 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           className="space-y-1"
                         >
                           <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">2. Code du document (Obligatoire)</label>
-                          <select 
-                            className="w-full bg-white border-2 border-orange-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 shadow-sm font-bold"
-                            value={importingRule?.reference || ""}
-                            onChange={(e) => {
-                              const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
-                              const rule = dir?.rules.find(r => r.reference === e.target.value);
-                              setImportingRule(rule || null);
-                            }}
-                          >
-                            <option value="">Sélectionner le code documentaire...</option>
-                            {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules.map(r => (
-                              <option key={r.reference} value={r.reference}>
-                                {r.reference} - {r.title}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="flex gap-2">
+                            <select 
+                              className="flex-1 min-w-0 bg-white border-2 border-brand-accent/20 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm font-bold"
+                              value={importingRule?.reference || ""}
+                              onChange={(e) => {
+                                // Try finding in dynamic database rules first
+                                let foundRule = archivalDirectory.find(r => r.direction === importingDirection && r.reference === e.target.value);
+                                if (!foundRule) {
+                                  // Fallback to static calendar rules
+                                  const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
+                                  const staticRule = dir?.rules.find(r => r.reference === e.target.value);
+                                  if (staticRule) {
+                                    foundRule = {
+                                      id: staticRule.reference,
+                                      reference: staticRule.reference,
+                                      title: staticRule.title,
+                                      direction: importingDirection
+                                    };
+                                  }
+                                }
+                                setImportingRule(foundRule || null);
+                              }}
+                            >
+                              <option value="">Sélectionner le code documentaire...</option>
+                              {/* 1. Dynamic database rules */}
+                              {archivalDirectory.filter(r => r.direction === importingDirection).map(r => (
+                                <option key={r.id || r.reference} value={r.reference}>
+                                  {r.reference} - {r.title} (BDD)
+                                </option>
+                              ))}
+                              {/* 2. Static calendar rules as fallback if not in BDD */}
+                              {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules
+                                .filter(sr => !archivalDirectory.some(dr => dr.direction === importingDirection && dr.reference === sr.reference))
+                                .map(sr => (
+                                  <option key={sr.reference} value={sr.reference}>
+                                    {sr.reference} - {sr.title} (Standard)
+                                  </option>
+                                ))
+                              }
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNewImportRule({
+                                  reference: '',
+                                  title: '',
+                                  direction: importingDirection,
+                                  docType: 'Dossier',
+                                  activeYears: 5,
+                                  semiActiveYears: 5,
+                                  finalDisposition: 'EL',
+                                  support: 'Papier',
+                                  retentionTrigger: 'Chambre',
+                                  category: 'Général',
+                                  isCritical: false
+                                });
+                                setIsAddingImportRule(true);
+                              }}
+                              className="w-12 h-12 bg-brand-accent/10 hover:bg-brand-accent text-brand-accent hover:text-white rounded-2xl flex items-center justify-center transition-all shrink-0 shadow-sm"
+                              title="Ajouter une nouvelle règle de conservation pour cette direction"
+                            >
+                              <Plus size={18} strokeWidth={2.5} />
+                            </button>
+                          </div>
                         </motion.div>
                       )}
                     </div>
@@ -2246,7 +2369,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           htmlFor="mass-import-file"
                           className="cursor-pointer bg-slate-900 text-white px-10 py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-black transition-all flex items-center gap-3 active:scale-95"
                         >
-                          <Plus size={20} className="text-orange-500" />
+                          <Plus size={20} className="text-brand-accent" />
                           CHOISIR LE FICHIER EXCEL (.XLSX)
                         </label>
                       </>
@@ -2262,13 +2385,13 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-orange-100 text-orange-600 rounded-2xl flex items-center justify-center">
+                        <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
                           <FileSpreadsheet size={24} />
                         </div>
                         <div>
                           <h3 className="text-xl font-black text-slate-800">{importFileName}</h3>
                           <p className="text-xs font-bold text-slate-400">
-                            {mappedItems.length} lignes détectées • Direction: <span className="text-orange-600 uppercase">{importingDirection}</span>
+                            {mappedItems.length} lignes détectées • Direction: <span className="text-brand-accent uppercase">{importingDirection}</span>
                           </p>
                         </div>
                       </div>
@@ -2282,16 +2405,16 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         </Button>
                         <Button 
                           onClick={executeMassImport}
-                          className="bg-orange-600 text-white hover:bg-orange-700 px-8 font-black rounded-2xl shadow-lg shadow-orange-100"
+                          className="bg-brand-accent text-white hover:opacity-90 px-8 font-black rounded-2xl shadow-lg shadow-brand-accent/20"
                         >
                           <Save size={18} className="mr-2" /> Valider et Importer
                         </Button>
                       </div>
                     </div>
 
-                    <div className="bg-amber-50 border border-amber-200 p-4 rounded-2xl flex items-start gap-3">
-                      <Clock className="text-amber-600 mt-1" size={18} />
-                      <div className="text-xs text-amber-800 space-y-1">
+                    <div className="bg-brand-accent/5 border border-brand-accent/10 p-4 rounded-2xl flex items-start gap-3">
+                      <Clock className="text-brand-accent mt-1" size={18} />
+                      <div className="text-xs text-brand-accent/80 space-y-1">
                         <p className="font-bold">Analyse automatique des colonnes effectuée.</p>
                         <p>L'application a identifié les colonnes clés (Réf, Date, etc.) mais conservera <strong>l'intégralité</strong> de vos colonnes originales en mémoire.</p>
                       </div>
@@ -2417,11 +2540,11 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   </div>
 
                   <div className="relative group">
-                    <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-orange-500 transition-colors" size={24} />
+                    <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-accent transition-colors" size={24} />
                     <input 
                       type="text"
                       placeholder="Ex: 2210..." 
-                      className="w-full bg-white border border-slate-200 rounded-2xl pl-16 pr-8 py-5 text-xl font-medium focus:outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-slate-300 transition-all placeholder:text-slate-300"
+                      className="w-full bg-white border border-slate-200 rounded-2xl pl-16 pr-8 py-5 text-xl font-medium focus:outline-none focus:ring-4 focus:ring-brand-accent/10 focus:border-slate-300 transition-all placeholder:text-slate-300"
                       value={massSearchTerm}
                       onChange={(e) => setMassSearchTerm(e.target.value)}
                     />
@@ -2435,7 +2558,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </div>
                     <div className="flex flex-wrap gap-2">
                        <select 
-                         className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 text-base font-bold text-slate-700 focus:outline-none focus:ring-4 focus:ring-orange-500/10 focus:border-orange-500 transition-all cursor-pointer appearance-none shadow-sm"
+                         className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 text-base font-bold text-slate-700 focus:outline-none focus:ring-4 focus:ring-brand-accent/10 focus:border-brand-accent transition-all cursor-pointer appearance-none shadow-sm"
                          value={selectedDirection}
                          onChange={(e) => setSelectedDirection(e.target.value)}
                          style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\' stroke=\'%2364748b\'%3E%3Cpath stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'2\' d=\'M19 9l-7 7-7-7\'%3E%3C/path%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1.5rem center', backgroundSize: '1.5rem' }}
@@ -2452,7 +2575,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
                   <div className="flex items-center justify-between pt-2">
                     <div className="flex gap-4">
-                      <button className="flex items-center gap-2 text-slate-700 font-bold hover:text-orange-600 transition-colors">
+                      <button className="flex items-center gap-2 text-slate-700 font-bold hover:text-brand-accent transition-colors">
                         <Filter size={18} /> Filtres avancés
                       </button>
                       <button 
@@ -2469,7 +2592,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           });
                           setIsEditingDetail(true);
                         }}
-                        className="flex items-center gap-2 text-orange-600 font-black hover:text-orange-700 transition-colors bg-orange-50 px-4 py-2 rounded-xl"
+                        className="flex items-center gap-2 text-brand-accent font-black hover:opacity-80 transition-colors bg-brand-accent/10 px-4 py-2 rounded-xl"
                       >
                         <Plus size={18} /> Nouveau dossier
                       </button>
@@ -2479,7 +2602,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         setMassSearchTerm('');
                         setSelectedDirection('all');
                       }}
-                      className="text-slate-700 font-bold hover:text-orange-600 transition-colors"
+                      className="text-slate-700 font-bold hover:text-brand-accent transition-colors"
                     >
                       Réinitialiser
                     </button>
@@ -2539,7 +2662,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           animate={{ opacity: 1, y: 0 }}
                           className={cn(
                             "bg-white rounded-[2.5rem] border-2 transition-all p-10",
-                            isSelected ? "border-emerald-500 shadow-2xl" : "border-slate-100 shadow-sm"
+                            isSelected ? "border-brand-primary shadow-2xl" : "border-slate-100 shadow-sm"
                           )}
                         >
                           <div className="flex items-center justify-between mb-8">
@@ -2554,7 +2677,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                     <span className={cn(
                                       "text-[9px] font-black px-3 py-1 rounded-lg uppercase tracking-wider",
                                       item.archivalStatus === 'Expired' ? "bg-rose-100 text-rose-600 border border-rose-200" : 
-                                      item.archivalStatus === 'SemiActive' ? "bg-amber-100 text-amber-600 border border-amber-200" : "bg-emerald-100 text-emerald-600 border border-emerald-200"
+                                      item.archivalStatus === 'SemiActive' ? "bg-brand-accent/10 text-brand-accent border border-brand-accent/20" : "bg-brand-primary/10 text-brand-primary border border-brand-primary/20"
                                     )}>
                                       {item.archivalStatus === 'Expired' ? 'A ÉLIMINER' : 
                                        item.archivalStatus === 'SemiActive' ? 'SEMI-ACTIF' : 'ACTIF'}
@@ -2677,17 +2800,17 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className={cn(
                     "p-4 rounded-3xl border transition-all cursor-pointer",
-                    monitoringStatus === 'Active' ? "bg-emerald-50 border-emerald-200 shadow-sm" : "bg-white border-slate-100"
+                    monitoringStatus === 'Active' ? "bg-brand-primary/10 border-brand-primary/20 shadow-sm" : "bg-white border-slate-100"
                   )} onClick={() => setMonitoringStatus('Active')}>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Actifs</p>
-                    <p className="text-2xl font-black text-emerald-600">{archivalMonitoringStats.active.toLocaleString()}</p>
+                    <p className="text-2xl font-black text-brand-primary">{archivalMonitoringStats.active.toLocaleString()}</p>
                   </div>
                   <div className={cn(
                     "p-4 rounded-3xl border transition-all cursor-pointer",
-                    monitoringStatus === 'SemiActive' ? "bg-amber-50 border-amber-200 shadow-sm" : "bg-white border-slate-100"
+                    monitoringStatus === 'SemiActive' ? "bg-brand-accent/10 border-brand-accent/20 shadow-sm" : "bg-white border-slate-100"
                   )} onClick={() => setMonitoringStatus('SemiActive')}>
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semi-Actifs</p>
-                    <p className="text-2xl font-black text-amber-600">{archivalMonitoringStats.semiActive.toLocaleString()}</p>
+                    <p className="text-2xl font-black text-brand-accent">{archivalMonitoringStats.semiActive.toLocaleString()}</p>
                   </div>
                   <div className={cn(
                     "p-4 rounded-3xl border transition-all cursor-pointer",
@@ -2813,7 +2936,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                               <span className="text-sm font-bold text-slate-700 truncate max-w-[200px]" title={h.filename}>{h.filename}</span>
                               <button 
                                 onClick={() => downloadStoredFile(h.filename)}
-                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                className="p-2 text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
                                 title="Télécharger le fichier original"
                               >
                                 <Download size={16} />
@@ -2825,7 +2948,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                               {h.direction}
                             </span>
                           </td>
-                          <td className="px-6 py-4 text-sm font-bold text-orange-600">
+                          <td className="px-6 py-4 text-sm font-bold text-brand-accent">
                             {h.itemsCount?.toLocaleString()}
                           </td>
                         </tr>
@@ -2843,6 +2966,18 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </motion.div>
             )}
 
+            {massSubTab === 'centralized' && (
+              <motion.div
+                key="centralized-inventory"
+                initial={{ opacity: 0, scale: 0.98 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.98 }}
+                className="w-full h-full min-h-[850px] rounded-2xl overflow-hidden border border-slate-200 shadow-inner bg-white"
+              >
+                <CentralizedInventory />
+              </motion.div>
+            )}
+
           </AnimatePresence>
         </div>
       )}
@@ -2852,7 +2987,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <Card className="p-6 bg-white border-slate-100 shadow-sm rounded-3xl">
               <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center">
+                <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
                   <Clock size={24} />
                 </div>
                 <div>
@@ -2863,7 +2998,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             </Card>
             <Card className="p-6 bg-white border-slate-100 shadow-sm rounded-3xl">
               <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center">
+                <div className="w-12 h-12 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center">
                   <CheckCircle size={24} />
                 </div>
                 <div>
@@ -2895,19 +3030,19 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </button>
               <button 
                 onClick={() => setEliminationSubTab('proposal')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'proposal' ? 'bg-white text-orange-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'proposal' ? 'bg-white text-brand-accent shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 PROPOSITION ÉLIMINATION
               </button>
               <button 
                 onClick={() => setEliminationSubTab('history')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'history' ? 'bg-white text-green-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'history' ? 'bg-white text-brand-primary shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 HISTORIQUE
               </button>
               <button 
                 onClick={() => setEliminationSubTab('calendar')}
-                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-indigo-600 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-6 py-2.5 rounded-xl text-xs font-black transition-all ${eliminationSubTab === 'calendar' ? 'bg-white text-brand-primary/80 shadow-md transform scale-105' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 CALENDRIER
               </button>
@@ -3039,7 +3174,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               >
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
                   <div>
-                    <h3 className="text-xl font-black text-slate-800 tracking-tight text-orange-600 flex items-center gap-2">
+                    <h3 className="text-xl font-black text-slate-800 tracking-tight text-brand-accent flex items-center gap-2">
                       <FileCheck size={24} />
                       Proposition d'Élimination (PV)
                     </h3>
@@ -3057,7 +3192,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     <button 
                       onClick={handleValidatePV}
                       disabled={eliminationRequests.filter(r => r.status === 'Pending').length === 0}
-                      className="flex-1 md:flex-none px-6 py-3 bg-orange-600 text-white rounded-2xl text-xs font-black hover:bg-orange-700 transition-all shadow-lg shadow-orange-200 flex items-center justify-center gap-2"
+                      className="flex-1 md:flex-none px-6 py-3 bg-brand-accent text-white rounded-2xl text-xs font-black hover:opacity-90 transition-all shadow-lg shadow-brand-accent/20 flex items-center justify-center gap-2"
                     >
                       <CheckDouble size={16} />
                       VALIDER LE PV
@@ -3119,7 +3254,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-                      <History className="text-green-600" size={24} />
+                      <History className="text-brand-primary" size={24} />
                       Historique des Éliminations
                     </h3>
                     <p className="text-slate-500 text-sm">Consulation des dossiers officiellement éliminés.</p>
@@ -3131,7 +3266,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       placeholder="Rechercher..."
                       value={historicSearch}
                       onChange={(e) => setHistoricSearch(e.target.value)}
-                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-green-500 outline-none"
+                      className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-brand-primary outline-none"
                     />
                   </div>
                 </div>
@@ -3181,190 +3316,566 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 </div>
               </motion.div>
             )}
-
             {eliminationSubTab === 'calendar' && (
               <motion.div
-                key="elim-calendar"
+                key="calendar-tab"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center px-2 gap-4">
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-                      <Library className="text-indigo-600" size={24} />
-                      Référentiel de Conservation
+                <div className="bg-brand-secondary/30 rounded-3xl p-6 border border-brand-primary/10 flex flex-col md:flex-row gap-6 items-start justify-between">
+                  <div className="space-y-1 max-w-2xl font-sans">
+                    <h3 className="text-xl font-black text-brand-primary tracking-tight uppercase flex items-center gap-2">
+                      <Library size={24} />
+                      Référentiel des Délais de Conservation des Documents
                     </h3>
-                    <p className="text-slate-500 text-sm">Gestion intelligente des durées d'utilité administrative (DUA).</p>
+                    <p className="text-slate-500 text-xs font-semibold leading-relaxed">
+                      Gérez la liste réglementaire des directions, des natures de documents et leurs durées d'utilité administrative (DUA). Ce calendrier est directement synchronisé avec l'onglet <strong className="text-brand-primary">Inventaire Centralisé</strong>. L'association d'une règle déclenchera automatiquement l'apparition d'alertes d'élimination une fois le délai dépassé.
+                    </p>
                   </div>
-                  <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                    <input 
-                      type="file"
-                      ref={pdfInputRef}
-                      accept="application/pdf"
-                      onChange={handlePDFImportSelect}
-                      className="hidden"
-                    />
-                    <button 
-                      onClick={() => pdfInputRef.current?.click()}
-                      disabled={isImportingRules}
-                      className="flex-1 md:flex-none px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-black hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50"
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      onClick={async () => {
+                        if (confirm("Voulez-vous charger toutes les règles par défaut pour les 16 directions ? Cela va enrichir votre base de données avec les délais réglementaires standard d'archivage.")) {
+                          try {
+                            const rulesToImport: any[] = [];
+                            RETENTION_CALENDAR.forEach(dir => {
+                              dir.rules.forEach(r => {
+                                rulesToImport.push({
+                                  reference: r.reference,
+                                  title: r.title,
+                                  direction: dir.name,
+                                  docType: r.docType || r.title,
+                                  activeYears: parseInt(r.active) || 5,
+                                  semiActiveYears: parseInt(r.semiActive) || 10,
+                                  finalDisposition: r.finalDisposition || 'EL',
+                                  support: r.support || 'Papier',
+                                  retentionTrigger: r.trigger || "Clôture de l'exercice",
+                                  isCritical: false,
+                                  category: 'Général'
+                                });
+                              });
+                            });
+                            await api.post('/api/archival-directory/import', { entries: rulesToImport });
+                            await fetchArchivalDirectory();
+                            alert("Importation réussie de tous les types de documents répertoriés.");
+                          } catch (err: any) {
+                            alert("Erreur lors de l'import : " + err.message);
+                          }
+                        }
+                      }}
+                      variant="ghost"
+                      className="border border-brand-primary/20 text-brand-primary rounded-xl font-bold text-[10px] tracking-wider uppercase bg-white py-2.5 px-4"
                     >
-                      {isImportingRules ? <RotateCw className="animate-spin" size={14} /> : <FileText size={14} />}
-                      IMPORT PDF (IA)
-                    </button>
-                    <button 
-                      onClick={syncRetentionCalendar}
-                      className="flex-1 md:flex-none px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-xs font-black hover:bg-slate-200 transition-all flex items-center justify-center gap-2"
+                      Charger Règles Standard
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        try {
+                          const res = await api.post('/api/elimination/analyze', {});
+                          alert(`Analyse complète exécutée ! ${res.updatedCount || 0} dossier(s) audité(s) et mis à jour. Les alertes d'élimination ont été actualisées automatiquement.`);
+                          await Promise.all([
+                            api.get('/api/elimination/eligible').then(setEligibleItems),
+                            fetchArchivalDirectory()
+                          ]);
+                        } catch (err: any) {
+                          alert("Erreur lors de la mise à jour des alertes : " + err.message);
+                        }
+                      }}
+                      className="bg-red-600 hover:bg-red-750 text-white rounded-xl font-black text-[10px] tracking-wider uppercase py-2.5 px-6 shadow-md shadow-red-200"
+                      title="Recalcule instantanément l'éligibilité à l'élimination de tous les dossiers physiques et centralisés."
                     >
-                      <RotateCw size={14} />
-                      SYNC DEFAUT
-                    </button>
-                    <button 
-                      onClick={handleExportCalendarPDF}
-                      disabled={archivalDirectory.length === 0}
-                      className="flex-1 md:flex-none px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-black hover:bg-slate-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                      🔄 Recalculer les alertes
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setEditedRule({
+                          direction: selectedCalendarDir || "Direction Commune",
+                          reference: "",
+                          title: "",
+                          docType: "",
+                          activeYears: 5,
+                          semiActiveYears: 5,
+                          finalDisposition: "EL",
+                          support: "Papier",
+                          retentionTrigger: "Clôture du dossier",
+                          isCritical: false,
+                          category: "Général"
+                        });
+                        setIsEditingRule(true);
+                      }}
+                      className="bg-brand-primary hover:opacity-90 text-white rounded-xl font-black text-[10px] tracking-widest uppercase py-2.5 px-6 shadow-md shadow-brand-primary/20"
                     >
-                      <Download size={14} />
-                      EXPORT PDF
-                    </button>
-                    <button 
-                      onClick={handleClearDirectory}
-                      disabled={isClearingDirectory || archivalDirectory.length === 0}
-                      className="flex-1 md:flex-none px-4 py-2 bg-white border border-rose-200 text-rose-600 rounded-xl text-xs font-black hover:bg-rose-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <Trash2 size={14} />
-                      VIDER LE CALENDRIER
-                    </button>
+                      <Plus size={14} className="inline mr-1" /> Nouveau Type
+                    </Button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={() => setSelectedCalendarDir(null)}
-                    className={cn(
-                      "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-                      selectedCalendarDir === null ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"
-                    )}
-                  >
-                    Toutes ({archivalDirectory.length})
-                  </button>
-                  {archivalByDirection.map(dir => (
-                    <button
-                      key={dir.name}
-                      onClick={() => setSelectedCalendarDir(dir.name)}
-                      className={cn(
-                        "px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
-                        selectedCalendarDir === dir.name ? "bg-indigo-600 text-white shadow-md shadow-indigo-100" : "bg-slate-100 text-slate-400 hover:bg-slate-200"
-                      )}
-                    >
-                      {dir.code} ({dir.rules.length})
-                    </button>
-                  ))}
-                </div>
+                {/* Section Assistant Calendrier Intelligent & Simulateur de Cycle de Vie */}
+                <div className="bg-slate-900 text-white rounded-[2.5rem] p-8 md:p-10 mb-8 border border-slate-800 shadow-2xl relative overflow-hidden font-sans">
+                  {/* Background ambient accents */}
+                  <div className="absolute top-0 right-0 w-80 h-80 bg-brand-primary/10 rounded-full blur-[100px] pointer-events-none" />
+                  <div className="absolute -bottom-10 -left-10 w-96 h-96 bg-brand-accent/5 rounded-full blur-[120px] pointer-events-none" />
 
-                <div className="space-y-12">
-                  {archivalByDirection
-                    .filter(dir => selectedCalendarDir === null || dir.name === selectedCalendarDir)
-                    .map(dir => (
-                    <div key={dir.name} className="space-y-4">
-                      <div className="flex items-center justify-between px-2 bg-slate-50/50 p-4 rounded-2xl border border-slate-100">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center font-black text-xs uppercase tracking-tighter shadow-md shadow-indigo-100">
-                            {dir.code}
+                  <div className="relative z-10">
+                    <div className="flex items-center gap-3.5 mb-6">
+                      <div className="w-12 h-12 bg-brand-primary/20 text-brand-primary rounded-2xl flex items-center justify-center border border-brand-primary/25">
+                        <Sparkles size={24} className="text-brand-accent animate-pulse" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-black uppercase tracking-tight leading-tight">Assistant DUA & Calendrier Intelligent</h3>
+                        <p className="text-slate-400 text-xs font-semibold">Recommandations intelligentes, prédictions d'échéances et simulations de cycle de vie</p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
+                      {/* Left: AI/Smart Match Recommendation */}
+                      <div className="bg-white/5 backdrop-blur-md rounded-3xl p-6 border border-white/5 flex flex-col justify-between">
+                        <div>
+                          <p className="text-[10px] font-black tracking-widest text-brand-accent uppercase mb-3">Recherche & Diagnostic de Règle</p>
+                          <p className="text-xs text-slate-300 leading-relaxed mb-4">
+                            Saisissez de simples mots-clés ci-dessous pour trouver ou diagnostiquer instantanément la DUA standard ou dynamique applicable.
+                          </p>
+                          
+                          <div className="relative mb-4">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                            <input
+                              type="text"
+                              value={smartSearchQuery}
+                              onChange={(e) => setSmartSearchQuery(e.target.value)}
+                              placeholder="Ex: Facture, Audit, PV, personnel, contrat..."
+                              className="w-full bg-white/10 hover:bg-white/15 focus:bg-white/20 border border-white/10 rounded-2xl pl-12 pr-4 py-3 text-xs font-bold text-white focus:outline-none transition-all placeholder:text-slate-500"
+                            />
                           </div>
-                          <div>
-                            <h4 className="font-black text-slate-800 text-base tracking-tight uppercase">{dir.name}</h4>
-                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{dir.rules.length} documents enregistrés</p>
+
+                          {smartSearchQuery && (
+                            <div className="space-y-2.5 max-h-[180px] overflow-y-auto pr-1 custom-scrollbar">
+                              {(() => {
+                                const q = smartSearchQuery.toLowerCase().trim();
+                                // Merge database rules + static ones for searching
+                                const combined = [...archivalDirectory];
+                                RETENTION_CALENDAR.forEach(dir => {
+                                  dir.rules.forEach(rule => {
+                                    if (!combined.some(r => r.reference === rule.reference)) {
+                                      combined.push({
+                                        id: `std-${rule.reference}`,
+                                        reference: rule.reference,
+                                        title: rule.title,
+                                        direction: dir.name,
+                                        activeYears: parseInt(rule.active) || 5,
+                                        semiActiveYears: parseInt(rule.semiActive) || 5,
+                                        finalDisposition: rule.finalDisposition || 'EL',
+                                        support: rule.support || 'Papier',
+                                        retentionTrigger: rule.trigger || 'Clôture de l\'exercice'
+                                      });
+                                    }
+                                  });
+                                });
+
+                                const matches = combined.filter(r => 
+                                  r.title?.toLowerCase().includes(q) || 
+                                  r.reference?.toLowerCase().includes(q) ||
+                                  r.direction?.toLowerCase().includes(q)
+                                ).slice(0, 3);
+
+                                if (matches.length === 0) {
+                                  return (
+                                    <p className="text-[10px] text-slate-500 italic font-bold">Aucune règle correspondante trouvée. Essayez un autre mot-clé.</p>
+                                  );
+                                }
+
+                                return matches.map(r => (
+                                  <button
+                                    key={r.id || r.reference}
+                                    onClick={() => {
+                                      setSimSelectedRuleId(r.id || `std-${r.reference}`);
+                                      setSmartSearchQuery('');
+                                    }}
+                                    className="w-full text-left p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition-colors flex items-center justify-between group"
+                                  >
+                                    <div className="min-w-0 pr-2">
+                                      <p className="text-[10px] font-black text-brand-accent uppercase truncate tracking-wider">{r.reference} — {r.direction}</p>
+                                      <p className="text-xs font-bold text-white group-hover:text-brand-accent transition-colors truncate">{r.title}</p>
+                                    </div>
+                                    <div className="shrink-0 text-right">
+                                      <span className="text-[9px] font-black bg-white/10 text-slate-300 px-2 py-0.5 rounded-md">
+                                        {r.activeYears} ans DUA
+                                      </span>
+                                    </div>
+                                  </button>
+                                ));
+                              })()}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                          <span>Intelligence DUA Active</span>
+                          <span className="flex items-center gap-1.5 text-brand-accent">
+                            <span className="w-2 h-2 rounded-full bg-brand-accent animate-pulse" />
+                      Algorithme d'Aide à l'Archiviste
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Right: Lifecycle Interactive Simulator */}
+                      <div className="bg-white/5 backdrop-blur-md rounded-3xl p-6 border border-white/5 flex flex-col justify-between">
+                        <div>
+                          <p className="text-[10px] font-black tracking-widest text-brand-primary uppercase mb-3">Simulateur de Cycle de Vie Temporel</p>
+                          
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                            <div>
+                              <label className="text-[9px] font-black uppercase text-slate-400 pl-1">1. Date de Clôture</label>
+                              <input
+                                type="date"
+                                value={simClosureDate}
+                                onChange={(e) => setSimClosureDate(e.target.value)}
+                                className="w-full bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-brand-primary transition-all mt-1"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[9px] font-black uppercase text-slate-400 pl-1">2. Règle Applicative</label>
+                              <select
+                                value={simSelectedRuleId}
+                                onChange={(e) => setSimSelectedRuleId(e.target.value)}
+                                className="w-full bg-white/10 border border-white/10 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:ring-1 focus:ring-brand-primary transition-all mt-1 cursor-pointer"
+                              >
+                                <option value="" className="text-slate-800">-- Choisir règle --</option>
+                                {(() => {
+                                  const list = [...archivalDirectory];
+                                  RETENTION_CALENDAR.forEach(dir => {
+                                    dir.rules.forEach(rule => {
+                                      if (!list.some(r => r.reference === rule.reference)) {
+                                        list.push({
+                                          id: `std-${rule.reference}`,
+                                          reference: rule.reference,
+                                          title: rule.title,
+                                          activeYears: parseInt(rule.active) || 5,
+                                          semiActiveYears: parseInt(rule.semiActive) || 5,
+                                          finalDisposition: rule.finalDisposition || 'EL',
+                                          support: rule.support || 'Papier',
+                                          retentionTrigger: rule.trigger || 'Clôture'
+                                        });
+                                      }
+                                    });
+                                  });
+                                  return list.map(r => (
+                                    <option key={r.id || r.reference} value={r.id || `std-${r.reference}`} className="text-slate-800 font-semibold fs-11">
+                                      {r.reference} — {r.title.substring(0, 35)}...
+                                    </option>
+                                  ));
+                                })()}
+                              </select>
+                            </div>
+                          </div>
+
+                          {/* Simulation Result */}
+                          {(() => {
+                            const selectedId = simSelectedRuleId;
+                            if (!selectedId) {
+                              return (
+                                <div className="h-28 flex items-center justify-center border border-dashed border-white/10 rounded-2xl text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                                  Sélectionnez un dossier & une règle à simuler
+                                </div>
+                              );
+                            }
+
+                            // Retrieve details
+                            const list = [...archivalDirectory];
+                            RETENTION_CALENDAR.forEach(dir => {
+                              dir.rules.forEach(rule => {
+                                if (!list.some(r => r.reference === rule.reference)) {
+                                  list.push({
+                                    id: `std-${rule.reference}`,
+                                    reference: rule.reference,
+                                    title: rule.title,
+                                    activeYears: parseInt(rule.active) || 5,
+                                    semiActiveYears: parseInt(rule.semiActive) || 5,
+                                    finalDisposition: rule.finalDisposition || 'EL',
+                                    support: rule.support || 'Papier',
+                                    retentionTrigger: rule.trigger || 'Clôture'
+                                  });
+                                }
+                              });
+                            });
+
+                            const rule = list.find(r => r.id === selectedId || `std-${r.reference}` === selectedId);
+                            if (!rule) return null;
+
+                            // Calculate phases
+                            const baseD = new Date(simClosureDate);
+                            if (isNaN(baseD.getTime())) return null;
+
+                            const activeYears = Number(rule.activeYears);
+                            const semiActiveYears = Number(rule.semiActiveYears);
+
+                            const curDate = new Date(); // relative to today
+                            const activeEndDate = new Date(baseD.getFullYear() + activeYears, baseD.getMonth(), baseD.getDate());
+                            const semiActiveEndDate = new Date(activeEndDate.getFullYear() + semiActiveYears, activeEndDate.getMonth(), activeEndDate.getDate());
+
+                            let phase: 'active' | 'semiActive' | 'expired' = 'active';
+                            if (curDate >= semiActiveEndDate) {
+                              phase = 'expired';
+                            } else if (curDate >= activeEndDate) {
+                              phase = 'semiActive';
+                            }
+
+                            return (
+                              <div className="bg-white/5 border border-white/5 rounded-2xl p-4 space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] font-black text-slate-300 uppercase">État temporel aujourd'hui :</span>
+                                  <span className={cn(
+                                    "text-[9px] font-black px-3 py-1 rounded-full uppercase tracking-wider border",
+                                    phase === 'active' ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/20" :
+                                    phase === 'semiActive' ? "bg-amber-500/15 text-amber-300 border-amber-500/20" :
+                                    "bg-red-500/15 text-red-300 border-red-500/20 animate-pulse"
+                                  )}>
+                                    {phase === 'active' ? '🟢 Phase Active (Archives Courantes)' :
+                                     phase === 'semiActive' ? '🟡 Phase Archives Intermédiaires' :
+                                     '🔴 Archives Échues (Sort Final)'}
+                                  </span>
+                                </div>
+
+                                {/* Flow Timeline bar */}
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-[8px] font-black text-slate-500 uppercase tracking-widest pl-1">
+                                    <span>Clôture ({format(baseD, 'yyyy')})</span>
+                                    <span>Fin Active ({format(activeEndDate, 'yyyy')})</span>
+                                    <span>Sort Final ({format(semiActiveEndDate, 'yyyy')})</span>
+                                  </div>
+                                  <div className="h-2 bg-white/10 rounded-full overflow-hidden flex">
+                                    <div className={cn("h-full", phase === 'active' ? "bg-emerald-500 w-1/3" : "bg-slate-700 w-1/3 border-r border-slate-900")} />
+                                    <div className={cn("h-full", phase === 'semiActive' ? "bg-amber-400 w-1/3" : (phase === 'expired' ? "bg-slate-700 w-1/3" : "bg-transparent w-1/3"))} />
+                                    <div className={cn("h-full", phase === 'expired' ? "bg-red-500 w-1/3" : "bg-transparent w-1/3")} />
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 text-[9px] font-bold text-slate-300">
+                                  <p>• Trigger Conservation : <strong className="text-white">{rule.retentionTrigger || 'Clôture'}</strong></p>
+                                  <p className="text-right">• Sort Final : <strong className="text-white uppercase">{rule.finalDisposition === 'EL' ? 'Élimination (EL)' : rule.finalDisposition === 'CP' ? 'Conservation Permanente (CP)' : 'Tri (ECH)'}</strong></p>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        <div className="text-[8px] text-slate-500 text-right font-bold uppercase tracking-wider pt-2 mt-2 border-t border-white/5">
+                          Formule Standardisée DUA / SIAF
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start font-sans">
+                  {/* Left: Directions List */}
+                  <div className="lg:col-span-4 bg-white/80 backdrop-blur-md border border-slate-150 rounded-[2rem] p-4 max-h-[700px] overflow-y-auto custom-scrollbar shadow-sm">
+                    <p className="text-[10px] font-black tracking-widest text-slate-400 uppercase p-3 border-b border-slate-100 mb-2 flex justify-between items-center">
+                      <span>Directions Organisationnelles</span>
+                      <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[9px]">
+                        {RETENTION_CALENDAR.length} départements
+                      </span>
+                    </p>
+                    <div className="space-y-1">
+                      {RETENTION_CALENDAR.map((d: any) => {
+                        const dbRulesCount = archivalDirectory.filter(r => r.direction === d.name).length;
+                        const isSelected = selectedCalendarDir === d.name || (!selectedCalendarDir && d.name === "Direction Commune");
+                        return (
+                          <button
+                            key={d.code}
+                            onClick={() => setSelectedCalendarDir(d.name)}
+                            className={cn(
+                              "w-full text-left p-3.5 rounded-2xl flex items-center justify-between transition-all group",
+                              isSelected 
+                                ? "bg-brand-primary text-white shadow-lg shadow-brand-primary/25 font-bold" 
+                                : "hover:bg-brand-secondary/50 text-slate-700 font-bold"
+                            )}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className={cn(
+                                "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 border transition-colors",
+                                isSelected ? "bg-white/20 border-white/25 text-white" : "bg-slate-50 border-slate-100 text-slate-400 group-hover:bg-white"
+                              )}>
+                                <Building2 size={16} />
+                              </div>
+                              <span className="text-xs truncate">{d.name}</span>
+                            </div>
+                            <span className={cn(
+                              "text-[9px] font-black px-2 py-0.5 rounded-full",
+                              isSelected ? "bg-white/30 text-white" : "bg-slate-100 text-slate-400"
+                            )}>
+                              {dbRulesCount}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Right: Document Classification in selected Direction */}
+                  <div className="lg:col-span-8 space-y-4">
+                    {(() => {
+                      const activeDirName = selectedCalendarDir || "Direction Commune";
+                      const activeRules = archivalDirectory.filter(r => r.direction === activeDirName);
+
+                      return (
+                        <div className="bg-white rounded-[2rem] border border-slate-150 shadow-sm overflow-hidden flex flex-col">
+                          {/* Direction header banner */}
+                          <div className="bg-gradient-to-r from-brand-primary to-brand-primary/80 px-8 py-6 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div className="space-y-1">
+                              <h4 className="text-lg font-black tracking-tight">{activeDirName}</h4>
+                              <p className="text-[10px] uppercase font-black tracking-widest text-white/60">
+                                {activeRules.length} Type(s) de document identifié(s) dans le calendrier actuel
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2.5">
+                              <Button
+                                onClick={() => {
+                                  setEditedRule({
+                                    direction: activeDirName,
+                                    reference: "",
+                                    title: "",
+                                    docType: "",
+                                    activeYears: 5,
+                                    semiActiveYears: 5,
+                                    finalDisposition: "EL",
+                                    support: "Papier",
+                                    retentionTrigger: "Signature",
+                                    isCritical: false,
+                                    category: "Général"
+                                  });
+                                  setIsEditingRule(true);
+                                }}
+                                className="bg-white text-brand-primary hover:bg-slate-150 rounded-xl font-bold text-xs py-2 px-4 shadow-sm transition-all flex items-center gap-1 shrink-0 border border-transparent"
+                              >
+                                <Plus size={14} /> Ajouter une règle DUA
+                              </Button>
+                              <Button
+                                onClick={() => handleDeleteDirection(activeDirName)}
+                                disabled={activeRules.length === 0}
+                                variant="ghost"
+                                className="text-white hover:bg-white/10 p-2.5 rounded-xl text-xs disabled:opacity-35 border-none bg-transparent font-semibold flex items-center gap-1 shrink-0"
+                                title="Supprimer tous les documents de cette direction"
+                              >
+                                <Trash2 size={13} /> Vider Direction
+                              </Button>
+                            </div>
+                          </div>
+
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-slate-50 border-b border-slate-100">
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Référence</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Type Documentaire / Procédure</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">DUA (Actif)</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center font-semibold">DUA (Semi-actif)</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Sort Final</th>
+                                  <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Actions</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-50">
+                                {activeRules.map((rule: any) => (
+                                  <tr key={rule.id} className="hover:bg-slate-50/40 transition-colors">
+                                    <td className="px-6 py-4">
+                                      <span className="text-xs font-black text-slate-900 bg-brand-secondary/50 border border-brand-primary/10 px-2.5 py-1 rounded-lg">
+                                        {rule.reference}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-4">
+                                      <div className="text-xs font-bold text-slate-800 flex items-center gap-2">
+                                        <span>{rule.title}</span>
+                                        {rule.isCritical === 1 && (
+                                          <span className="bg-red-50 text-red-600 border border-red-100 text-[8px] font-black uppercase px-2 py-0.5 rounded-full tracking-wider animate-pulse">
+                                            Probant
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-[9px] text-slate-400 font-medium mt-0.5 uppercase tracking-wider">
+                                        Trigger: {rule.retentionTrigger || "Inconnu"} • Support: {rule.support || "Papier"}
+                                      </div>
+                                    </td>
+                                    <td className="px-6 py-4 text-center text-xs font-bold text-slate-650">
+                                      {rule.activeYears} ans
+                                    </td>
+                                    <td className="px-6 py-4 text-center text-xs font-bold text-slate-400">
+                                      {rule.semiActiveYears} ans
+                                    </td>
+                                    <td className="px-6 py-4 text-center">
+                                      <span className={cn(
+                                        "text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-widest border",
+                                        rule.finalDisposition === 'EL' ? "bg-red-50 text-red-600 border-red-100" :
+                                        rule.finalDisposition === 'CP' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                                        "bg-amber-50 text-amber-600 border-amber-100"
+                                      )}>
+                                        {rule.finalDisposition === 'EL' ? 'Élimination' : rule.finalDisposition === 'CP' ? 'Conservation' : 'Tri / Échant.'}
+                                      </span>
+                                    </td>
+                                    <td className="px-6 py-4 text-right">
+                                      <div className="flex justify-end gap-1.5">
+                                        <button
+                                          onClick={() => {
+                                            setEditedRule(rule);
+                                            setIsEditingRule(true);
+                                          }}
+                                          className="p-2 text-slate-400 hover:text-brand-primary hover:bg-brand-secondary rounded-lg transition-colors"
+                                          title="Modifier cette règle"
+                                        >
+                                          <Edit2 size={13} />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteRule(rule.id)}
+                                          className="p-2 text-slate-450 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                          title="Supprimer cette règle"
+                                        >
+                                          <Trash2 size={13} />
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {activeRules.length === 0 && (
+                                  <tr>
+                                    <td colSpan={6} className="px-6 py-20 text-center text-slate-450 font-medium">
+                                      <div className="max-w-sm mx-auto space-y-2">
+                                        <p className="text-sm font-black text-slate-700">Aucun document configuré</p>
+                                        <p className="text-slate-405 text-xs text-balance">
+                                          Il n'y a pas encore de types de documents saisis pour la direction <strong className="text-slate-650">{activeDirName}</strong>. Utilisez le bouton ci-dessous pour ajouter un premier type.
+                                        </p>
+                                        <Button
+                                          onClick={() => {
+                                            setEditedRule({
+                                              direction: activeDirName,
+                                              reference: "",
+                                              title: "",
+                                              docType: "",
+                                              activeYears: 5,
+                                              semiActiveYears: 5,
+                                              finalDisposition: "EL",
+                                              support: "Papier",
+                                              retentionTrigger: "Signature",
+                                              isCritical: false,
+                                              category: "Général"
+                                            });
+                                            setIsEditingRule(true);
+                                          }}
+                                          variant="ghost" 
+                                          className="mt-4 border border-brand-primary/20 hover:bg-brand-secondary text-brand-primary text-[10px] font-black uppercase rounded-lg py-2 px-4 inline-flex items-center gap-1.5"
+                                        >
+                                          <Plus size={12} /> Écrire un règlement de conservation
+                                        </Button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
                           </div>
                         </div>
-                        <button 
-                          onClick={() => handleDeleteDirection(dir.name)}
-                          className="flex items-center gap-2 px-4 py-2 text-rose-600 bg-white border border-rose-100 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-rose-50 transition-all shadow-sm"
-                        >
-                          <X size={12} />
-                          Supprimer Tout {dir.code}
-                        </button>
-                      </div>
-
-                      <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden bg-white">
-                        <table className="w-full text-left border-collapse min-w-[800px]">
-                          <thead className="bg-slate-50/50 border-b border-slate-100">
-                            <tr>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest w-[80px]">Référence</th>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest">Intitulé Documentaire</th>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[60px]">DUA</th>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[80px]">Semi-Actif</th>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-center w-[100px]">Sort Final</th>
-                              <th className="px-6 py-4 text-[9px] font-black text-slate-400 uppercase tracking-widest text-right w-[100px]">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-50">
-                            {dir.rules.map((rule: any) => (
-                              <tr key={rule.id} className="hover:bg-slate-50/30 transition-colors group">
-                                <td className="px-6 py-4">
-                                   <span className="text-xs font-black text-indigo-600 bg-indigo-50 px-2 py-1 rounded-lg">
-                                     {rule.reference}
-                                   </span>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs font-bold text-slate-700">{rule.title}</span>
-                                    {rule.isCritical === 1 && (
-                                      <span className="bg-rose-100 text-rose-600 px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase ring-1 ring-rose-200">Critique</span>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 text-center">
-                                  <span className="text-xs font-bold text-slate-600">{rule.activeYears} <span className="text-[10px] text-slate-400">ans</span></span>
-                                </td>
-                                <td className="px-6 py-4 text-center">
-                                  <span className="text-xs font-bold text-slate-600">{rule.semiActiveYears} <span className="text-[10px] text-slate-400">ans</span></span>
-                                </td>
-                                <td className="px-6 py-4 text-center">
-                                  <span className={cn(
-                                    "text-[10px] font-black",
-                                    rule.finalDisposition === 'EL' ? "text-rose-600" : "text-emerald-600"
-                                  )}>
-                                    {rule.finalDisposition === 'EL' ? 'ÉLIMINATION' : rule.finalDisposition === 'CP' ? 'CONSERVATION' : 'TRI'}
-                                  </span>
-                                </td>
-                                <td className="px-6 py-4 text-right">
-                                  <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button 
-                                      onClick={() => { setEditedRule(rule); setIsEditingRule(true); }}
-                                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-                                      title="Modifier"
-                                    >
-                                      <Edit2 size={14} />
-                                    </button>
-                                    <button 
-                                      onClick={() => handleDeleteRule(rule.id)}
-                                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
-                                      title="Supprimer"
-                                    >
-                                      <X size={16} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ))}
-                  
-                  {archivalByDirection.filter(dir => selectedCalendarDir === null || dir.name === selectedCalendarDir).length === 0 && (
-                    <div className="py-20 flex flex-col items-center justify-center text-center bg-slate-50 border-2 border-dashed border-slate-200 rounded-[3rem]">
-                      <FileText size={48} className="text-slate-200 mb-4" />
-                      <h4 className="text-lg font-bold text-slate-600 mb-1">Calendrier Vide</h4>
-                      <p className="text-slate-400 text-sm max-w-xs mx-auto">
-                        Importez un PDF via l'IA ou synchronisez les règles par défaut pour commencer.
-                      </p>
-                    </div>
-                  )}
+                      );
+                    })()}
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -3380,19 +3891,19 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             <div className="flex gap-2 mb-6 bg-slate-50 p-1.5 rounded-2xl w-fit mx-auto md:mx-0">
               <button
                 onClick={() => setRequestSubTab('all')}
-                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'all' ? 'bg-white text-green-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'all' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 Toutes les demandes
               </button>
               <button
                 onClick={() => setRequestSubTab('signed')}
-                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'signed' ? 'bg-white text-green-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'signed' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 <CheckCircle2 size={16} /> Demande Signés
               </button>
               <button
                 onClick={() => setRequestSubTab('transfers')}
-                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all relative ${requestSubTab === 'transfers' ? 'bg-white text-orange-600 shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all relative ${requestSubTab === 'transfers' ? 'bg-white text-brand-accent shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 <FileStack size={16} /> Transferts
                 {transferRequests.filter(r => r.status === 'En attente').length > 0 && (
@@ -3680,7 +4191,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       <td className="px-6 py-4 text-sm">
                         <span className="font-bold text-gray-700 uppercase">{req.requesterName || req.nomDemandeur || req.nom}</span>
                       </td>
-                      <td className="px-6 py-4 text-sm font-bold text-blue-600">
+                      <td className="px-6 py-4 text-sm font-bold text-brand-primary">
                         {Array.isArray(req.references) ? req.references[0] : (req.reference || '-')}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
@@ -3704,7 +4215,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         <div className="flex items-center justify-end gap-2">
                           <button 
                             onClick={() => setViewingRequest(req)}
-                            className="bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all flex items-center gap-2"
+                            className="bg-brand-primary text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-brand-primary/20 hover:opacity-90 transition-all flex items-center gap-2"
                           >
                             <FileText size={14} /> BORDEREAU
                           </button>
@@ -3749,7 +4260,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       <td className="px-6 py-4">
                         <span className={cn(
                           "text-[10px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider",
-                          req.status === 'Traitée' || req.status === 'Validée' ? 'bg-green-50 text-green-700 border-green-100' :
+                          req.status === 'Traitée' || req.status === 'Validée' ? 'bg-brand-primary/10 text-brand-primary border-brand-primary/20' :
                           req.status === 'En attente' ? 'bg-amber-50 text-amber-600 border-amber-100' :
                           req.status === 'Rejetée' ? 'bg-red-50 text-red-600 border-red-100' :
                           'bg-slate-100 text-slate-500 border-slate-200'
@@ -3763,7 +4274,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                             <>
                               <button 
                                 onClick={() => handleUpdateTransferStatus(req.id, 'Validée')}
-                                className="p-1.5 text-green-500 hover:bg-green-50 rounded-lg transition-all"
+                                className="p-1.5 text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
                                 title="Valider le transfert"
                               >
                                 <CheckCircle size={18} />
@@ -3829,7 +4340,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       {req.priorite && (
                         <span className={cn(
                           "text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter",
-                          req.priorite === 'Urgente' ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-blue-600'
+                          req.priorite === 'Urgente' ? 'bg-red-50 text-red-600' : 'bg-brand-primary/10 text-brand-primary'
                         )}>
                           {req.priorite}
                         </span>
@@ -3839,9 +4350,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <td className="px-6 py-4">
                     <span className={cn(
                       "text-[10px] font-bold px-2.5 py-1 rounded-full border uppercase tracking-wider",
-                      req.status === 'signed' || req.status === 'Prêt / Communiqué' ? 'bg-green-50 text-green-700 border-green-100' :
+                      req.status === 'signed' || req.status === 'Prêt / Communiqué' ? 'bg-brand-primary/10 text-brand-primary border-brand-primary/20' :
                       req.status === 'pending' || req.status === 'En attente' ? 'bg-amber-50 text-amber-600 border-amber-100' :
-                      req.status === 'En cours' ? 'bg-blue-50 text-blue-600 border-blue-100' :
+                      req.status === 'En cours' ? 'bg-brand-primary/20 text-brand-primary border-brand-primary/30' :
                       req.status === 'Refusé' ? 'bg-red-50 text-red-600 border-red-100' :
                       'bg-slate-100 text-slate-500 border-slate-200'
                     )}>
@@ -3853,7 +4364,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                        {(req.status === 'signed' || req.status === 'Prêt / Communiqué') && (
                         <button 
                           onClick={() => setViewingRequest(req)}
-                          className="p-2 text-blue-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                          className="p-2 text-brand-primary hover:bg-brand-primary/10 rounded-xl transition-all"
                           title="Voir le bordereau"
                         >
                           <Eye size={16} />
@@ -3962,7 +4473,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               exit={{ scale: 0.9, opacity: 0 }}
               className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
             >
-              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-[#004d2c]">
+              <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-brand-primary">
                 <div className="flex items-center gap-3">
                    <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-white">
                       <FileText size={20} />
@@ -4008,8 +4519,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Statut Archivistique</p>
                         <div className="flex justify-end pt-1">
                            {viewingRequest.archivalStatus === 'Expired' && <span className="bg-rose-500 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Échu ({viewingRequest.expiryDate})</span>}
-                           {viewingRequest.archivalStatus === 'SemiActive' && <span className="bg-amber-500 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Semi-Actif</span>}
-                           {viewingRequest.archivalStatus === 'Active' && <span className="bg-emerald-500 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Actif</span>}
+                           {viewingRequest.archivalStatus === 'SemiActive' && <span className="bg-brand-accent text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Semi-Actif</span>}
+                           {viewingRequest.archivalStatus === 'Active' && <span className="bg-brand-primary text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Actif</span>}
                         </div>
                       </div>
                     </div>
@@ -4019,7 +4530,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Intitulé / Objet</p>
                           {isEditingDetail ? (
                             <textarea 
-                              className="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm font-bold text-slate-700 focus:ring-orange-500 min-h-[80px]"
+                              className="w-full bg-white border border-slate-200 rounded-xl p-2 text-sm font-bold text-slate-700 focus:ring-brand-accent min-h-[80px]"
                               value={editedDetailItem.intitule}
                               onChange={(e) => setEditedDetailItem({...editedDetailItem, intitule: e.target.value})}
                             />
@@ -4183,11 +4694,11 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                              </div>
                           </div>
                           
-                          <div className="p-4 bg-green-50 border border-green-100 rounded-2xl flex items-start gap-3">
-                             <CheckCircle className="text-green-500 shrink-0" size={18} />
+                          <div className="p-4 bg-brand-primary/10 border border-brand-primary/20 rounded-2xl flex items-start gap-3">
+                             <CheckCircle2 className="text-brand-primary shrink-0" size={18} />
                              <div>
-                                <p className="text-xs font-bold text-green-800 uppercase tracking-tight">Statut Final</p>
-                                <p className="text-green-700 text-sm font-medium">Communiqué et signé le {toSafeDate(viewingRequest.updatedAt || viewingRequest.createdAt) ? format(toSafeDate(viewingRequest.updatedAt || viewingRequest.createdAt)!, 'dd/MM/yyyy à HH:mm') : '...'}</p>
+                                <p className="text-xs font-bold text-brand-primary uppercase tracking-tight">Statut Final</p>
+                                <p className="text-brand-primary text-sm font-medium">Communiqué et signé le {toSafeDate(viewingRequest.updatedAt || viewingRequest.createdAt) ? format(toSafeDate(viewingRequest.updatedAt || viewingRequest.createdAt)!, 'dd/MM/yyyy à HH:mm') : '...'}</p>
                              </div>
                           </div>
                        </div>
@@ -4542,6 +5053,154 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   </Button>
                 </div>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Modal Quick Import Rule */}
+      <AnimatePresence>
+        {isAddingImportRule && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl overflow-hidden p-10 flex flex-col max-h-[90vh]"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
+                    <Plus size={24} strokeWidth={2.5} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 leading-tight">NOUVELLE RÈGLE DUA</h3>
+                    <p className="text-slate-400 text-xs font-medium">Ajout direct pour l'import d'inventaire</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setIsAddingImportRule(false)}
+                  className="p-2 text-slate-400 hover:bg-slate-50 rounded-full transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveImportRule} className="space-y-4 overflow-y-auto pr-2 custom-scrollbar">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Direction</label>
+                  <input 
+                    type="text"
+                    disabled
+                    value={newImportRule.direction}
+                    className="w-full bg-slate-100 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-505 focus:outline-none font-sans"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Code / Réf (Obligatoire)</label>
+                    <input 
+                      type="text"
+                      required
+                      value={newImportRule.reference}
+                      onChange={e => setNewImportRule({...newImportRule, reference: e.target.value})}
+                      placeholder="Ex: REF-001"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Type Document</label>
+                    <input 
+                      type="text"
+                      value={newImportRule.docType || ''}
+                      onChange={e => setNewImportRule({...newImportRule, docType: e.target.value})}
+                      placeholder="Ex: Factures"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Intitulé / Titre (Obligatoire)</label>
+                  <input 
+                    type="text"
+                    required
+                    value={newImportRule.title}
+                    onChange={e => setNewImportRule({...newImportRule, title: e.target.value})}
+                    placeholder="Ex: Dossiers comptables fiscaux"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">DUA Courant (ans)</label>
+                    <input 
+                      type="number"
+                      required
+                      min="0"
+                      value={newImportRule.activeYears}
+                      onChange={e => setNewImportRule({...newImportRule, activeYears: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">DUA Interm. (ans)</label>
+                    <input 
+                      type="number"
+                      required
+                      min="0"
+                      value={newImportRule.semiActiveYears}
+                      onChange={e => setNewImportRule({...newImportRule, semiActiveYears: parseInt(e.target.value) || 0})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Sort Final</label>
+                    <select 
+                      value={newImportRule.finalDisposition}
+                      onChange={e => setNewImportRule({...newImportRule, finalDisposition: e.target.value})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    >
+                      <option value="EL">Élimination (EL)</option>
+                      <option value="CT">Conservation (CT)</option>
+                      <option value="CR">Tri / Échantillonnage (CR)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-1">Support de Conservation</label>
+                    <select 
+                      value={newImportRule.support}
+                      onChange={e => setNewImportRule({...newImportRule, support: e.target.value})}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:border-brand-primary transition-all font-sans"
+                    >
+                      <option value="Papier">Papier</option>
+                      <option value="Numerique">Numérique</option>
+                      <option value="Hybride">Hybride</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-6">
+                  <button 
+                    type="button"
+                    onClick={() => setIsAddingImportRule(false)}
+                    className="flex-1 py-4 bg-slate-100 rounded-2xl text-slate-600 font-black uppercase text-xs hover:bg-slate-200 transition-all font-sans"
+                  >
+                    Annuler
+                  </button>
+                  <button 
+                    type="submit"
+                    className="flex-1 py-4 bg-brand-accent rounded-2xl text-white font-black uppercase text-xs shadow-xl shadow-brand-accent/20 hover:opacity-90 transition-all font-sans"
+                  >
+                    Confirmer
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}

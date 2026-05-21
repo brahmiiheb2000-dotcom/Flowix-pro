@@ -21,6 +21,9 @@ interface AuthContextType {
   profile: any | null;
   loading: boolean;
   switchRole: (role: UserRole) => void;
+  remoteRequests: any[];
+  pendingRequests: any[];
+  lastUpdate: number;
 }
 
 const AuthContext = createContext<AuthContextType>({ 
@@ -28,7 +31,10 @@ const AuthContext = createContext<AuthContextType>({
   role: null, 
   profile: null, 
   loading: true,
-  switchRole: () => {} 
+  switchRole: () => {},
+  remoteRequests: [],
+  pendingRequests: [],
+  lastUpdate: 0
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -47,11 +53,11 @@ function SidebarLink({ icon, label, active, onClick }: SidebarLinkProps) {
       className={cn(
         "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
         active 
-          ? "bg-green-50 text-green-700 shadow-sm shadow-green-100" 
-          : "text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+          ? "bg-brand-secondary text-brand-primary shadow-sm border border-brand-primary/10" 
+          : "text-slate-500 hover:bg-brand-secondary hover:text-slate-900"
       )}
     >
-      <span className={cn(active ? "text-green-600" : "text-slate-400")}>
+      <span className={cn(active ? "text-brand-primary" : "text-slate-400")}>
         {icon}
       </span>
       {label}
@@ -70,6 +76,7 @@ export default function App() {
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   const [activeView, setActiveView] = useState<'dashboard' | 'remote'>('dashboard');
   const [notification, setNotification] = useState<{message: string, type: 'info' | 'success'} | null>(null);
+  const [lastUpdate, setLastUpdate] = useState(Date.now());
 
   const lastRemoteCount = useRef(0);
   const lastInternalCount = useRef(0);
@@ -160,6 +167,7 @@ export default function App() {
 
         setRemoteRequests(remotes);
         setPendingRequests(internals);
+        setLastUpdate(Date.now());
         lastRemoteCount.current = remotes.length;
         lastInternalCount.current = internals.length;
       }).catch(err => {
@@ -167,7 +175,7 @@ export default function App() {
           console.error("Badge polling error", err);
         }
       });
-    }, 45000); // 45s instead of 20s
+    }, 90000); // 90s interval to stay safe from 429
 
     return () => {
       isMounted = false;
@@ -193,6 +201,17 @@ export default function App() {
     }
   };
 
+  const authValue = React.useMemo(() => ({ 
+    user, 
+    role, 
+    profile, 
+    loading, 
+    switchRole,
+    remoteRequests,
+    pendingRequests,
+    lastUpdate
+  }), [user, role, profile, loading, remoteRequests, pendingRequests, lastUpdate]);
+
   const pathname = window.location.pathname;
 
   if (pathname === '/demande-distance') {
@@ -213,25 +232,25 @@ export default function App() {
           <Logo size={48} className="scale-150" />
         </motion.div>
         <motion.div 
-          className="mt-12 h-1 w-48 bg-gray-100 rounded-full overflow-hidden"
+          className="mt-12 h-1 w-48 bg-brand-secondary rounded-full overflow-hidden border border-brand-primary/10"
           initial={{ width: 0 }}
           animate={{ width: 192 }}
           transition={{ duration: 1.5, ease: "easeInOut" }}
         >
           <motion.div 
-            className="h-full bg-green-500"
+            className="h-full bg-brand-primary"
             animate={{ x: [-192, 192] }}
             transition={{ repeat: Infinity, duration: 1 }}
           />
         </motion.div>
-        <p className="mt-4 text-gray-400 font-medium tracking-widest text-xs uppercase">Enterprise Archive Solutions</p>
+        <p className="mt-4 text-brand-primary/40 font-bold tracking-[0.2em] text-[10px] uppercase">Enterprise Archive Solutions</p>
       </div>
     );
   }
 
   return (
-    <AuthContext.Provider value={{ user, role, profile, loading, switchRole }}>
-      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-green-100 selection:text-green-900">
+    <AuthContext.Provider value={authValue}>
+      <div className="min-h-screen bg-brand-secondary text-slate-800 font-sans selection:bg-brand-primary selection:text-white">
         <AnimatePresence>
           {notification && (
             <motion.div
@@ -240,7 +259,7 @@ export default function App() {
               exit={{ opacity: 0, y: -50, x: '-50%' }}
               className={cn(
                 "fixed top-4 left-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border min-w-[300px]",
-                notification.type === 'success' ? "bg-green-600 text-white border-green-500" : "bg-blue-600 text-white border-blue-500"
+                notification.type === 'success' ? "bg-brand-primary text-white border-brand-primary/20" : "bg-brand-accent text-white border-brand-accent/20"
               )}
             >
               <div className="bg-white/20 p-2 rounded-xl">
@@ -277,7 +296,7 @@ export default function App() {
                       onClick={() => setActiveView('dashboard')}
                       className={cn(
                         "px-4 py-2 rounded-xl text-sm font-bold transition-all",
-                        activeView === 'dashboard' ? "bg-green-50 text-green-700" : "text-slate-500 hover:bg-slate-50"
+                        activeView === 'dashboard' ? "bg-brand-secondary text-brand-primary border border-brand-primary/10" : "text-slate-500 hover:bg-brand-secondary"
                       )}
                     >
                       Tableau de bord
@@ -287,12 +306,12 @@ export default function App() {
                         onClick={() => setActiveView('remote')}
                         className={cn(
                           "px-4 py-2 rounded-xl text-sm font-bold transition-all relative",
-                          activeView === 'remote' ? "bg-green-50 text-green-700" : "text-slate-500 hover:bg-slate-50"
+                          activeView === 'remote' ? "bg-brand-secondary text-brand-primary border border-brand-primary/10" : "text-slate-500 hover:bg-brand-secondary"
                         )}
                       >
                         Demandes Reçues
                         {remotePendingCount > 0 && (
-                          <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border border-white" />
+                          <span className="absolute top-1 right-1 w-2 h-2 bg-brand-accent rounded-full border border-white" />
                         )}
                       </button>
                     )}
@@ -301,7 +320,7 @@ export default function App() {
 
                 <div className="flex items-center gap-4">
                   {/* Role Switcher Popover simple */}
-                  <div className="flex items-center gap-2 p-1 bg-slate-100 rounded-xl overflow-hidden shrink-0">
+                  <div className="flex items-center gap-2 p-1 bg-brand-secondary border border-slate-200 rounded-xl overflow-hidden shrink-0">
                     {(['Admin', 'Agent', 'Archivist', 'Demandeur'] as UserRole[]).map((r) => (
                       <button
                         key={r}
@@ -309,7 +328,7 @@ export default function App() {
                         className={cn(
                           "px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all",
                           role === r 
-                            ? "bg-white text-green-600 shadow-sm" 
+                            ? "bg-brand-primary text-white shadow-sm" 
                             : "text-slate-500 hover:text-slate-800"
                         )}
                       >

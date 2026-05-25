@@ -33,6 +33,7 @@
     "motion": "^12.23.24",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^8.0.5",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-barcode": "^1.6.1",
     "react-dom": "^19.0.0",

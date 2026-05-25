@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -58,6 +58,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [fullStats, setFullStats] = useState<any>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [importHistory, setImportHistory] = useState<any[]>([]);
+  const [validationHistory, setValidationHistory] = useState<any[]>([]);
   const [importStep, setImportStep] = useState<'upload' | 'preview' | 'importing'>('upload');
   const [importPreviewData, setImportPreviewData] = useState<any[]>([]);
   const [importHeaders, setImportHeaders] = useState<string[]>([]);
@@ -429,9 +430,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     // 1. Upload file to server for persistence (Secure Storage)
     let serverFilename = null;
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const uploadRes = await api.post('/api/mass-inventory/upload-archive', formData);
+      const uploadRes = await api.postFile('/api/mass-inventory/upload-archive', file);
       serverFilename = uploadRes.filename;
       setUploadedServerFilename(serverFilename);
     } catch (err) {
@@ -636,8 +635,21 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   useEffect(() => {
     if (activeTab === 'massInventory' && massSubTab === 'history') {
       api.get('/api/mass-inventory/history').then(setImportHistory).catch(console.error);
+      api.get('/api/centralized-inventory/validation-history').then(setValidationHistory).catch(console.error);
     }
   }, [activeTab, massSubTab]);
+
+  const deleteValidationHistoryEntry = async (id: string) => {
+    if (window.confirm("Voulez-vous vraiment supprimer cet enregistrement de validation ?")) {
+      try {
+        await api.delete(`/api/centralized-inventory/validation-history/${id}`);
+        setValidationHistory(prev => prev.filter(item => item.id !== id));
+      } catch (err) {
+        console.error("Error deleting validation entry:", err);
+        alert("Erreur lors de la suppression de l'enregistrement de validation.");
+      }
+    }
+  };
 
   const handleReturnInventoryImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2216,7 +2228,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               onClick={() => setMassSubTab('view')}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'view' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              <Library size={16} /> INVENTAIRE
+              <Library size={16} /> RECHERCHE
             </button>
             <button
               onClick={() => setMassSubTab('import')}
@@ -2229,12 +2241,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'history' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <History size={16} /> SUIVI DES INVENTAIRES
-            </button>
-            <button
-              onClick={() => setMassSubTab('monitoring')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'monitoring' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-              <TrendingUp size={16} /> SURVEILLANCE ARCHI.
             </button>
             <button
               onClick={() => setMassSubTab('centralized')}
@@ -2747,7 +2753,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                  onClick={() => deleteMassItem(item.id)}
                                  className="flex items-center gap-2 px-4 py-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs"
                                >
-                                 <Trash2 size={16}/> Supprimer
+                                <Trash2 size={16}/> Supprimer
                                </button>
                              </div>
                           </div>
@@ -2759,209 +2765,162 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </motion.div>
             )}
 
-            {massSubTab === 'monitoring' && (
-              <motion.div
-                key="mass-monitoring"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-6"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <h3 className="text-xl font-bold text-slate-800">
-                      Suivi de l'Inventaire de Masse ({massInventoryStats.total.toLocaleString()})
-                    </h3>
-                    <p className="text-slate-500 text-sm">Analyse et pilotage du cycle de vie des dossiers.</p>
-                  </div>
-                  <Button 
-                    variant="destructive"
-                    className="bg-rose-600 hover:bg-rose-700 text-white font-black px-6 shadow-lg shadow-rose-100"
-                    onClick={async () => {
-                      if(confirm("ATTENTION : Cette action supprimera DÉFINITIVEMENT l'intégralité de l'inventaire de masse ainsi que tout l'historique d'import. Cette opération est irréversible. Continuer ?")) {
-                        try {
-                          await api.post('/api/mass-inventory/clear', {});
-                          setMassInventory([]);
-                          setImportPreviewData([]);
-                          setMappedItems([]);
-                          await fetchData();
-                          await fetchArchivalMonitoring();
-                          alert("Stock vidé avec succès.");
-                        } catch (err) {
-                          alert("Erreur lors de la suppression du stock.");
-                        }
-                      }
-                    }}
-                  >
-                    <Trash2 size={16} className="mr-2" /> VIDER L'INTÉGRALITÉ DU STOCK
-                  </Button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div className={cn(
-                    "p-4 rounded-3xl border transition-all cursor-pointer",
-                    monitoringStatus === 'Active' ? "bg-brand-primary/10 border-brand-primary/20 shadow-sm" : "bg-white border-slate-100"
-                  )} onClick={() => setMonitoringStatus('Active')}>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Actifs</p>
-                    <p className="text-2xl font-black text-brand-primary">{archivalMonitoringStats.active.toLocaleString()}</p>
-                  </div>
-                  <div className={cn(
-                    "p-4 rounded-3xl border transition-all cursor-pointer",
-                    monitoringStatus === 'SemiActive' ? "bg-brand-accent/10 border-brand-accent/20 shadow-sm" : "bg-white border-slate-100"
-                  )} onClick={() => setMonitoringStatus('SemiActive')}>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Semi-Actifs</p>
-                    <p className="text-2xl font-black text-brand-accent">{archivalMonitoringStats.semiActive.toLocaleString()}</p>
-                  </div>
-                  <div className={cn(
-                    "p-4 rounded-3xl border transition-all cursor-pointer",
-                    monitoringStatus === 'Expired' ? "bg-rose-50 border-rose-200 shadow-sm" : "bg-white border-slate-100"
-                  )} onClick={() => setMonitoringStatus('Expired')}>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Échus (D.U.A dépassée)</p>
-                    <p className="text-2xl font-black text-rose-600">{archivalMonitoringStats.expired.toLocaleString()}</p>
-                  </div>
-                  <div className="p-4 rounded-3xl bg-slate-900 text-white shadow-lg">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest opacity-60">Total Dossiers</p>
-                    <p className="text-2xl font-black">{archivalMonitoringStats.total.toLocaleString()}</p>
-                  </div>
-                </div>
-
-                <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                      <Clock size={18} className="text-rose-500" />
-                      Détails de la Cohorte : <span className="text-rose-600 font-black italic">{monitoringStatus === 'Expired' ? 'Échus' : monitoringStatus}</span>
-                    </h3>
-                    <Button 
-                      className="bg-slate-900 text-white text-xs px-4"
-                      onClick={() => {
-                        if (monitoringStatus === 'Expired') {
-                          setSelectedForElimination(monitoringItems.map(i => i.id));
-                          setMassSubTab('view');
-                        }
-                      }}
-                    >
-                      <Download size={14} className="mr-2" /> Exporter Liste
-                    </Button>
-                  </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className="text-[10px] font-bold text-slate-400 border-b border-slate-50 uppercase tracking-widest">
-                          <th className="pb-3 px-2">Référence</th>
-                          <th className="pb-3 px-2">Intitulé</th>
-                          <th className="pb-3 px-2">Échéance</th>
-                          <th className="pb-3 px-2 text-right">Statut</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {monitoringItems.map(item => (
-                          <tr key={item.id} className="border-b border-slate-50/50 hover:bg-slate-50/50 transition-colors">
-                            <td className="py-2 px-2 text-sm font-black text-slate-700">{item.reference}</td>
-                            <td className="py-2 px-2 text-xs text-slate-500 truncate max-w-[300px]">{item.intitule}</td>
-                            <td className="py-2 px-2 text-sm font-bold text-rose-600">{item.expiryDate}</td>
-                            <td className="py-2 px-2 text-right">
-                              <span className={cn(
-                                "px-2 py-0.5 rounded-full text-[9px] font-black uppercase",
-                                item.archivalStatus === 'Expired' ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"
-                              )}>
-                                {item.archivalStatus}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
             {massSubTab === 'history' && (
               <motion.div
                 key="mass-history"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
-                className="space-y-6"
+                className="space-y-8"
               >
-                <div className="flex items-center justify-between mb-4">
+                {/* SECTION 1: VALIDATION ET CLÔTURE DES POINTAGES */}
+                <div className="bg-white rounded-3xl p-8 border border-slate-200/80 shadow-sm space-y-5">
                   <div className="flex flex-col gap-1">
-                    <h3 className="text-xl font-bold text-slate-800">
-                      Historique des Imports ({massInventoryStats.total.toLocaleString()} dossiers au total)
+                    <h3 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
+                      <CheckSquare className="text-emerald-600" size={20} strokeWidth={2.5} />
+                      Suivi des Validations de Pointage ({validationHistory.length})
                     </h3>
-                    <p className="text-slate-500 text-sm">Suivi des fichiers Excel importés dans l'inventaire de masse.</p>
+                    <p className="text-slate-500 text-xs font-semibold">
+                      Suivi détaillé des dossiers physiques pointés et validés par les archivistes avec la source personnalisée.
+                    </p>
                   </div>
-                  <Button 
-                    variant="destructive"
-                    className="bg-rose-600 hover:bg-rose-700 text-white h-10 px-6 rounded-xl font-bold transition-all shadow-lg shadow-rose-100 active:scale-95"
-                    onClick={async () => {
-                      if(confirm("ATTENTION : Cette action supprimera DÉFINITIVEMENT l'intégralité de l'inventaire de masse ainsi que tout l'historique d'import. Cette opération est irréversible. Continuer ?")) {
-                        try {
-                          await api.post('/api/mass-inventory/clear', {});
-                          setMassInventory([]);
-                          setImportPreviewData([]);
-                          setMappedItems([]);
-                          await fetchData();
-                          await fetchArchivalMonitoring();
-                          alert("Le système a été réinitialisé.");
-                        } catch (err) {
-                          alert("Erreur lors de l'opération.");
-                        }
-                      }
-                    }}
-                  >
-                    <Trash2 size={16} className="mr-2" /> RÉINITIALISER TOUT
-                  </Button>
+                  
+                  <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-sm">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-slate-50 border-b border-slate-100">
+                        <tr>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date de Validation</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Source (Saisie Manuelle)</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nombre de Dossiers</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nombre de Boîtes</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Boîtes concernées</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {validationHistory.map((v: any) => (
+                          <tr key={v.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-6 py-4 text-xs font-semibold text-slate-600">
+                              {new Date(v.validationDate).toLocaleString('fr-FR')}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className="px-3 py-1 bg-emerald-50 text-emerald-800 rounded-full text-[10px] font-black uppercase border border-emerald-100">
+                                {v.source || 'Sans Source'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-sm font-black text-brand-primary">
+                              {v.foldersCount} dossier(s)
+                            </td>
+                            <td className="px-6 py-4 text-sm font-bold text-slate-700">
+                              {v.boxesCount} boîte(s)
+                            </td>
+                            <td className="px-6 py-4 text-[11px] font-mono text-slate-500 truncate max-w-[200px]" title={v.boxesList}>
+                              {v.boxesList || '—'}
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <button 
+                                onClick={() => deleteValidationHistoryEntry(v.id)}
+                                className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg transition-all active:scale-95"
+                                title="Supprimer cet historique de validation"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {validationHistory.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic text-xs">
+                              Aucun pointage d'inventaire validé et clôturé pour le moment.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
-                <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-sm">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-slate-50 border-b border-slate-100">
-                      <tr>
-                        <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date Import</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fichier</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Direction</th>
-                        <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Dossiers</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                      {importHistory.map((h: any) => (
-                        <tr key={h.id} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 text-xs font-medium text-slate-500">
-                            {new Date(h.createdAt).toLocaleString('fr-FR')}
-                          </td>
-                          <td className="px-6 py-4">
-                            <div className="flex items-center justify-between gap-4">
-                              <span className="text-sm font-bold text-slate-700 truncate max-w-[200px]" title={h.filename}>{h.filename}</span>
-                              <button 
-                                onClick={() => downloadStoredFile(h.filename)}
-                                className="p-2 text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
-                                title="Télécharger le fichier original"
-                              >
-                                <Download size={16} />
-                              </button>
-                            </div>
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase">
-                              {h.direction}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-sm font-bold text-brand-accent">
-                            {h.itemsCount?.toLocaleString()}
-                          </td>
-                        </tr>
-                      ))}
-                      {importHistory.length === 0 && (
+                {/* SECTION 2: IMPORTS EXCEL */}
+                <div className="bg-white rounded-3xl p-8 border border-slate-200/80 shadow-sm space-y-5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-1">
+                      <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
+                        <FileSpreadsheet className="text-brand-accent animate-pulse" size={20} />
+                        Historique des Imports Excel de Masse ({massInventoryStats.total.toLocaleString()} dossiers)
+                      </h3>
+                      <p className="text-slate-500 text-xs font-semibold">Suivi des fichiers Excel importés dans l'inventaire de masse.</p>
+                    </div>
+                    <Button 
+                      variant="destructive"
+                      className="bg-rose-600 hover:bg-rose-700 text-white h-10 px-6 rounded-xl font-bold transition-all shadow-lg shadow-rose-100 active:scale-95"
+                      onClick={async () => {
+                        if(confirm("ATTENTION : Cette action supprimera DÉFINITIVEMENT l'intégralité de l'inventaire de masse ainsi que tout l'historique d'import. Cette opération est irréversible. Continuer ?")) {
+                          try {
+                            await api.post('/api/mass-inventory/clear', {});
+                            setMassInventory([]);
+                            setImportPreviewData([]);
+                            setMappedItems([]);
+                            await fetchData();
+                            await fetchArchivalMonitoring();
+                            alert("Le système a été réinitialisé.");
+                          } catch (err) {
+                            alert("Erreur lors de l'opération.");
+                          }
+                        }
+                      }}
+                    >
+                      <Trash2 size={16} className="mr-2" /> RÉINITIALISER L'INVENTAIRE DE MASSE
+                    </Button>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-sm">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-slate-50 border-b border-slate-100">
                         <tr>
-                          <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
-                            Aucun import dans l'historique.
-                          </td>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date Import</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Fichier</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Direction</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Dossiers</th>
                         </tr>
-                      )}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50">
+                        {importHistory.map((h: any) => (
+                          <tr key={h.id} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-6 py-4 text-xs font-medium text-slate-500">
+                              {new Date(h.createdAt).toLocaleString('fr-FR')}
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-sm font-bold text-slate-700 truncate max-w-[200px]" title={h.filename}>{h.filename}</span>
+                                <button 
+                                  onClick={() => downloadStoredFile(h.filename)}
+                                  className="p-2 text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
+                                  title="Télécharger le fichier original"
+                                >
+                                  <Download size={16} />
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase">
+                                {h.direction}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-sm font-bold text-brand-accent">
+                              {h.itemsCount?.toLocaleString()}
+                            </td>
+                          </tr>
+                        ))}
+                        {importHistory.length === 0 && (
+                          <tr>
+                            <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">
+                              Aucun import dans l'historique.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </motion.div>
             )}

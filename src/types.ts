@@ -14,6 +14,13 @@ export interface Folder {
   ruleId?: number | string;
   direction?: string;
   intitule?: string;
+  dateDebut?: string;
+  localisation?: string;
+  source?: string;
+  codeDua?: string;
+  category?: string;
+  expiryDate?: string;
+  archivalStatus?: string;
 }
 
 export interface Box {
@@ -25,6 +32,9 @@ export interface Box {
   travee: string;
   tablette: string;
   observations?: string;
+  direction?: string;
+  clotureText?: string;
+  clotureDate?: string;
   createdAt: string;
   updatedAt: string;
 }

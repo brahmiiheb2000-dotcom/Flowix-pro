@@ -64,6 +64,15 @@ db.exec(`
     createdAt TEXT,
     updatedAt TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS centralized_validation_history (
+    id TEXT PRIMARY KEY,
+    validationDate TEXT,
+    foldersCount INTEGER,
+    boxesCount INTEGER,
+    boxesList TEXT,
+    source TEXT
+  );
 `);
 
 // Migration: Add new columns if missing
@@ -521,8 +530,52 @@ async function startServer() {
         direction, direction,
         showEliminated ? 1 : 0
       );
-      
-      res.json(results || []);
+
+      // Search also in centralized_inventory for both pointed and verified dossiers
+      const centralQuery = `
+        SELECT 
+          'centralized_' || ci.reference AS id,
+          ci.reference AS reference,
+          ci.intitule AS intitule,
+          ci.reference AS dossier,
+          ci.boxNumber AS numBoite,
+          (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, '')) AS localisation,
+          ci.direction AS direction,
+          ci.isEliminated AS isEliminated,
+          COALESCE(ci.verifiedAt, ci.pointedAt, ci.updatedAt) AS createdAt,
+          'centralized' AS sourceType,
+          ci.status AS status,
+          ci.archivalStatus AS archivalStatus,
+          ci.expiryDate AS expiryDate
+        FROM centralized_inventory ci
+        LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
+        WHERE (
+          ? IS NULL OR
+          ci.reference LIKE ? OR 
+          ci.intitule LIKE ? OR 
+          ci.boxNumber LIKE ? OR 
+          COALESCE(b.depot, '') LIKE ? OR
+          COALESCE(b.travee, '') LIKE ? OR
+          COALESCE(b.tablette, '') LIKE ?
+        )
+        AND (ci.status = 'pointed' OR ci.status = 'verified')
+        AND (ci.direction = ? OR ? = 'all')
+        AND (? = 1 OR ci.isEliminated IS NULL OR ci.isEliminated = 0)
+        ORDER BY createdAt DESC
+        LIMIT 100
+      `;
+
+      const centralResults = db.prepare(centralQuery).all(
+        searchTerm,
+        searchTerm, searchTerm, searchTerm, 
+        searchTerm, searchTerm, searchTerm,
+        direction, direction,
+        showEliminated ? 1 : 0
+      );
+
+      const blended = [...(results || []), ...(centralResults || [])];
+      // Optional: Sort blended results by reference or date
+      res.json(blended);
     } catch (err: any) { 
       console.error("Mass search error:", err);
       res.status(500).json({ error: err.message }); 
@@ -563,6 +616,17 @@ async function startServer() {
       console.error("Create mass item error:", err);
       res.status(500).json({ error: err.message });
     }
+  });
+
+  app.post("/api/mass-inventory/upload-archive", authenticate, upload.single('file'), (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Aucun fichier fourni" });
+    }
+    res.json({ success: true, filename: req.file.filename });
   });
 
   app.post("/api/mass-inventory/import", authenticate, (req: any, res) => {
@@ -1252,6 +1316,51 @@ async function startServer() {
       res.json({ success: true });
     } catch (err: any) {
       console.error("Centralized sync error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/centralized-inventory/validation-history", authenticate, (req: any, res) => {
+    try {
+      const history = db.prepare("SELECT * FROM centralized_validation_history ORDER BY validationDate DESC").all();
+      res.json(history);
+    } catch (err: any) {
+      console.error("Fetch validation history error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/centralized-inventory/validation-history", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { foldersCount, boxesCount, boxesList, source } = req.body;
+      const id = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const validationDate = new Date().toISOString();
+
+      db.prepare(`
+        INSERT INTO centralized_validation_history (id, validationDate, foldersCount, boxesCount, boxesList, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, validationDate, foldersCount || 0, boxesCount || 0, boxesList || '', source || '');
+
+      res.status(201).json({ success: true, id });
+    } catch (err: any) {
+      console.error("Save validation history error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/centralized-inventory/validation-history/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { id } = req.params;
+      db.prepare("DELETE FROM centralized_validation_history WHERE id = ?").run(id);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Delete validation history error:", err);
       res.status(500).json({ error: err.message });
     }
   });

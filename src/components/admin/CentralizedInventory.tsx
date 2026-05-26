@@ -40,6 +40,7 @@ import { Button } from '../UI';
 import { Folder, Box, ManualEntry, Tab } from '../../types';
 import Barcode from 'react-barcode';
 import { QRCodeSVG } from 'qrcode.react';
+import { api } from '../../lib/api';
 
 // --- CONSTANTS ---
 const DEPOTS = ['S1', 'S2', 'S3'];
@@ -206,14 +207,11 @@ export const CentralizedInventory = () => {
 
         // Fetch from server as well
         try {
-          const res = await fetch('/api/centralized-inventory');
-          if (res.ok) {
-            const serverData = await res.json();
-            if (serverData.folders?.length > 0) {
-              // Merge logic: server usually wins or we combine
-              storedFolders = mergeFolders(storedFolders, serverData.folders);
-              storedBoxes = mergeBoxes(storedBoxes, serverData.boxes);
-            }
+          const serverData = await api.get('/api/centralized-inventory');
+          if (serverData && serverData.folders?.length > 0) {
+            // Merge logic: server usually wins or we combine
+            storedFolders = mergeFolders(storedFolders, serverData.folders);
+            storedBoxes = mergeBoxes(storedBoxes, serverData.boxes);
           }
         } catch (serverErr) {
           console.error("Server fetch error:", serverErr);
@@ -238,11 +236,8 @@ export const CentralizedInventory = () => {
 
   const fetchArchivalRules = async () => {
     try {
-      const rulesRes = await fetch('/api/archival-directory');
-      if (rulesRes.ok) {
-        const rulesData = await rulesRes.json();
-        setArchivalRules(rulesData);
-      }
+      const rulesData = await api.get('/api/archival-directory');
+      setArchivalRules(rulesData);
     } catch (rulesErr) {
       console.error("Rules fetch error:", rulesErr);
     }
@@ -1181,14 +1176,7 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
   // Sync / Save Boxes to Server
   const syncWithServer = async (updatedBoxes: Box[]) => {
     try {
-      const res = await fetch('/api/centralized-inventory/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folders, boxes: updatedBoxes })
-      });
-      if (!res.ok) {
-        console.warn("Server sync returned non-ok status:", res.status);
-      }
+      await api.post('/api/centralized-inventory/sync', { folders, boxes: updatedBoxes });
     } catch (err) {
       console.error("Failed to sync boxes to backend server:", err);
     }
@@ -2245,27 +2233,20 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
   const handleDeleteRule = async (ruleId: string) => {
     if (!window.confirm("Êtes-vous sûr de vouloir supprimer cette règle de conservation pour de bon ? Les dossiers qui y sont liés dans l'inventaire perdront leur lien.")) return;
     try {
-      const res = await fetch(`/api/archival-directory/${ruleId}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        setToast({ message: "Règle de conservation supprimée avec succès !", type: 'success' });
-        if (onReloadRules) {
-          await onReloadRules();
-        }
-        // Also clear out folders in active view that have this rule
-        setFolders((prev: any[]) => prev.map((f: any) => {
-          if (String(f.ruleId) === String(ruleId)) {
-            return { ...f, ruleId: undefined, direction: undefined, intitule: undefined };
-          }
-          return f;
-        }));
-      } else {
-        const err = await res.json();
-        setToast({ message: "Erreur lors de la suppression: " + (err.error || res.statusText), type: 'error' });
+      await api.delete(`/api/archival-directory/${ruleId}`);
+      setToast({ message: "Règle de conservation supprimée avec succès !", type: 'success' });
+      if (onReloadRules) {
+        await onReloadRules();
       }
+      // Also clear out folders in active view that have this rule
+      setFolders((prev: any[]) => prev.map((f: any) => {
+        if (String(f.ruleId) === String(ruleId)) {
+          return { ...f, ruleId: undefined, direction: undefined, intitule: undefined };
+        }
+        return f;
+      }));
     } catch (err: any) {
-      setToast({ message: "Erreur réseau: " + err.message, type: 'error' });
+      setToast({ message: "Erreur lors de la suppression: " + err.message, type: 'error' });
     }
   };
 
@@ -2297,60 +2278,49 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
     }
     try {
       const url = editingRuleId ? `/api/archival-directory/${editingRuleId}` : '/api/archival-directory';
-      const method = editingRuleId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRule)
-      });
-      if (res.ok) {
-        const data = await res.json();
-        
-        if (editingRuleId) {
-          setToast({ message: "Règle de conservation mise à jour avec succès !", type: 'success' });
+      const data = editingRuleId ? await api.patch(url, newRule) : await api.post(url, newRule);
+      
+      if (editingRuleId) {
+        setToast({ message: "Règle de conservation mise à jour avec succès !", type: 'success' });
+        setFolders((prevFolders: any[]) => prevFolders.map((f: any) => {
+          if (String(f.ruleId) === String(editingRuleId)) {
+            return {
+              ...f,
+              direction: newRule.direction,
+              intitule: newRule.title
+            };
+          }
+          return f;
+        }));
+      } else {
+        setToast({ message: "Règle de conservation ajoutée avec succès !", type: 'success' });
+        // Automatically link this rule to the active folder
+        if (addRuleTargetFolder) {
           setFolders((prevFolders: any[]) => prevFolders.map((f: any) => {
-            if (String(f.ruleId) === String(editingRuleId)) {
+            if (f.reference === addRuleTargetFolder.reference) {
               return {
                 ...f,
+                ruleId: data.id,
                 direction: newRule.direction,
                 intitule: newRule.title
               };
             }
             return f;
           }));
-        } else {
-          setToast({ message: "Règle de conservation ajoutée avec succès !", type: 'success' });
-          // Automatically link this rule to the active folder
-          if (addRuleTargetFolder) {
-            setFolders((prevFolders: any[]) => prevFolders.map((f: any) => {
-              if (f.reference === addRuleTargetFolder.reference) {
-                return {
-                  ...f,
-                  ruleId: data.id,
-                  direction: newRule.direction,
-                  intitule: newRule.title
-                };
-              }
-              return f;
-            }));
-          }
         }
-        
-        // Reload global rules
-        if (onReloadRules) {
-          await onReloadRules();
-        }
-        
-        // Reset states
-        setIsAddingRule(false);
-        setEditingRuleId(null);
-        setAddRuleTargetFolder(null);
-      } else {
-        const errData = await res.json();
-        setToast({ message: "Erreur lors de l'enregistrement : " + (errData.error || res.statusText), type: 'error' });
       }
+      
+      // Reload global rules
+      if (onReloadRules) {
+        await onReloadRules();
+      }
+      
+      // Reset states
+      setIsAddingRule(false);
+      setEditingRuleId(null);
+      setAddRuleTargetFolder(null);
     } catch (err: any) {
-      setToast({ message: "Erreur réseau : " + err.message, type: 'error' });
+      setToast({ message: "Erreur lors de l'enregistrement : " + err.message, type: 'error' });
     }
   };
 
@@ -2488,23 +2458,13 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
           return f;
         });
 
-        const res = await fetch('/api/centralized-inventory/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folders: updatedFolders, boxes })
+        await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
+        setFolders(updatedFolders);
+        await set('ci_folders_v2', updatedFolders);
+        setToast({ 
+          message: `${pointedFolders.length} dossiers validés et stockés définitivement sur le serveur !`, 
+          type: 'success' 
         });
-
-        if (res.ok) {
-          setFolders(updatedFolders);
-          await set('ci_folders_v2', updatedFolders);
-          setToast({ 
-            message: `${pointedFolders.length} dossiers validés et stockés définitivement sur le serveur !`, 
-            type: 'success' 
-          });
-        } else {
-          const errData = await res.json();
-          setToast({ message: "Erreur lors du stockage automatique : " + (errData.error || res.statusText), type: 'error' });
-        }
       } catch (err: any) {
         setToast({ message: "Erreur de connexion : " + err.message, type: 'error' });
       }
@@ -2656,42 +2616,23 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
       });
 
       // 1. Enregistrer dans l'historique de validation
-      const histRes = await fetch('/api/centralized-inventory/validation-history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          foldersCount: pointedCount,
-          boxesCount: boxesCount,
-          boxesList: boxesList,
-          source: validationSource.trim()
-        })
+      await api.post('/api/centralized-inventory/validation-history', {
+        foldersCount: pointedCount,
+        boxesCount: boxesCount,
+        boxesList: boxesList,
+        source: validationSource.trim()
       });
-
-      if (!histRes.ok) {
-        const errData = await histRes.json();
-        setToast({ message: "Erreur enregistrement historique : " + (errData.error || histRes.statusText), type: 'error' });
-        return;
-      }
 
       // 2. Synchroniser les dossiers au statut 'verified'
-      const syncRes = await fetch('/api/centralized-inventory/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folders: updatedFolders, boxes })
-      });
+      await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
 
-      if (syncRes.ok) {
-        setFolders(updatedFolders);
-        await set('ci_folders_v2', updatedFolders);
-        setShowValidationModal(false);
-        setToast({ 
-          message: `Succès ! ${pointedCount} dossiers de la source "${validationSource}" sont maintenant validés et enregistrés.`,
-          type: 'success' 
-        });
-      } else {
-        const errData = await syncRes.json();
-        setToast({ message: "Erreur lors du stockage : " + (errData.error || syncRes.statusText), type: 'error' });
-      }
+      setFolders(updatedFolders);
+      await set('ci_folders_v2', updatedFolders);
+      setShowValidationModal(false);
+      setToast({ 
+        message: `Succès ! ${pointedCount} dossiers de la source "${validationSource}" sont maintenant validés et enregistrés.`,
+        type: 'success' 
+      });
     } catch (err: any) {
       setToast({ message: "Erreur de connexion : " + err.message, type: 'error' });
     }
@@ -3485,19 +3426,9 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
     setIsSyncing(true);
     try {
       const merged = mergeImportedFolders(folders, allSuccessfulFolders);
-      const res = await fetch('/api/centralized-inventory/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folders: merged, boxes: [] })
-      });
-
-      if (res.ok) {
-        setFolders(merged);
-        await set('ci_folders_v2', merged);
-      } else {
-        const errData = await res.json();
-        console.error("Auto-sync error:", errData.error);
-      }
+      await api.post('/api/centralized-inventory/sync', { folders: merged, boxes: [] });
+      setFolders(merged);
+      await set('ci_folders_v2', merged);
     } catch (err) {
       console.error("Connection error during auto-sync:", err);
     } finally {
@@ -3750,6 +3681,162 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
     <div className="h-full flex flex-col p-6 bg-brand-secondary overflow-y-auto">
       <div className="w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 items-start mb-16 text-slate-800">
         
+        {/* Process Flow Pipeline */}
+        <div className="lg:col-span-12 bg-white border border-slate-200/80 rounded-[2.5rem] p-8 shadow-sm space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+            <div className="space-y-1">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-brand-primary/10 text-brand-primary border border-brand-primary/20">
+                <Sparkles size={11} className="animate-spin duration-1000" />
+                Pipeline d'ingestion intelligent
+              </span>
+              <h2 className="text-xl font-black text-slate-800 tracking-tight uppercase m-0 flex items-center gap-2">
+                Le cycle de vie de l'importation de masse
+              </h2>
+              <p className="text-slate-400 text-xs font-semibold leading-relaxed uppercase tracking-wider">
+                Suivez les 6 étapes de traitement automatisé pour assurer la conformité absolue de votre archivage
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs font-black text-slate-400 uppercase tracking-widest bg-slate-50 border border-slate-100 px-4 py-2 rounded-2xl">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              Traitement temps réel
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-6 relative">
+            {/* Step 1 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    01
+                  </div>
+                  <FileUp className="text-brand-primary opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Importation Excel</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Importation d’un ou plusieurs fichiers Excel contenant les dossiers et les métadonnées d’inventaire.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-brand-primary flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Vérification auto.
+              </div>
+            </div>
+
+            {/* Step 2 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    02
+                  </div>
+                  <FileCheck className="text-indigo-500 opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Choix du calendrier</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Sélection du calendrier de conservation correspondant à la direction ou au type d’archives pour le classement DUA.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-indigo-600 flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Délais et sort final
+              </div>
+            </div>
+
+            {/* Step 3 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    03
+                  </div>
+                  <Database className="text-amber-500 opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Génération codes boîtes</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Production automatique (ex: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-[10px]">Sin.M.001</code>, <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-[10px]">Compta.001</code>, <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-[10px]">Prod.001</code>, <code className="bg-slate-100 px-1 py-0.5 rounded font-mono font-bold text-[10px]">RH.001</code>) ou importation directe.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-amber-600 flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Double mode boîte
+              </div>
+            </div>
+
+            {/* Step 4 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    04
+                  </div>
+                  <Scan className="text-emerald-500 opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Création codes-barres</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Génération automatique de codes-barres uniques pour chaque boîte cible et planches d'étiquettes prêtes pour impression physique.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-emerald-600 flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Impression directe
+              </div>
+            </div>
+
+            {/* Step 5 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    05
+                  </div>
+                  <CheckCircle2 className="text-teal-500 opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Validation de l’inventaire</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Contrôle de classification et validation des dossiers consolidés avant enregistrement permanent consultable.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-teal-600 flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Stockage applicatif
+              </div>
+            </div>
+
+            {/* Step 6 */}
+            <div className="relative bg-slate-50/50 hover:bg-white hover:shadow-xl hover:shadow-slate-100 border border-slate-200/60 p-5 rounded-[2rem] transition-all flex flex-col justify-between group">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 bg-brand-primary/10 text-brand-primary rounded-2xl flex items-center justify-center font-black text-sm group-hover:scale-105 transition-transform">
+                    06
+                  </div>
+                  <MapPin className="text-rose-500 opacity-60" size={20} />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-sm font-black text-slate-800 leading-snug">Localisation & Stockage</h3>
+                  <p className="text-slate-500 text-[11px] font-medium leading-relaxed">
+                    Affectation des coordonnées physiques de rangement : Salle, Rayon, Travée, Étagère, Niveau pour confirmation finale.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-slate-100/80 text-[10px] font-bold text-rose-600 flex items-center gap-1.5 uppercase">
+                <Check className="text-emerald-500" size={13} />
+                Positionnement physique
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Left Column: Input and Files queue controls */}
         <div className="lg:col-span-7 space-y-6">
           <div className="space-y-1">

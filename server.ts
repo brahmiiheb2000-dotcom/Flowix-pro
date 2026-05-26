@@ -1285,6 +1285,28 @@ async function startServer() {
             updatedAt = excluded.updatedAt
         `);
 
+        const insertOrUpdateMassInventory = db.prepare(`
+          INSERT INTO mass_inventory (
+            id, reference, intitule, direction, numBoite, localisation, 
+            dateDebut, dateFin, dossier, ruleId, expiryDate, archivalStatus, 
+            rawData, createdAt
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            reference = excluded.reference,
+            intitule = excluded.intitule,
+            direction = excluded.direction,
+            numBoite = excluded.numBoite,
+            localisation = excluded.localisation,
+            dateDebut = excluded.dateDebut,
+            dateFin = excluded.dateFin,
+            dossier = excluded.dossier,
+            ruleId = excluded.ruleId,
+            expiryDate = excluded.expiryDate,
+            archivalStatus = excluded.archivalStatus,
+            rawData = excluded.rawData
+        `);
+
         if (Array.isArray(folders)) {
           for (const f of folders) {
             insertFolder.run(
@@ -1302,6 +1324,34 @@ async function startServer() {
               f.intitule || null,
               f.isEliminated ? 1 : 0
             );
+
+            // If verified (confirmed), insert/update it in the mass_inventory table too
+            if (f.status === 'verified') {
+              let boxLocalisation = '';
+              if (f.boxNumber) {
+                const boxRow = db.prepare("SELECT depot, travee, tablette FROM centralized_boxes WHERE number = ?").get(f.boxNumber) as any;
+                if (boxRow && boxRow.depot) {
+                  boxLocalisation = `${boxRow.depot} / T: ${boxRow.travee || ''} / Tab: ${boxRow.tablette || ''}`;
+                }
+              }
+              const massId = `centralized_${f.reference}`;
+              insertOrUpdateMassInventory.run(
+                massId,
+                f.reference,
+                f.intitule || `Dossier ${f.reference}`,
+                f.direction || '',
+                f.boxNumber || '',
+                boxLocalisation,
+                f.dateDebut || f.dateCloture || '',
+                f.dateCloture || '',
+                f.reference,
+                f.ruleId || null,
+                f.expiryDate || null,
+                f.archivalStatus || 'Active',
+                JSON.stringify(f),
+                f.verifiedAt || f.pointedAt || updatedAt
+              );
+            }
           }
         }
 

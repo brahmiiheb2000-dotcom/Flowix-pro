@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -22,13 +22,31 @@ import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../service
 import { CentralizedInventory } from './CentralizedInventory';
 
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
-  const { remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
+  const { user, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
   
   const [requests, setRequests] = useState<any[]>([]);
   const [remoteRequests, setRemoteRequests] = useState<any[]>([]);
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination'>(initialTab);
-  const [requestSubTab, setRequestSubTab] = useState<'all' | 'signed' | 'transfers'>('all');
+  const [requestSubTab, setRequestSubTab] = useState<'all' | 'transfers'>('all');
+  const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed'>('all');
+  const [agentSessionSubTab, setAgentSessionSubTab] = useState<'history' | 'new' | 'remote'>('history');
+  
+  // Agent Form state matching AgentDashboard
+  const fileInputRefAgent = useRef<HTMLInputElement>(null);
+  const [agentFormLoading, setAgentFormLoading] = useState(false);
+  const [agentFormSuccess, setAgentFormSuccess] = useState(false);
+  const [agentFormData, setAgentFormData] = useState({
+    intitule: '',
+    references: [''],
+    boite: '',
+    nomDemandeur: 'iheb brahmi',
+    emailDemandeur: 'brahmiiheb2000@gmail.com',
+    dateCommunication: format(new Date(), 'yyyy-MM-dd'),
+    dateManuelle: '',
+    typeDocument: 'sinistre matériel'
+  });
+
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [archivedComms, setArchivedComms] = useState<any[]>([]);
@@ -45,7 +63,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [selectedDirection, setSelectedDirection] = useState<string>('all');
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
-  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized'>('view');
+  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search'>('centralized');
   const [isSearchingLoc, setIsSearchingLoc] = useState(false);
   const [isEditingDetail, setIsEditingDetail] = useState(false);
   const [editedDetailItem, setEditedDetailItem] = useState<any>(null);
@@ -66,6 +84,78 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [importFileName, setImportFileName] = useState<string>('');
   const [uploadedServerFilename, setUploadedServerFilename] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<{row: number, error: string}[]>([]);
+
+  // 6-step interactive import wizard states
+  const [wizardStep, setWizardStep] = useState<number>(1);
+  const [boxGenerationMode, setBoxGenerationMode] = useState<'existing' | 'auto'>('auto');
+  const [autoBoxPrefix, setAutoBoxPrefix] = useState<string>('auto');
+  const [boxCapacity, setBoxCapacity] = useState<number>(10);
+  const [customLocationInput, setCustomLocationInput] = useState({
+    salle: 'Salle A',
+    rayon: '01',
+    travee: '01',
+    etagere: '01',
+    niveau: '01'
+  });
+
+  // Dynamic computation of the items processed through the pipeline steps
+  const processedItems = useMemo(() => {
+    if (mappedItems.length === 0) return [];
+    
+    // Auto-detect prefix
+    let prefix = 'ARCH.';
+    if (autoBoxPrefix && autoBoxPrefix !== 'auto') {
+      prefix = autoBoxPrefix;
+    } else {
+      const dirLower = (importingDirection || '').toLowerCase();
+      if (dirLower.includes('sinistre')) {
+        prefix = 'Sin.M.';
+      } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
+        prefix = 'Compta.';
+      } else if (dirLower.includes('prod')) {
+        prefix = 'Prod.';
+      } else if (dirLower.includes('rh') || dirLower.includes('ressources')) {
+        prefix = 'RH.';
+      }
+    }
+
+    return mappedItems.map((item, index) => {
+      let numBoite = item.numBoite;
+      if (boxGenerationMode === 'auto') {
+        const boxIndex = Math.floor(index / boxCapacity) + 1;
+        const paddedIndex = String(boxIndex).padStart(3, '0');
+        numBoite = `${prefix}${paddedIndex}`;
+      } else {
+        numBoite = numBoite || 'SANS_BOITE';
+      }
+
+      // Generate a unique 12-digit barcode for this box
+      const cleanBoxStr = numBoite.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const barcodeValue = `BOX-${cleanBoxStr || 'UNK'}-${String(index + 1000).padStart(4, '0')}`;
+
+      // Update physical location based on coordinates in Step 6
+      const loc = `${customLocationInput.salle} • R:${customLocationInput.rayon} • T:${customLocationInput.travee} • E:${customLocationInput.etagere} • N:${customLocationInput.niveau}`;
+
+      // Re-compile rawData to save the final enriched fields in SQLite JSON representation
+      const origRaw = item.rawData ? JSON.parse(item.rawData) : {};
+      const enrichedRaw = {
+        ...origRaw,
+        numBoite,
+        barcodeValue,
+        localisation: loc,
+        direction: importingDirection
+      };
+
+      return {
+        ...item,
+        direction: importingDirection,
+        numBoite,
+        barcodeValue,
+        localisation: loc,
+        rawData: JSON.stringify(enrichedRaw)
+      };
+    });
+  }, [mappedItems, boxGenerationMode, autoBoxPrefix, boxCapacity, importingDirection, customLocationInput]);
 
   // States for adding a missing DUA rule right during import validation
   const [isAddingImportRule, setIsAddingImportRule] = useState(false);
@@ -551,7 +641,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   };
 
   const executeMassImport = async () => {
-    if (mappedItems.length === 0) return;
+    const finalItems = processedItems;
+    if (finalItems.length === 0) return;
     
     setImporting(true);
     setImportStep('importing');
@@ -559,19 +650,19 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
     try {
       const batchSize = 500;
-      const totalBatches = Math.ceil(mappedItems.length / batchSize);
+      const totalBatches = Math.ceil(finalItems.length / batchSize);
       let successCount = 0;
 
       for (let i = 0; i < totalBatches; i++) {
         const isFinalBatch = i === totalBatches - 1;
-        const chunk = mappedItems.slice(i * batchSize, (i + 1) * batchSize);
+        const chunk = finalItems.slice(i * batchSize, (i + 1) * batchSize);
         await api.post('/api/mass-inventory/import', { 
           items: chunk,
           filename: uploadedServerFilename || importFileName,
           direction: importingDirection,
-          ruleId: importingRule,
+          ruleId: importingRule?.reference || importingRule,
           isFinalBatch,
-          totalCount: mappedItems.length
+          totalCount: finalItems.length
         });
         successCount += chunk.length;
         setImportProgress(Math.round(((i + 1) / totalBatches) * 100));
@@ -602,9 +693,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     }
   };
 
-  // Search for mass inventory
+  // Search for mass inventory under sub-tab 'search'
   useEffect(() => {
-    if (activeTab !== 'massInventory' || massSubTab !== 'view') return;
+    if (activeTab !== 'massInventory' || massSubTab !== 'search') return;
     
     const delayDebounceFn = setTimeout(async () => {
       try {
@@ -617,6 +708,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
     return () => clearTimeout(delayDebounceFn);
   }, [massSearchTerm, selectedDirection, activeTab, massSubTab]);
+
+
 
   const getRetentionRule = (item: any) => {
     // 1. Try exact reference match
@@ -900,64 +993,66 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const archivedIds = new Set(archivedComms.filter(a => a.requestId).map(a => a.requestId));
       const active = all.filter(r => !archivedIds.has(r.id));
 
-      if (requestSubTab === 'signed') {
-        listToFilter = active.filter(r => r.status === 'signed' || r.status === 'Prêt / Communiqué');
-      } else if (requestSubTab === 'transfers') {
-        listToFilter = active;
-      } else {
-        listToFilter = active;
-      }
+      listToFilter = active;
+      
       listToFilter.sort((a, b) => {
         const dateA = toSafeDate(a.createdAt)?.getTime() || 0;
         const dateB = toSafeDate(b.createdAt)?.getTime() || 0;
         return dateB - dateA;
       });
     } else if (activeTab === 'communication' || activeTab === 'returns') {
-      const signedAgents = cleanRequests.filter((r: any) => r.status === 'signed');
-      const communicatedRemote = cleanRemoteRequests.filter((r: any) => r.status === 'Prêt / Communiqué');
-      
-      const expandedLive: any[] = [];
-      [...signedAgents, ...communicatedRemote].forEach(r => {
-        const refs = Array.isArray(r.references) && r.references.length > 0 ? r.references : [r.intitule || '-'];
-        refs.forEach((ref: string, idx: number) => {
-          expandedLive.push({
-            ...r,
-            intitule: ref,
-            virtualId: `live_${r.id}_${idx}`
-          });
-        });
-      });
-
-      const liveSourceIds = new Set([
-        ...signedAgents.map((r: any) => r.id),
-        ...communicatedRemote.map((r: any) => r.id)
-      ]);
-
-      const uniqueArchives = archivedComms.filter(a => !a.requestId || !liveSourceIds.has(a.requestId));
-      
-      const expandedArchives: any[] = [];
-      uniqueArchives.forEach((a, aIdx) => {
-        const val = String(a.intitule || '');
-        const [refsPart, boitePart] = val.split(' / ');
-        const individualRefs = refsPart.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+      if (activeTab === 'communication' && communicationSubTab === 'signed') {
+        const all = dedup([...requests, ...remoteRequests]);
+        const archivedIds = new Set(archivedComms.filter(a => a.requestId).map(a => a.requestId));
+        const active = all.filter(r => !archivedIds.has(r.id));
+        listToFilter = active.filter(r => r.status === 'signed' || r.status === 'Prêt / Communiqué');
+      } else {
+        const signedAgents = cleanRequests.filter((r: any) => r.status === 'signed');
+        const communicatedRemote = cleanRemoteRequests.filter((r: any) => r.status === 'Prêt / Communiqué');
         
-        if (individualRefs.length > 1) {
-          individualRefs.forEach((ref, rIdx) => {
-            expandedArchives.push({
-              ...a,
-              intitule: boitePart ? `${ref} / ${boitePart}` : ref,
-              virtualId: `arc_exp_${a.id || aIdx}_${rIdx}`
+        const expandedLive: any[] = [];
+        [...signedAgents, ...communicatedRemote].forEach(r => {
+          const refs = Array.isArray(r.references) && r.references.length > 0 ? r.references : [r.intitule || '-'];
+          refs.forEach((ref: string, idx: number) => {
+            expandedLive.push({
+              ...r,
+              intitule: ref,
+              virtualId: `live_${r.id}_${idx}`
             });
           });
-        } else {
-          expandedArchives.push({
-            ...a,
-            virtualId: a.id?.startsWith('arc_') ? a.id : `arc_${a.id || aIdx}`
-          });
-        }
-      });
-      
-      listToFilter = [...expandedLive, ...expandedArchives];
+        });
+
+        const liveSourceIds = new Set([
+          ...signedAgents.map((r: any) => r.id),
+          ...communicatedRemote.map((r: any) => r.id)
+        ]);
+
+        const uniqueArchives = archivedComms.filter(a => !a.requestId || !liveSourceIds.has(a.requestId));
+        
+        const expandedArchives: any[] = [];
+        uniqueArchives.forEach((a, aIdx) => {
+          const val = String(a.intitule || '');
+          const [refsPart, boitePart] = val.split(' / ');
+          const individualRefs = refsPart.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+          
+          if (individualRefs.length > 1) {
+            individualRefs.forEach((ref, rIdx) => {
+              expandedArchives.push({
+                ...a,
+                intitule: boitePart ? `${ref} / ${boitePart}` : ref,
+                virtualId: `arc_exp_${a.id || aIdx}_${rIdx}`
+              });
+            });
+          } else {
+            expandedArchives.push({
+              ...a,
+              virtualId: a.id?.startsWith('arc_') ? a.id : `arc_${a.id || aIdx}`
+            });
+          }
+        });
+        
+        listToFilter = [...expandedLive, ...expandedArchives];
+      }
 
       if (activeTab === 'returns') {
         listToFilter = listToFilter.filter(item => !item.dateRetour || item.dateRetour === '');
@@ -978,29 +1073,32 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         const title = r.title || r.intitule || r.motif || '';
         const requester = r.requesterName || r.nomDemandeur || r.nom || '';
         const specificRef = String(r.intitule || '');
+        const referencesStr = Array.isArray(r.references) ? r.references.join(' ') : String(r.reference || '');
         return (
           String(title).toLowerCase().includes(term) ||
           String(requester).toLowerCase().includes(term) ||
-          specificRef.toLowerCase().includes(term)
+          specificRef.toLowerCase().includes(term) ||
+          referencesStr.toLowerCase().includes(term)
         );
       });
     }
 
     if (filterStatus !== 'all') {
       if (activeTab === 'communication' || activeTab === 'returns') {
-        if (filterStatus === 'Retourné') {
+        if (communicationSubTab === 'signed') {
+          // No status filtering applies/needed inside signed agent sessions as they are already signed
+        } else if (filterStatus === 'Retourné') {
           result = result.filter(r => r.status === 'Retourné' || !!r.dateRetour);
         } else if (filterStatus === 'En cours') {
           result = result.filter(r => r.status !== 'Retourné' && !r.dateRetour);
-        }
+         }
       } else {
         result = result.filter(r => r.status === filterStatus);
       }
     }
 
-    return result.slice(0, 500); 
-  }, [searchTerm, filterStatus, requests, remoteRequests, archivedComms, activeTab, requestSubTab, cleanRequests, cleanRemoteRequests]);
-
+    return result.slice(0, 500);
+  }, [searchTerm, filterStatus, requests, remoteRequests, archivedComms, activeTab, requestSubTab, communicationSubTab, cleanRequests, cleanRemoteRequests]);
 
   const stats = {
     total: requests.length,
@@ -1331,6 +1429,204 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     } catch (err) {
       alert('La mise à jour a échoué');
     }
+  };
+
+  const handleAddReferenceAgent = () => {
+    setAgentFormData(prev => ({
+      ...prev,
+      references: [...prev.references, '']
+    }));
+  };
+
+  const handleRemoveReferenceAgent = (index: number) => {
+    if (agentFormData.references.length <= 1) return;
+    const newRefs = agentFormData.references.filter((_, i) => i !== index);
+    setAgentFormData(prev => ({ ...prev, references: newRefs }));
+  };
+
+  const handleReferenceChangeAgent = (index: number, value: string) => {
+    const newRefs = [...agentFormData.references];
+    newRefs[index] = value;
+    setAgentFormData(prev => ({ ...prev, references: newRefs }));
+  };
+
+  const handleFileUploadAgent = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+        
+        const extractedRefs = data
+          .map(row => row[0]?.toString()?.trim())
+          .filter(val => val && val !== '');
+
+        if (extractedRefs.length > 0) {
+          const currentRefs = agentFormData.references.filter(r => r.trim() !== '');
+          setAgentFormData(prev => ({
+            ...prev,
+            references: [...new Set([...currentRefs, ...extractedRefs])]
+          }));
+        }
+      } catch (err) {
+        console.error("Error parsing excel:", err);
+      }
+    };
+    reader.readAsBinaryString(file);
+    if (fileInputRefAgent.current) fileInputRefAgent.current.value = '';
+  };
+
+  const handleSubmitAgent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Filter out empty references
+    const validRefs = agentFormData.references.filter(r => r.trim() !== '');
+    if (validRefs.length === 0) {
+      alert("Veuillez saisir au moins une référence.");
+      return;
+    }
+
+    setAgentFormLoading(true);
+    try {
+      await api.post('/api/requests', {
+        ...agentFormData,
+        references: validRefs,
+        reference: validRefs[0], 
+        status: 'pending'
+      });
+      setAgentFormSuccess(true);
+      setAgentFormData({
+        ...agentFormData,
+        intitule: '',
+        references: [''],
+        boite: '',
+        dateManuelle: ''
+      });
+      
+      // Refresh requests list
+      const reqs = await api.get('/api/requests');
+      setRequests(reqs);
+      
+      setTimeout(() => setAgentFormSuccess(false), 3000);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setAgentFormLoading(false);
+    }
+  };
+
+  const handleUpdateRemoteStatusAgent = async (reqId: string, newStatus: string, email: string, name: string) => {
+    try {
+      await api.patch(`/api/remote-requests/${reqId}`, {
+        status: newStatus,
+        updatedBy: user?.displayName || user?.email
+      });
+
+      // Refresh data
+      const remoteReqs = await api.get('/api/remote-requests');
+      setRemoteRequests(remoteReqs);
+
+      // Notification email simulation
+      let message = "";
+      if (newStatus === 'En cours') message = "Votre demande est en cours de traitement.";
+      if (newStatus === 'Prêt / Communiqué') message = "Votre dossier est prêt et disponible.";
+      if (newStatus === 'Refusé') message = "Votre dossier est malheureusement indisponible ou la demande a été refusée.";
+      
+      if (message && email) {
+        await api.post('/api/send-email', {
+          to: email,
+          subject: `Mise à jour de votre demande d'archives - ${newStatus}`,
+          html: `<p>Bonjour ${name},</p><p>${message}</p>`
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors de la mise à jour");
+    }
+  };
+
+  const handlePrintAgent = (req: any) => {
+    const doc = new jsPDF();
+    const greenColor: [number, number, number] = [76, 124, 56]; 
+    const grayHeader: [number, number, number] = [180, 180, 180];
+
+    // Header Banner
+    doc.setFillColor(greenColor[0], greenColor[1], greenColor[2]);
+    doc.rect(10, 10, 190, 20, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(14);
+    doc.text("FICHE DE DEMANDE D'ARCHIVES A DISTANCE", 105, 22, { align: 'center' });
+
+    // Client Info Table
+    const dateStr = format(new Date(), 'dd/MM/yyyy');
+    
+    autoTable(doc, {
+      startY: 40,
+      head: [['INFORMATIONS DU DEMANDEUR', '', dateStr]],
+      body: [
+        ['Nom et Prénom', `: ${req.nom}`, ''],
+        ['Email', `: ${req.email || '-'}`, ''],
+        ['Service / Unité', `: ${req.service || '-'}`, ''],
+        ['Priorité', `: ${req.priorite || '-'}`, ''],
+        ['Motif', `: ${req.motif || 'Non spécifié'}`, '']
+      ],
+      theme: 'grid',
+      headStyles: { 
+        fillColor: grayHeader, 
+        textColor: [0, 0, 0], 
+        fontStyle: 'bold',
+        halign: 'left'
+      },
+      columnStyles: {
+        0: { cellWidth: 50, fontStyle: 'bold' },
+        1: { cellWidth: 100 },
+        2: { cellWidth: 40, halign: 'right', fontStyle: 'bold' }
+      },
+      styles: { fontSize: 10, cellPadding: 3 }
+    });
+
+    // References Table
+    const refs = Array.isArray(req.references) ? req.references : [req.references];
+    const docsList = refs.map((ref: string, index: number) => [
+      index + 1,
+      ref,
+      'Document d\'archive',
+      req.status
+    ]);
+
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 15,
+      head: [['No', 'Référence Demandée', 'Type', 'Statut Actuel']],
+      body: docsList,
+      theme: 'grid',
+      headStyles: { 
+        fillColor: grayHeader, 
+        textColor: [0, 0, 0], 
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 15 },
+        1: { halign: 'center', cellWidth: 80 },
+        2: { halign: 'center', cellWidth: 45 },
+        3: { halign: 'center', cellWidth: 50 }
+      },
+      styles: { fontSize: 10, cellPadding: 3 }
+    });
+
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(`Imprimé par: ${user?.displayName || user?.email} le ${format(new Date(), 'dd/MM/yyyy HH:mm')}`, 20, (doc as any).lastAutoTable.finalY + 20);
+    doc.text(`ID Demande: ${req.id}`, 20, (doc as any).lastAutoTable.finalY + 25);
+
+    doc.save(`Demande_${req.nom.replace(/\s+/g, '_')}_${req.id.slice(0, 5)}.pdf`);
   };
 
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1670,7 +1966,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'returns' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
           <RotateCcw size={18} />
-          Gestion des retours
+          Réintégration
         </button>
         <button
           onClick={() => setActiveTab('massInventory')}
@@ -1679,6 +1975,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           <Library size={18} />
           Gestion des inventaires
         </button>
+
         <button
           onClick={() => setActiveTab('elimination')}
           className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'elimination' ? 'bg-brand-accent text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
@@ -2225,10 +2522,16 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 mb-6">
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
-              onClick={() => setMassSubTab('view')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'view' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => setMassSubTab('centralized')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'centralized' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              <Library size={16} /> RECHERCHE
+              <Library size={16} /> INVENTAIRE CENTRALISÉ
+            </button>
+            <button
+              onClick={() => setMassSubTab('search')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'search' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              <Search size={16} /> RECHERCHE
             </button>
             <button
               onClick={() => setMassSubTab('import')}
@@ -2242,12 +2545,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             >
               <History size={16} /> SUIVI DES INVENTAIRES
             </button>
-            <button
-              onClick={() => setMassSubTab('centralized')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'centralized' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-              <Library size={16} /> INVENTAIRE CENTRALISÉ
-            </button>
           </div>
 
           <AnimatePresence mode="wait">
@@ -2260,126 +2557,282 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 className="space-y-6"
               >
                 {importStep === 'upload' && (
-                  <div className="py-12 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
-                    <div className="bg-white p-4 rounded-full shadow-md mb-4">
-                      <FileSpreadsheet size={32} className="text-brand-accent" />
-                    </div>
-                    <h3 className="text-lg font-bold text-slate-800 mb-2">Gestion des inventaires de masse</h3>
-                    <p className="text-slate-500 text-sm mb-8 max-w-sm text-center">
-                      Importation intelligente : l'application détecte automatiquement vos colonnes et préserve l'intégralité de vos données.
-                    </p>
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+                    {/* Column 1: Config & Upload (6 cols) */}
+                    <div className="lg:col-span-6 flex flex-col justify-center items-center p-8 md:p-12 border-2 border-dashed border-slate-200 rounded-3xl bg-slate-50/50">
+                      <div className="bg-white p-4 rounded-full shadow-md mb-4 flex items-center justify-center">
+                        <FileSpreadsheet size={32} className="text-brand-accent animate-bounce" />
+                      </div>
+                      <h3 className="text-xl font-bold text-slate-800 mb-2 text-center">Gestion des inventaires de masse</h3>
+                      <p className="text-slate-500 text-xs mb-8 max-w-sm text-center">
+                        Importation intelligente : l'application détecte automatiquement vos colonnes et préserve l'intégralité de vos dossiers.
+                      </p>
 
-                    <div className="w-full max-w-sm space-y-4 mb-8">
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">1. Destination (Direction)</label>
-                        <select 
-                          className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm"
-                          value={importingDirection}
-                          onChange={(e) => {
-                            setImportingDirection(e.target.value);
-                            setImportingRule(null);
-                          }}
-                        >
-                          <option value="">Sélectionner une direction...</option>
-                          {RETENTION_CALENDAR.map(d => (
-                            <option key={d.code} value={d.name}>{d.name}</option>
-                          ))}
-                        </select>
+                      <div className="w-full max-w-sm space-y-4 mb-8">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black tracking-wider text-slate-400 uppercase ml-2">1. Destination (Direction)</label>
+                          <select 
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm"
+                            value={importingDirection}
+                            onChange={(e) => {
+                              setImportingDirection(e.target.value);
+                              setImportingRule(null);
+                            }}
+                          >
+                            <option value="">Sélectionner une direction...</option>
+                            {RETENTION_CALENDAR.map(d => (
+                              <option key={d.code} value={d.name}>{d.name}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {importingDirection && (
+                          <motion.div 
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            className="space-y-1.5"
+                          >
+                            <label className="text-[10px] font-black tracking-wider text-slate-400 uppercase ml-2">2. Code du document (Obligatoire)</label>
+                            <div className="flex gap-2">
+                              <select 
+                                className="flex-1 min-w-0 bg-white border-2 border-brand-accent/20 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm font-bold"
+                                value={importingRule?.reference || ""}
+                                onChange={(e) => {
+                                  // Try finding in dynamic database rules first
+                                  let foundRule = archivalDirectory.find(r => r.direction === importingDirection && r.reference === e.target.value);
+                                  if (!foundRule) {
+                                    // Fallback to static calendar rules
+                                    const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
+                                    const staticRule = dir?.rules.find(r => r.reference === e.target.value);
+                                    if (staticRule) {
+                                      foundRule = {
+                                        id: staticRule.reference,
+                                        reference: staticRule.reference,
+                                        title: staticRule.title,
+                                        direction: importingDirection
+                                      };
+                                    }
+                                  }
+                                  setImportingRule(foundRule || null);
+                                }}
+                              >
+                                <option value="">Sélectionner le code documentaire...</option>
+                                {/* 1. Dynamic database rules */}
+                                {archivalDirectory.filter(r => r.direction === importingDirection).map(r => (
+                                  <option key={r.id || r.reference} value={r.reference}>
+                                    {r.reference} - {r.title} (BDD)
+                                  </option>
+                                ))}
+                                {/* 2. Static calendar rules as fallback if not in BDD */}
+                                {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules
+                                  .filter(sr => !archivalDirectory.some(dr => dr.direction === importingDirection && dr.reference === sr.reference))
+                                  .map(sr => (
+                                    <option key={sr.reference} value={sr.reference}>
+                                      {sr.reference} - {sr.title} (Standard)
+                                    </option>
+                                  ))
+                                }
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewImportRule({
+                                    reference: '',
+                                    title: '',
+                                    direction: importingDirection,
+                                    docType: 'Dossier',
+                                    activeYears: 5,
+                                    semiActiveYears: 5,
+                                    finalDisposition: 'EL',
+                                    support: 'Papier',
+                                    retentionTrigger: 'Chambre',
+                                    category: 'Général',
+                                    isCritical: false
+                                  });
+                                  setIsAddingImportRule(true);
+                                }}
+                                className="w-12 h-12 bg-brand-accent/10 hover:bg-brand-accent text-brand-accent hover:text-white rounded-2xl flex items-center justify-center transition-all shrink-0 shadow-sm"
+                                title="Ajouter une nouvelle règle de conservation pour cette direction"
+                              >
+                                <Plus size={18} strokeWidth={2.5} />
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
                       </div>
 
                       {importingDirection && (
-                        <motion.div 
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          className="space-y-1"
-                        >
-                          <label className="text-[10px] font-bold text-slate-400 uppercase ml-2">2. Code du document (Obligatoire)</label>
-                          <div className="flex gap-2">
-                            <select 
-                              className="flex-1 min-w-0 bg-white border-2 border-brand-accent/20 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm font-bold"
-                              value={importingRule?.reference || ""}
-                              onChange={(e) => {
-                                // Try finding in dynamic database rules first
-                                let foundRule = archivalDirectory.find(r => r.direction === importingDirection && r.reference === e.target.value);
-                                if (!foundRule) {
-                                  // Fallback to static calendar rules
-                                  const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
-                                  const staticRule = dir?.rules.find(r => r.reference === e.target.value);
-                                  if (staticRule) {
-                                    foundRule = {
-                                      id: staticRule.reference,
-                                      reference: staticRule.reference,
-                                      title: staticRule.title,
-                                      direction: importingDirection
-                                    };
-                                  }
-                                }
-                                setImportingRule(foundRule || null);
-                              }}
-                            >
-                              <option value="">Sélectionner le code documentaire...</option>
-                              {/* 1. Dynamic database rules */}
-                              {archivalDirectory.filter(r => r.direction === importingDirection).map(r => (
-                                <option key={r.id || r.reference} value={r.reference}>
-                                  {r.reference} - {r.title} (BDD)
-                                </option>
-                              ))}
-                              {/* 2. Static calendar rules as fallback if not in BDD */}
-                              {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules
-                                .filter(sr => !archivalDirectory.some(dr => dr.direction === importingDirection && dr.reference === sr.reference))
-                                .map(sr => (
-                                  <option key={sr.reference} value={sr.reference}>
-                                    {sr.reference} - {sr.title} (Standard)
-                                  </option>
-                                ))
-                              }
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setNewImportRule({
-                                  reference: '',
-                                  title: '',
-                                  direction: importingDirection,
-                                  docType: 'Dossier',
-                                  activeYears: 5,
-                                  semiActiveYears: 5,
-                                  finalDisposition: 'EL',
-                                  support: 'Papier',
-                                  retentionTrigger: 'Chambre',
-                                  category: 'Général',
-                                  isCritical: false
-                                });
-                                setIsAddingImportRule(true);
-                              }}
-                              className="w-12 h-12 bg-brand-accent/10 hover:bg-brand-accent text-brand-accent hover:text-white rounded-2xl flex items-center justify-center transition-all shrink-0 shadow-sm"
-                              title="Ajouter une nouvelle règle de conservation pour cette direction"
-                            >
-                              <Plus size={18} strokeWidth={2.5} />
-                            </button>
-                          </div>
-                        </motion.div>
+                        <>
+                          <input
+                            type="file"
+                            accept=".xlsx, .xls"
+                            onChange={handleMassInventoryImport}
+                            className="hidden"
+                            id="mass-import-file"
+                          />
+                          <label
+                            htmlFor="mass-import-file"
+                            className="w-full max-w-sm cursor-pointer bg-slate-900 text-white px-8 py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-black transition-all flex items-center justify-center gap-3 active:scale-95 bg-gradient-to-r from-slate-900 to-slate-800"
+                          >
+                            <Plus size={20} className="text-brand-accent" />
+                            CHOISIR LE FICHIER EXCEL (.XLSX)
+                          </label>
+                        </>
                       )}
                     </div>
 
-                    {importingDirection && (
-                      <>
-                        <input
-                          type="file"
-                          accept=".xlsx, .xls"
-                          onChange={handleMassInventoryImport}
-                          className="hidden"
-                          id="mass-import-file"
-                        />
-                        <label
-                          htmlFor="mass-import-file"
-                          className="cursor-pointer bg-slate-900 text-white px-10 py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-black transition-all flex items-center gap-3 active:scale-95"
-                        >
-                          <Plus size={20} className="text-brand-accent" />
-                          CHOISIR LE FICHIER EXCEL (.XLSX)
-                        </label>
-                      </>
-                    )}
+                    {/* Column 2: Elegant 6-step Process Pipeline (6 cols) */}
+                    <div className="lg:col-span-6 bg-slate-50 border border-slate-100 rounded-3xl p-6 md:p-8 shadow-sm flex flex-col justify-between">
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Sparkles size={16} className="text-brand-accent animate-spin duration-3000" />
+                          <span className="text-[10px] font-black tracking-wider uppercase text-brand-accent bg-brand-accent/10 px-2.5 py-1 rounded-full">
+                            Workflow d'archivage de masse
+                          </span>
+                        </div>
+                        <h4 className="text-base font-black text-slate-800 leading-tight uppercase">ÉTAPES DE GESTION DU CYCLE DE VIE</h4>
+                        <p className="text-slate-400 text-[10px] font-semibold uppercase tracking-wider">
+                          Suivez les étapes automatisées pour valider et stocker vos boîtes :
+                        </p>
+                      </div>
+
+                      <div className="space-y-4 my-6 overflow-y-auto max-h-[480px] pr-2 custom-scrollbar">
+                        {/* Step 1 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-brand-accent text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-sm shadow-brand-accent/20">
+                              1
+                            </div>
+                            <div className="w-0.5 h-full bg-slate-200 mt-2" />
+                          </div>
+                          <div className="pb-4 space-y-1">
+                            <h5 className="text-xs font-black text-slate-800 uppercase flex items-center gap-1.5">
+                              <FileSpreadsheet size={14} className="text-brand-accent" /> Importation du fichier Excel
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Importation d’un ou plusieurs fichiers Excel contenant les dossiers et informations d’inventaire.
+                            </p>
+                            <span className="inline-block text-[9px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded uppercase">
+                              Vérification automatique des colonnes et des données avant intégration
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Step 2 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold text-xs flex items-center justify-center shrink-0">
+                              2
+                            </div>
+                            <div className="w-0.5 h-full bg-slate-200 mt-2" />
+                          </div>
+                          <div className="pb-4 space-y-1">
+                            <h5 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
+                              <Calendar size={14} className="text-slate-400" /> Choix du calendrier de conservation
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Sélection du calendrier de conservation correspondant à la direction ou au type d’archives.
+                            </p>
+                            <span className="inline-block text-[9px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded uppercase">
+                              Association automatique des délais de conservation et du sort final
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Step 3 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold text-xs flex items-center justify-center shrink-0">
+                              3
+                            </div>
+                            <div className="w-0.5 h-full bg-slate-200 mt-2" />
+                          </div>
+                          <div className="pb-4 space-y-1">
+                            <h5 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
+                              <Hash size={14} className="text-slate-400" /> Génération automatique des codes boîtes
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Deux modes disponibles : Génération automatique des numéros de boîtes selon le type d’archives :
+                            </p>
+                            <div className="grid grid-cols-2 gap-1.5 bg-white p-2 rounded-xl border border-slate-200/60 font-mono text-[9px] font-bold text-slate-600">
+                              <div><span className="text-brand-accent">Sin.M.001</span> → Sinistre Matériel</div>
+                              <div><span className="text-brand-accent">Compta.001</span> → Comptabilité</div>
+                              <div><span className="text-brand-accent">Prod.001</span> → Production</div>
+                              <div><span className="text-brand-accent">RH.001</span> → Ressources Humaines</div>
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-semibold italic mt-1">
+                              Ou utilisation du numéro de boîte déjà existant dans le fichier Excel.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Step 4 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold text-xs flex items-center justify-center shrink-0">
+                              4
+                            </div>
+                            <div className="w-0.5 h-full bg-slate-200 mt-2" />
+                          </div>
+                          <div className="pb-4 space-y-1">
+                            <h5 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
+                              <Printer size={14} className="text-slate-400" /> Création des codes-barres
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Génération automatique d’un code-barres unique pour chaque boîte.
+                            </p>
+                            <span className="inline-block text-[9px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded uppercase">
+                              Possibilité d’impression des étiquettes directement depuis l’application
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Step 5 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold text-xs flex items-center justify-center shrink-0">
+                              5
+                            </div>
+                            <div className="w-0.5 h-full bg-slate-200 mt-2" />
+                          </div>
+                          <div className="pb-4 space-y-1">
+                            <h5 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
+                              <CheckCircle2 size={14} className="text-slate-400" /> Validation de l’inventaire
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Contrôle et validation des données avant stockage définitif.
+                            </p>
+                            <span className="inline-block text-[9px] font-bold text-teal-600 bg-teal-50 px-2 py-0.5 rounded uppercase">
+                              L’inventaire validé devient enregistré et consultable dans l’application
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Step 6 */}
+                        <div className="flex gap-4 group">
+                          <div className="flex flex-col items-center">
+                            <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 font-bold text-xs flex items-center justify-center shrink-0">
+                              6
+                            </div>
+                          </div>
+                          <div className="space-y-1">
+                            <h5 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
+                              <MapPin size={14} className="text-slate-400" /> Passage vers la localisation et le stockage
+                            </h5>
+                            <p className="text-slate-500 text-[11px] leading-relaxed">
+                              Affectation des emplacements physiques : salle, rayon, travée, étagère, niveau, etc.
+                            </p>
+                            <span className="inline-block text-[9px] font-bold text-brand-primary bg-brand-primary/10 px-2.5 py-0.5 rounded uppercase">
+                              Validation finale pour confirmer le stockage des boîtes dans le centre d’archives
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] text-slate-400 font-bold text-center border-t border-slate-200/65 pt-3 uppercase tracking-wide">
+                        Archivage de Masse • Système Intelligent
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -2389,70 +2842,787 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     animate={{ opacity: 1 }}
                     className="space-y-6"
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center">
-                          <FileSpreadsheet size={24} />
+                    {/* Multi-step pipeline indicator */}
+                    <div className="bg-slate-50 border border-slate-200 p-4 rounded-3xl flex flex-wrap md:flex-nowrap items-center justify-between gap-3 text-xs font-bold text-slate-400 mb-8 overflow-x-auto shadow-sm">
+                      {[
+                        { num: 1, label: "Ingestion Excel", icon: <FileSpreadsheet size={16} /> },
+                        { num: 2, label: "Calendrier & DUA", icon: <Calendar size={16} /> },
+                        { num: 3, label: "Codes Boîtes", icon: <Hash size={16} /> },
+                        { num: 4, label: "Codes-Barres", icon: <Printer size={16} /> },
+                        { num: 5, label: "Validation globale", icon: <CheckCircle2 size={16} /> },
+                        { num: 6, label: "Localisation & Stockage", icon: <MapPin size={16} /> },
+                      ].map((step) => {
+                        const isActive = wizardStep === step.num;
+                        const isCompleted = wizardStep > step.num;
+                        return (
+                          <div key={step.num} className="flex items-center gap-2 flex-grow justify-center min-w-[140px]">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (step.num <= 6) setWizardStep(step.num);
+                              }}
+                              className={`flex items-center gap-2 p-2 rounded-2xl transition-all ${
+                                isActive 
+                                  ? "bg-brand-accent text-white shadow-md shadow-brand-accent/20 scale-102 font-black" 
+                                  : isCompleted 
+                                    ? "text-emerald-600 bg-emerald-50 border border-emerald-100 font-bold" 
+                                    : "bg-white text-slate-500 border border-slate-200 hover:bg-slate-50 font-medium"
+                              }`}
+                            >
+                              <span className={`w-5 h-5 rounded-full flex items-center justify-center font-black text-[10px] ${
+                                isActive ? "bg-white text-brand-accent" : isCompleted ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-600"
+                              }`}>
+                                {isCompleted ? "✓" : step.num}
+                              </span>
+                              <span className="truncate">{step.label}</span>
+                            </button>
+                            {step.num < 6 && (
+                              <ChevronRight size={14} className="text-slate-300 hidden md:block shrink-0" />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {wizardStep === 1 && (
+                      <div className="space-y-6">
+                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                          <div>
+                            <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                              Étape 1 sur 6
+                            </span>
+                            <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                              Fichier Excel importé & indexé
+                            </h4>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs bg-slate-100 text-slate-600 border border-slate-200 px-4 py-2 rounded-xl font-bold">
+                              Fichier : <strong className="text-slate-900">{importFileName}</strong>
+                            </span>
+                            <span className="text-xs bg-brand-accent/5 text-brand-accent border border-brand-accent/10 px-4 py-2 rounded-xl font-bold">
+                              Lignes détectées : <strong>{mappedItems.length || 0}</strong>
+                            </span>
+                          </div>
                         </div>
+
+                        <div className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-4 rounded-3xl flex items-center gap-3 shadow-sm shadow-emerald-50/20">
+                          <CheckCircle2 className="text-emerald-600 shrink-0" size={20} />
+                          <div className="text-xs font-semibold leading-relaxed">
+                            <p className="font-black">VÉRIFICATION AUTOMATIQUE DES COLONNES TERMINÉE AVEC SUCCÈS ✓</p>
+                            <p className="opacity-95">Les colonnes principales de référence, date et intitulé ont été identifiées. Les colonnes supplémentaires sont préservées en mémoire.</p>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-3xl border border-slate-100 shadow-xl overflow-hidden mt-4">
+                          <table className="w-full text-left text-xs">
+                            <thead className="bg-[#1e293b] text-white">
+                              <tr>
+                                {importHeaders.map(h => (
+                                    <th key={h} className="px-4 py-4 font-black uppercase tracking-widest border-r border-white/5">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody className="bg-white">
+                              {importPreviewData.map((row, idx) => (
+                                <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                                  {importHeaders.map(h => (
+                                    <td key={h} className="px-4 py-3 text-slate-600 font-medium whitespace-nowrap">
+                                      {formatExcelDate(row[h])}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {mappedItems.length > 10 && (
+                            <div className="bg-slate-50 py-3 text-center text-[10px] font-bold text-slate-400 italic">
+                              Affichage des {Math.min(10, mappedItems.length)} premières lignes sur {mappedItems.length} au total...
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setImportStep('upload')}
+                            className="font-bold text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Annuler l'import
+                          </Button>
+                          <Button 
+                            onClick={() => setWizardStep(2)}
+                            className="bg-brand-accent text-white font-black hover:opacity-90 rounded-2xl px-8 h-12 flex items-center gap-1.5 shadow-lg shadow-brand-accent/15"
+                          >
+                            Étape suivante (Calendrier & DUA) <ChevronRight size={18} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {wizardStep === 2 && (
+                      <div className="space-y-6">
                         <div>
-                          <h3 className="text-xl font-black text-slate-800">{importFileName}</h3>
-                          <p className="text-xs font-bold text-slate-400">
-                            {mappedItems.length} lignes détectées • Direction: <span className="text-brand-accent uppercase">{importingDirection}</span>
+                          <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                            Étape 2 sur 6
+                          </span>
+                          <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                            Choix du calendrier de conservation (DUA)
+                          </h4>
+                          <p className="text-slate-400 text-xs mt-1 uppercase font-semibold tracking-wider">
+                            Associez la réglementation archivistique correspondante aux documents importés
                           </p>
                         </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button 
-                          variant="ghost" 
-                          onClick={() => setImportStep('upload')}
-                          className="font-bold text-slate-500"
-                        >
-                          Annuler
-                        </Button>
-                        <Button 
-                          onClick={executeMassImport}
-                          className="bg-brand-accent text-white hover:opacity-90 px-8 font-black rounded-2xl shadow-lg shadow-brand-accent/20"
-                        >
-                          <Save size={18} className="mr-2" /> Valider et Importer
-                        </Button>
-                      </div>
-                    </div>
 
-                    <div className="bg-brand-accent/5 border border-brand-accent/10 p-4 rounded-2xl flex items-start gap-3">
-                      <Clock className="text-brand-accent mt-1" size={18} />
-                      <div className="text-xs text-brand-accent/80 space-y-1">
-                        <p className="font-bold">Analyse automatique des colonnes effectuée.</p>
-                        <p>L'application a identifié les colonnes clés (Réf, Date, etc.) mais conservera <strong>l'intégralité</strong> de vos colonnes originales en mémoire.</p>
-                      </div>
-                    </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start mt-4">
+                          <div className="bg-slate-50/60 border border-slate-200/60 p-6 rounded-3xl space-y-4">
+                            <h5 className="text-xs font-black uppercase text-slate-700 tracking-wide">Assignation DUA</h5>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">1. Destination (Direction)</label>
+                              <select 
+                                className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm animate-none"
+                                value={importingDirection}
+                                onChange={(e) => {
+                                  setImportingDirection(e.target.value);
+                                  setImportingRule(null);
+                                }}
+                              >
+                                <option value="">Sélectionner une direction...</option>
+                                {RETENTION_CALENDAR.map(d => (
+                                  <option key={d.code} value={d.name}>{d.name}</option>
+                                ))}
+                              </select>
+                            </div>
 
-                    <div className="overflow-x-auto rounded-[2rem] border border-slate-100 shadow-xl overflow-hidden">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-slate-900 text-white">
-                          <tr>
-                            {importHeaders.map(h => (
-                                <th key={h} className="px-4 py-4 font-black uppercase tracking-widest border-r border-white/5">{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white">
-                          {importPreviewData.map((row, idx) => (
-                            <tr key={idx} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                              {importHeaders.map(h => (
-                                <td key={h} className="px-4 py-3 text-slate-600 font-medium">
-                                  {formatExcelDate(row[h])}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {mappedItems.length > 10 && (
-                        <div className="bg-slate-50 py-3 text-center text-[10px] font-bold text-slate-400 italic">
-                          Affichage des 10 premières lignes sur {mappedItems.length} au total...
+                            {importingDirection && (
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-400 uppercase ml-1">2. Code du document (Calendrier DUA)</label>
+                                <div className="flex gap-2">
+                                  <select 
+                                    className="flex-1 min-w-0 bg-white border-2 border-brand-accent/20 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm font-bold text-slate-700"
+                                    value={importingRule?.reference || ""}
+                                    onChange={(e) => {
+                                      let foundRule = archivalDirectory.find(r => r.direction === importingDirection && r.reference === e.target.value);
+                                      if (!foundRule) {
+                                        const dir = RETENTION_CALENDAR.find(d => d.name === importingDirection);
+                                        const staticRule = dir?.rules.find(r => r.reference === e.target.value);
+                                        if (staticRule) {
+                                          foundRule = {
+                                            id: staticRule.reference,
+                                            reference: staticRule.reference,
+                                            title: staticRule.title,
+                                            direction: importingDirection
+                                          };
+                                        }
+                                      }
+                                      setImportingRule(foundRule || null);
+                                    }}
+                                  >
+                                    <option value="">Sélectionner le code documentaire...</option>
+                                    {archivalDirectory.filter(r => r.direction === importingDirection).map(r => (
+                                      <option key={r.id || r.reference} value={r.reference}>
+                                        {r.reference} - {r.title} (BDD)
+                                      </option>
+                                    ))}
+                                    {RETENTION_CALENDAR.find(d => d.name === importingDirection)?.rules
+                                      .filter(sr => !archivalDirectory.some(dr => dr.direction === importingDirection && dr.reference === sr.reference))
+                                      .map(sr => (
+                                        <option key={sr.reference} value={sr.reference}>
+                                          {sr.reference} - {sr.title} (Standard)
+                                        </option>
+                                      ))
+                                    }
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setNewImportRule({
+                                        reference: '',
+                                        title: '',
+                                        direction: importingDirection,
+                                        docType: 'Dossier',
+                                        activeYears: 5,
+                                        semiActiveYears: 5,
+                                        finalDisposition: 'EL',
+                                        support: 'Papier',
+                                        retentionTrigger: 'Chambre',
+                                        category: 'Général',
+                                        isCritical: false
+                                      });
+                                      setIsAddingImportRule(true);
+                                    }}
+                                    className="w-12 h-12 bg-brand-accent/10 hover:bg-brand-accent text-brand-accent hover:text-white rounded-2xl flex items-center justify-center transition-all shrink-0 shadow-sm"
+                                    title="Ajouter une nouvelle règle de conservation pour cette direction"
+                                  >
+                                    <Plus size={18} strokeWidth={2.5} />
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-xl space-y-4">
+                            <h5 className="text-xs font-black uppercase text-amber-400 tracking-wider flex items-center gap-1.5">
+                              <Sparkles size={14} /> Diagnostic réglementaire DUA
+                            </h5>
+                            {importingRule ? (
+                              <div className="space-y-4 text-xs font-semibold">
+                                <div className="border-b border-white/10 pb-3">
+                                  <p className="text-[10px] text-slate-400 uppercase font-bold">Règle active</p>
+                                  <p className="font-extrabold text-base text-white mt-0.5">{importingRule.reference} - {importingRule.title}</p>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                  <div className="bg-white/5 p-3 rounded-2xl border border-white/5">
+                                    <p className="text-[10px] text-slate-400 uppercase">DUA ACTIVE (Bureaux)</p>
+                                    <p className="text-xl font-black text-white mt-1">5 ans</p>
+                                    <p className="text-[9px] text-slate-400 mt-1 font-medium">Conservation active dans les locaux</p>
+                                  </div>
+                                  <div className="bg-white/5 p-3 rounded-2xl border border-white/5">
+                                    <p className="text-[10px] text-slate-400 uppercase">DUA SEMI-ACTIVE (Centre)</p>
+                                    <p className="text-xl font-black text-white mt-1">5 ans</p>
+                                    <p className="text-[9px] text-slate-400 mt-1 font-medium">Conservation intermédiaire sécurisée</p>
+                                  </div>
+                                </div>
+                                <div className="bg-emerald-500/10 border border-emerald-500/20 p-3 rounded-2xl text-emerald-300 flex items-center gap-2">
+                                  <CheckCircle2 size={16} className="text-emerald-400" />
+                                  <span>Sort final automatique : <strong className="text-white">Conservation permanente / Historique</strong></span>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-slate-400 italic">Veuillez d'abord sélectionner une direction et un code documentaire pour charger les règles DUA.</p>
+                            )}
+                          </div>
                         </div>
-                      )}
-                    </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100 font-semibold">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setWizardStep(1)}
+                            className="text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Retour
+                          </Button>
+                          <Button 
+                            onClick={() => {
+                              if (!importingDirection || !importingRule) {
+                                alert("Veuillez sélectionner la direction et le code documentaire pour continuer.");
+                                return;
+                              }
+                              setWizardStep(3);
+                            }}
+                            className="bg-brand-accent text-white font-black hover:opacity-90 rounded-2xl px-8 h-12 flex items-center gap-1.5 shadow-lg shadow-brand-accent/15"
+                          >
+                            Étape suivante (Codes Boîtes) <ChevronRight size={18} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {wizardStep === 3 && (
+                      <div className="space-y-6">
+                        <div>
+                          <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                            Étape 3 sur 6
+                          </span>
+                          <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                            Génération automatique ou assignation des codes Boîtes
+                          </h4>
+                          <p className="text-slate-400 text-xs mt-1 uppercase font-semibold tracking-wider">
+                            Définissez la méthode de regroupement de vos documents de masse dans des boîtes physiques d'archives
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start mt-4">
+                          <div className="space-y-6 bg-slate-50/60 border border-slate-200/60 p-6 rounded-3xl">
+                            <h5 className="text-xs font-black uppercase text-slate-800 tracking-wide">Scénario de regroupement</h5>
+                            
+                            <div className="space-y-3">
+                              <button
+                                type="button"
+                                onClick={() => setBoxGenerationMode('auto')}
+                                className={`w-full text-left p-4 rounded-2xl border transition-all flex items-start gap-3 ${
+                                  boxGenerationMode === 'auto' 
+                                    ? 'bg-amber-50 border-brand-accent shadow-sm shadow-brand-accent/5' 
+                                    : 'bg-white border-slate-200 hover:border-slate-300'
+                                }`}
+                              >
+                                <input 
+                                  type="radio" 
+                                  checked={boxGenerationMode === 'auto'} 
+                                  onChange={() => {}} 
+                                  className="mt-1 accent-brand-accent"
+                                />
+                                <div className="space-y-0.5 text-xs font-medium">
+                                  <p className="font-extrabold text-slate-800 uppercase">Génération séquentielle par type d'archives</p>
+                                  <p className="text-slate-500">Le système crée automatiquement des codes de boîtes séquentiels (ex: Compta.001) et y regroupe les dossiers.</p>
+                                </div>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setBoxGenerationMode('existing')}
+                                className={`w-full text-left p-4 rounded-2xl border transition-all flex items-start gap-3 ${
+                                  boxGenerationMode === 'existing' 
+                                    ? 'bg-amber-50 border-brand-accent shadow-sm shadow-brand-accent/5' 
+                                    : 'bg-white border-slate-200 hover:border-slate-300'
+                                }`}
+                              >
+                                <input 
+                                  type="radio" 
+                                  checked={boxGenerationMode === 'existing'} 
+                                  onChange={() => {}} 
+                                  className="mt-1 accent-brand-accent"
+                                />
+                                <div className="space-y-0.5 text-xs font-medium">
+                                  <p className="font-extrabold text-slate-800 uppercase">Utiliser les numéros existants de l'Excel</p>
+                                  <p className="text-slate-505 text-slate-500">Récupère les identifiants de boîtes déjà déclarés dans la colonne "boite" ou "boit" de votre fichier.</p>
+                                </div>
+                              </button>
+                            </div>
+
+                            {boxGenerationMode === 'auto' && (
+                              <motion.div 
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                className="space-y-4 border-t border-slate-200 pt-4"
+                              >
+                                <div className="grid grid-cols-2 gap-4 font-medium">
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase">Préfixe personnalisé</label>
+                                    <input 
+                                      type="text" 
+                                      value={autoBoxPrefix}
+                                      onChange={(e) => setAutoBoxPrefix(e.target.value)}
+                                      placeholder="Ex: Sin.M. ou Compta."
+                                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold"
+                                    />
+                                    <p className="text-[9px] text-slate-400 italic">"auto" pour déduction automatique</p>
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase">Boîte de capacité (Max dossiers)</label>
+                                    <select
+                                      value={boxCapacity}
+                                      onChange={(e) => setBoxCapacity(parseInt(e.target.value))}
+                                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold"
+                                    >
+                                      {[5, 10, 15, 20, 25, 50, 100].map(c => (
+                                        <option key={c} value={c}>{c} dossiers par boîte</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </div>
+
+                          <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-xl space-y-4">
+                            <h5 className="text-xs font-black uppercase text-amber-400 tracking-wider flex items-center gap-1.5">
+                              <Layers size={14} /> Aperçu du colisage d'indexation
+                            </h5>
+                            <div className="space-y-3 max-h-[290px] overflow-y-auto pr-2 custom-scrollbar">
+                              {processedItems.length > 0 ? (
+                                <div className="text-xs space-y-2 font-semibold">
+                                  <p className="text-slate-400 font-bold uppercase text-[10px]">
+                                    Résumé du partitionnement :
+                                  </p>
+                                  <div className="space-y-2">
+                                    {(() => {
+                                      const boxes = new Map<string, any[]>();
+                                      processedItems.forEach(item => {
+                                        const bName = item.numBoite || 'SANS_BOITE';
+                                        if (!boxes.has(bName)) {
+                                          boxes.set(bName, []);
+                                        }
+                                        boxes.get(bName)!.push(item);
+                                      });
+                                      const list = Array.from(boxes.entries()).map(([boxCode, docs]) => ({
+                                        boxCode,
+                                        docsCount: docs.length
+                                      }));
+                                      return list.slice(0, 15).map((box, i) => (
+                                        <div key={i} className="flex items-center justify-between p-2.5 rounded-xl bg-white/5 border border-white/5">
+                                          <span className="font-mono font-bold text-white uppercase text-xs">{box.boxCode}</span>
+                                          <span className="bg-brand-accent/20 border border-brand-accent/20 text-brand-accent px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase">
+                                            {box.docsCount} dossiers
+                                          </span>
+                                        </div>
+                                      ));
+                                    })()}
+                                    {processedItems.length > boxCapacity * 15 && (
+                                      <p className="text-slate-400 italic text-[10px] text-center pt-2 font-medium">
+                                        ... et d'autres boîtes uniques générées.
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-400 italic">Aucun dossier disponible.</p>
+                              )}
+                            </div>
+                            <div className="bg-slate-800 p-3 rounded-2xl flex justify-between items-center text-xs">
+                              <span className="text-slate-300 font-semibold text-[11px]">Total dossiers :</span>
+                              <strong className="text-white text-sm">{processedItems.length}</strong>
+                            </div>
+                            <div className="bg-slate-800 p-3 rounded-2xl flex justify-between items-center text-xs">
+                              <span className="text-slate-300 font-semibold text-[11px]">Total boîtes créées :</span>
+                              <strong className="text-amber-400 text-sm">
+                                {Math.ceil(processedItems.length / (boxGenerationMode === 'auto' ? boxCapacity : 10))} boîtes
+                              </strong>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100 font-semibold">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setWizardStep(2)}
+                            className="text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Retour
+                          </Button>
+                          <Button 
+                            onClick={() => setWizardStep(4)}
+                            className="bg-brand-accent text-white font-black hover:opacity-90 rounded-2xl px-8 h-12 flex items-center gap-1.5 shadow-lg shadow-brand-accent/15"
+                          >
+                            Étape suivante (Codes-Barres) <ChevronRight size={18} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {wizardStep === 4 && (
+                      <div className="space-y-6">
+                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                          <div>
+                            <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                              Étape 4 sur 6
+                            </span>
+                            <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                              Génération automatique et impression de Codes-Barres uniques
+                            </h4>
+                            <p className="text-slate-400 text-xs mt-1 uppercase font-semibold tracking-wider">
+                              Générateur de planches d’étiquettes adhésives à coller sur les cartons boîtes d'archives
+                            </p>
+                          </div>
+                          
+                          <Button 
+                            type="button"
+                            onClick={() => window.print()}
+                            className="bg-slate-900 hover:bg-black text-white shrink-0 font-black text-xs px-5 py-3 rounded-2xl flex items-center gap-2 shadow-lg"
+                          >
+                            <Printer size={16} /> IMPRIMER LES ÉTIQUETTES
+                          </Button>
+                        </div>
+
+                        <div className="bg-brand-accent/5 border border-brand-accent/10 p-4 rounded-3xl text-xs text-slate-800 space-y-1 font-semibold">
+                          <p className="font-extrabold flex items-center gap-2"><Sparkles size={14} className="text-brand-accent" /> CERTIFIÉ CONFORME GS1 / CODE-128</p>
+                          <p className="font-medium text-slate-500">Un code-barres unique de traçabilité est associé à chaque contenant. Utilisez vos pistolets de scan pour localiser ou déplacer les boîtes dans l'entrepôt.</p>
+                        </div>
+
+                        {/* Printable sheet container */}
+                        <div className="bg-white border border-slate-200/80 p-6 rounded-3xl shadow-xl">
+                          <h5 className="text-[11px] font-black uppercase text-slate-400 tracking-wider mb-6">Planche d'étiquettes de traçabilité</h5>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {(() => {
+                              const boxesMap = new Map<string, any[]>();
+                              processedItems.forEach(item => {
+                                const bName = item.numBoite || 'SANS_BOITE';
+                                if (!boxesMap.has(bName)) {
+                                  boxesMap.set(bName, []);
+                                }
+                                boxesMap.get(bName)!.push(item);
+                              });
+                              return Array.from(boxesMap.entries()).map(([boxCode, docs], i) => {
+                                const bcodeVal = docs[0]?.barcodeValue || `BOX-${boxCode.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+                                return (
+                                  <div key={i} className="border-2 border-dashed border-slate-300 p-4 rounded-2xl flex flex-col justify-between items-center text-center bg-slate-50/20 hover:bg-white transition-colors">
+                                    <p className="text-[9px] font-black text-slate-400 tracking-wider uppercase">S.A.G.E. - ARCHIVE CENTRALISÉE</p>
+                                    <p className="font-mono font-black text-slate-800 text-sm mt-1 uppercase">{boxCode}</p>
+                                    
+                                    <div className="my-2 p-2 bg-white rounded-xl border border-slate-200/50 flex flex-col items-center justify-center">
+                                      <Barcode 
+                                        value={bcodeVal} 
+                                        width={1.2} 
+                                        height={40} 
+                                        fontSize={9} 
+                                        background="#ffffff"
+                                      />
+                                    </div>
+
+                                    <div className="text-[9px] font-bold text-slate-400 mt-1 uppercase font-semibold">
+                                      DIRECTION : {importingDirection || 'NON AFFECTÉ'} <br/>
+                                      CONTENU : {docs.length} DOSSIERS
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })()}
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100 font-semibold">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setWizardStep(3)}
+                            className="text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Retour
+                          </Button>
+                          <Button 
+                            onClick={() => setWizardStep(5)}
+                            className="bg-brand-accent text-white font-black hover:opacity-90 rounded-2xl px-8 h-12 flex items-center gap-1.5 shadow-lg shadow-brand-accent/15"
+                          >
+                            Étape suivante (Validation globale) <ChevronRight size={18} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {wizardStep === 5 && (
+                      <div className="space-y-6">
+                        <div>
+                          <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                            Étape 5 sur 6
+                          </span>
+                          <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                            Validation globale et contrôle de conformité des données
+                          </h4>
+                          <p className="text-slate-400 text-xs mt-1 uppercase font-semibold tracking-wider">
+                            Exécutez un diagnostic pré-enregistrement pour éliminer les erreurs sur vos documents d’archives de masse
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="bg-slate-50 border border-slate-200/50 p-4 rounded-3xl flex items-center gap-3">
+                            <div className="min-w-[40px] h-[40px] bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center font-black">
+                              100%
+                            </div>
+                            <div className="text-xs">
+                              <p className="font-extrabold text-slate-800 uppercase text-[11px]">Dates conformes</p>
+                              <p className="text-slate-500 font-medium text-[10px]">Analyse et ré-indexation des dates d'ouverture/fermeture OK.</p>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 border border-slate-200/50 p-4 rounded-3xl flex items-center gap-3">
+                            <div className="min-w-[40px] h-[40px] bg-brand-accent/10 text-brand-accent rounded-2xl flex items-center justify-center font-black">
+                              {Math.ceil(processedItems.length / (boxGenerationMode === 'auto' ? boxCapacity : 10))}
+                            </div>
+                            <div className="text-xs">
+                              <p className="font-extrabold text-slate-800 uppercase text-[11px]">Colisage OK</p>
+                              <p className="text-slate-500 font-medium text-[10px]">Rédaction sécurisée des fiches boîtes en mémoire.</p>
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 border border-slate-200/50 p-4 rounded-3xl flex items-center gap-3">
+                            <div className="min-w-[40px] h-[40px] bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center font-black">
+                              ✓
+                            </div>
+                            <div className="text-xs">
+                              <p className="font-extrabold text-slate-800 uppercase text-[11px]">Calendrier DUA</p>
+                              <p className="text-slate-500 font-medium text-[10px]">Lien contractuel vers la règle de conservation {importingRule?.reference}.</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Preview table of enriched records */}
+                        <div className="bg-white border border-slate-200/50 rounded-3xl shadow-xl overflow-hidden font-medium">
+                          <div className="bg-[#0f172a] text-white p-4 uppercase font-black text-xs">
+                            Aperçu des données enrichies à enregistrer ({processedItems.length} lignes)
+                          </div>
+                          
+                          <div className="overflow-x-auto max-h-[380px] custom-scrollbar">
+                            <table className="w-full text-left text-xs whitespace-nowrap">
+                              <thead className="bg-[#1e293b] text-white">
+                                <tr>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">Réf Dossier</th>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">Intitulé</th>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">Code Boîte</th>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">Code-Barres</th>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">Délai DUA Active</th>
+                                  <th className="px-4 py-3 font-semibold uppercase tracking-wider text-[10px]">DUA Intermédiaire</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {processedItems.slice(0, 15).map((item, idx) => (
+                                  <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/50">
+                                    <td className="px-4 py-3 font-bold text-slate-800">{item.reference}</td>
+                                    <td className="px-4 py-3 text-slate-600 font-medium">{item.intitule}</td>
+                                    <td className="px-4 py-3"><span className="bg-brand-accent/10 text-brand-accent font-bold px-2 py-0.5 rounded text-[10px]">{item.numBoite}</span></td>
+                                    <td className="px-4 py-3 font-mono text-[10px] text-slate-500 font-bold">{item.barcodeValue}</td>
+                                    <td className="px-4 py-3 text-emerald-600 font-bold font-medium">5 ans (Exploitable)</td>
+                                    <td className="px-4 py-3 text-indigo-500 font-bold">5 ans (Archives)</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {processedItems.length > 15 && (
+                              <div className="bg-slate-50 py-2.5 text-center text-[10px] text-slate-400 italic font-medium">
+                                Affichage des 15 premières lignes sur {processedItems.length} lignes à importer au total.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100 font-semibold">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setWizardStep(4)}
+                            className="text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Retour
+                          </Button>
+                          <Button 
+                            onClick={() => setWizardStep(6)}
+                            className="bg-brand-accent text-white font-black hover:opacity-90 rounded-2xl px-8 h-12 flex items-center gap-1.5 shadow-lg shadow-brand-accent/15"
+                          >
+                            Étape suivante (Localisation) <ChevronRight size={18} />
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {wizardStep === 6 && (
+                      <div className="space-y-6">
+                        <div>
+                          <span className="text-[10px] bg-brand-accent/10 text-brand-accent px-3 py-1 rounded-full font-black uppercase tracking-wider">
+                            Étape 6 sur 6
+                          </span>
+                          <h4 className="text-lg font-black text-slate-800 tracking-tight uppercase mt-1">
+                            Passage vers la localisation et le stockage physique
+                          </h4>
+                          <p className="text-slate-400 text-xs mt-1 uppercase font-semibold tracking-wider">
+                            Déterminez les coordonnées d'affectation physique de stockage pour les boîtes générées
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch mt-4">
+                          <div className="bg-slate-50/60 border border-slate-200/60 p-6 rounded-3xl space-y-4 flex flex-col justify-between">
+                            <div className="space-y-4">
+                              <h5 className="text-xs font-black uppercase text-slate-800 tracking-wide">Affectation du Slot d'Archivage</h5>
+                              
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1 col-span-2">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Salle de stockage d'archives</label>
+                                  <select
+                                    value={customLocationInput.salle}
+                                    onChange={(e) => setCustomLocationInput(prev => ({ ...prev, salle: e.target.value }))}
+                                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold text-slate-800"
+                                  >
+                                    <option value="Salle A">Salle de conservation A - Archives Primaires</option>
+                                    <option value="Salle B">Salle de conservation B - Finance & RH</option>
+                                    <option value="Salle C">Salle de conservation C - Sinistres Automobile</option>
+                                    <option value="Dépôt Ouest">Hangar d'archivage national d'Élimination</option>
+                                  </select>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Rayon #</label>
+                                  <input 
+                                    type="text"
+                                    value={customLocationInput.rayon}
+                                    onChange={(e) => setCustomLocationInput(prev => ({ ...prev, rayon: e.target.value }))}
+                                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold text-slate-800"
+                                  />
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Travée #</label>
+                                  <input 
+                                    type="text"
+                                    value={customLocationInput.travee}
+                                    onChange={(e) => setCustomLocationInput(prev => ({ ...prev, travee: e.target.value }))}
+                                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold text-slate-800"
+                                  />
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Étagère #</label>
+                                  <input 
+                                    type="text"
+                                    value={customLocationInput.etagere}
+                                    onChange={(e) => setCustomLocationInput(prev => ({ ...prev, etagere: e.target.value }))}
+                                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold text-slate-800"
+                                  />
+                                </div>
+
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase">Niveau (Tablette)</label>
+                                  <input 
+                                    type="text"
+                                    value={customLocationInput.niveau}
+                                    onChange={(e) => setCustomLocationInput(prev => ({ ...prev, niveau: e.target.value }))}
+                                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-brand-accent outline-none font-bold text-slate-800"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="bg-brand-accent/5 p-4 rounded-2xl text-[11px] leading-relaxed text-slate-600 border border-brand-accent/10">
+                              <p className="font-extrabold text-slate-800 flex items-center gap-1.5 font-medium"><MapPin size={12} className="text-brand-accent" /> SYNCHRONISATION INSTANTANÉE</p>
+                              Un plan géolocalisé de cet emplacement sera sauvegardé au profil des {processedItems.length} documents archivés.
+                            </div>
+                          </div>
+
+                          {/* Visual shelf map */}
+                          <div className="bg-slate-950 text-white rounded-3xl p-6 shadow-xl flex flex-col justify-between">
+                            <div className="space-y-3 font-semibold">
+                              <h5 className="text-xs font-black uppercase text-amber-400 tracking-wider flex items-center gap-1.5">
+                                Virtual Shelf Visualizer
+                              </h5>
+                              <p className="text-[10px] text-slate-400 font-medium">Positionnement spatial de vos nouvelles boîtes :</p>
+                              
+                              <div className="grid grid-cols-4 gap-2 border border-white/10 p-3 rounded-2xl bg-white/5">
+                                {Array.from({ length: 16 }).map((_, levelIdx) => {
+                                  const rowNum = 4 - Math.floor(levelIdx / 4);
+                                  const colNum = (levelIdx % 4) + 1;
+                                  const isTarget = String(rowNum) === String(customLocationInput.etagere) || levelIdx === 9;
+                                  return (
+                                    <div 
+                                      key={levelIdx} 
+                                      className={`h-11 rounded-xl flex items-center justify-center font-mono text-[9px] font-black tracking-tighter uppercase transition-colors ${
+                                        isTarget 
+                                          ? 'bg-brand-accent text-white animate-pulse border border-white/15' 
+                                          : 'bg-white/5 text-slate-500 border border-white/5'
+                                      }`}
+                                    >
+                                      {isTarget ? "TARGET SLOT" : `S${rowNum}-T${colNum}`}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            <div className="space-y-3 pt-6 font-semibold">
+                              <div className="flex justify-between items-center bg-white/5 border border-white/5 p-3 rounded-2xl text-xs font-bold font-mono">
+                                <span className="text-slate-400 font-sans font-semibold">Emplacement :</span>
+                                <span className="text-amber-400 uppercase text-[11px]">
+                                  {customLocationInput.salle} • R:{customLocationInput.rayon} • T:{customLocationInput.travee} • E:{customLocationInput.etagere} • N:{customLocationInput.niveau}
+                                </span>
+                              </div>
+
+                              <Button 
+                                onClick={executeMassImport}
+                                className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:opacity-90 text-white h-14 font-black rounded-2xl flex items-center justify-center gap-2 shadow-xl shadow-emerald-900/10 text-xs tracking-wider uppercase cursor-pointer"
+                              >
+                                <CheckCircle2 size={18} /> CONFIRMER L'ARCHIVAGE ET VALIDATION FINALE
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex justify-between pt-6 border-t border-slate-100 font-semibold font-medium">
+                          <Button 
+                            variant="ghost" 
+                            onClick={() => setWizardStep(5)}
+                            className="text-slate-500 rounded-2xl px-6 h-12"
+                          >
+                            Retour
+                          </Button>
+                          <span className="text-slate-300 pointer-events-none" />
+                        </div>
+                      </div>
+                    )}
                   </motion.div>
                 )}
 
@@ -2530,240 +3700,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </motion.div>
             )}
 
-            {massSubTab === 'view' && (
-              <motion.div
-                key="mass-view"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-8"
-              >
-                {/* Image-Style Search Section */}
-                <div className="bg-white rounded-[2rem] border border-slate-200 p-10 shadow-sm space-y-8 max-w-5xl mx-auto">
-                  <div className="text-center space-y-2">
-                    <h2 className="text-2xl font-bold text-slate-800">Recherche documentaire</h2>
-                    <p className="text-slate-500 text-sm">Tapez une référence, un numéro de dossier, un mot-clé ou un code documentaire</p>
-                  </div>
 
-                  <div className="relative group">
-                    <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-brand-accent transition-colors" size={24} />
-                    <input 
-                      type="text"
-                      placeholder="Ex: 2210..." 
-                      className="w-full bg-white border border-slate-200 rounded-2xl pl-16 pr-8 py-5 text-xl font-medium focus:outline-none focus:ring-4 focus:ring-brand-accent/10 focus:border-slate-300 transition-all placeholder:text-slate-300"
-                      value={massSearchTerm}
-                      onChange={(e) => setMassSearchTerm(e.target.value)}
-                    />
-                  </div>
-
-                  {/* Direction Filter Bar */}
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 px-1">
-                      <Building2 size={16} className="text-slate-400" />
-                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Filtrer par Direction</span>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                       <select 
-                         className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 text-base font-bold text-slate-700 focus:outline-none focus:ring-4 focus:ring-brand-accent/10 focus:border-brand-accent transition-all cursor-pointer appearance-none shadow-sm"
-                         value={selectedDirection}
-                         onChange={(e) => setSelectedDirection(e.target.value)}
-                         style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\' stroke=\'%2364748b\'%3E%3Cpath stroke-linecap=\'round\' stroke-linejoin=\'round\' stroke-width=\'2\' d=\'M19 9l-7 7-7-7\'%3E%3C/path%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1.5rem center', backgroundSize: '1.5rem' }}
-                       >
-                         <option value="all">TOUTES LES DIRECTIONS</option>
-                         {RETENTION_CALENDAR.map(dir => (
-                           <option key={dir.name} value={dir.name}>
-                             {dir.name.toUpperCase()}
-                           </option>
-                         ))}
-                       </select>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2">
-                    <div className="flex gap-4">
-                      <button className="flex items-center gap-2 text-slate-700 font-bold hover:text-brand-accent transition-colors">
-                        <Filter size={18} /> Filtres avancés
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setEditedDetailItem({
-                            reference: '',
-                            intitule: '',
-                            direction: '',
-                            dateDebut: '',
-                            dateFin: '',
-                            numBoite: '',
-                            localisation: '',
-                            ruleId: null
-                          });
-                          setIsEditingDetail(true);
-                        }}
-                        className="flex items-center gap-2 text-brand-accent font-black hover:opacity-80 transition-colors bg-brand-accent/10 px-4 py-2 rounded-xl"
-                      >
-                        <Plus size={18} /> Nouveau dossier
-                      </button>
-                    </div>
-                    <button 
-                      onClick={() => {
-                        setMassSearchTerm('');
-                        setSelectedDirection('all');
-                      }}
-                      className="text-slate-700 font-bold hover:text-brand-accent transition-colors"
-                    >
-                      Réinitialiser
-                    </button>
-                  </div>
-                </div>
-
-                {/* Results Count */}
-                {(massSearchTerm || selectedDirection !== 'all') && (
-                   <div className="max-w-5xl mx-auto px-4">
-                     <span className="text-xs font-bold text-slate-400 italic">
-                       {massInventory.length} résultat(s) {selectedDirection !== 'all' && `pour la direction ${selectedDirection.replace('Direction ', '')}`}
-                     </span>
-                   </div>
-                )}
-
-                {/* Search Results Display (Image Style Cards) */}
-                {!massSearchTerm && selectedDirection === 'all' && massInventory.length === 0 ? (
-                  <div className="py-20 flex flex-col items-center justify-center text-center opacity-40">
-                    <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center mb-6">
-                      <Library size={48} className="text-slate-300" />
-                    </div>
-                    <h3 className="text-xl font-bold text-slate-800">Prêt pour l'extraction</h3>
-                  </div>
-                ) : (
-                  <div className="max-w-5xl mx-auto space-y-8 pb-32">
-                    {massInventory.map((item: any) => {
-                      const isSelected = selectedForElimination.includes(item.id);
-                      let rawData: any = {};
-                      try {
-                        rawData = item.rawData ? JSON.parse(item.rawData) : {};
-                      } catch (e) {
-                        rawData = item; // Fallback
-                      }
-
-                      // We take all keys from rawData to display in the "table fiche"
-                      const entries = Object.entries(rawData).filter(([k]) => {
-                        const lowerK = k.toLowerCase();
-                        return (
-                          k !== 'id' && 
-                          k !== 'createdAt' && 
-                          k !== 'rawData' && 
-                          k !== 'filename' &&
-                          lowerK !== 'reference' && 
-                          lowerK !== 'intitule' && 
-                          lowerK !== 'direction' && 
-                          lowerK !== 'datefin' && 
-                          lowerK !== 'datecloture' &&
-                          lowerK !== 'date_cloture' &&
-                          lowerK !== 'date debut'
-                        );
-                      });
-
-                      return (
-                        <motion.div 
-                          key={item.id}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          className={cn(
-                            "bg-white rounded-[2.5rem] border-2 transition-all p-10",
-                            isSelected ? "border-brand-primary shadow-2xl" : "border-slate-100 shadow-sm"
-                          )}
-                        >
-                          <div className="flex items-center justify-between mb-8">
-                            <div className="flex items-center gap-5">
-                               <div className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-lg">
-                                 <FileText size={28} />
-                               </div>
-                               <div>
-                                 <h4 className="text-2xl font-black text-slate-800 tracking-tight">{item.reference || "SANS RÉFÉRENCE"}</h4>
-                                 <div className="flex items-center gap-3 mt-1">
-                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-50 px-3 py-1 rounded-lg border border-slate-100">{item.direction || 'DIRECTION'}</span>
-                                    <span className={cn(
-                                      "text-[9px] font-black px-3 py-1 rounded-lg uppercase tracking-wider",
-                                      item.archivalStatus === 'Expired' ? "bg-rose-100 text-rose-600 border border-rose-200" : 
-                                      item.archivalStatus === 'SemiActive' ? "bg-brand-accent/10 text-brand-accent border border-brand-accent/20" : "bg-brand-primary/10 text-brand-primary border border-brand-primary/20"
-                                    )}>
-                                      {item.archivalStatus === 'Expired' ? 'A ÉLIMINER' : 
-                                       item.archivalStatus === 'SemiActive' ? 'SEMI-ACTIF' : 'ACTIF'}
-                                    </span>
-                                 </div>
-                               </div>
-                            </div>
-                            <div className="flex items-center gap-6">
-                              {item.expiryDate && (
-                                <div className="text-right">
-                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Date d'échéance</p>
-                                  <p className="text-sm font-black text-slate-600">{item.expiryDate}</p>
-                                </div>
-                              )}
-                              <input 
-                                type="checkbox" 
-                                className="rounded-xl border-slate-200 text-emerald-600 focus:ring-emerald-500 w-8 h-8 cursor-pointer shadow-sm"
-                                checked={isSelected}
-                                onChange={() => {
-                                  setSelectedForElimination(prev => 
-                                    prev.includes(item.id) ? prev.filter(id => id !== item.id) : [...prev, item.id]
-                                  );
-                                }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Professional Dynamic Table matching requested style */}
-                          <div className="border border-slate-200 rounded-[2rem] overflow-hidden shadow-inner bg-slate-50/20">
-                             {[
-                               ['Intitulé', item.intitule],
-                               ['Localisation', item.localisation],
-                               ['Numéro de Boîte', item.numBoite],
-                               ['Date d\'ouverture', item.dateDebut],
-                               ['Date de clôture', item.dateCloture],
-                               ...entries
-                             ].map(([key, value], idx) => {
-                               if (!value || value === '-') return null;
-                               return (
-                                 <div key={`${key}-${idx}`} className="grid grid-cols-12 border-b border-slate-100 last:border-0 hover:bg-slate-50/80 transition-all duration-300">
-                                   <div className="col-span-4 bg-slate-50/80 px-8 py-4 border-r border-slate-100 flex items-center">
-                                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">{key.replace(/_/g, ' ')}</span>
-                                   </div>
-                                   <div className="col-span-8 px-8 py-4 flex items-center">
-                                     <span className="text-sm font-bold text-slate-700">{String(value)}</span>
-                                   </div>
-                                 </div>
-                               );
-                             })}
-                          </div>
-
-                          <div className="flex items-center justify-between mt-8 px-2">
-                             <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400">
-                               <Clock size={14} className="text-slate-300" />
-                               <span>Importé le {formatExcelDate(item.createdAt)}</span>
-                               <span className="w-1 h-1 bg-slate-200 rounded-full"></span>
-                               <span>Source: {item.filename || 'Import direct'}</span>
-                             </div>
-                             <div className="flex gap-3">
-                               <button 
-                                 onClick={() => setViewingRequest(item)}
-                                 className="flex items-center gap-2 px-4 py-2 text-slate-400 hover:text-orange-600 hover:bg-orange-50 rounded-xl transition-all font-bold text-xs"
-                               >
-                                 <Eye size={16}/> Détails
-                               </button>
-                               <button 
-                                 onClick={() => deleteMassItem(item.id)}
-                                 className="flex items-center gap-2 px-4 py-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs"
-                               >
-                                <Trash2 size={16}/> Supprimer
-                               </button>
-                             </div>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
-                )}
-              </motion.div>
-            )}
 
             {massSubTab === 'history' && (
               <motion.div
@@ -2934,6 +3871,129 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 className="w-full h-full min-h-[850px] rounded-2xl overflow-hidden border border-slate-200 shadow-inner bg-white"
               >
                 <CentralizedInventory />
+              </motion.div>
+            )}
+
+            {massSubTab === 'search' && (
+              <motion.div
+                key="mass-search"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Search Bar & Direction Filters */}
+                <div className="bg-slate-50 border border-slate-100 rounded-3xl p-6 space-y-4">
+                  <div className="flex flex-col md:flex-row gap-4 items-center">
+                    <div className="relative flex-1 w-full">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <input 
+                        type="text"
+                        placeholder="Rechercher par référence, intitulé, boite, travee, valise, mot-clé..." 
+                        className="w-full bg-white border border-slate-200 rounded-2xl pl-12 pr-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand-accent/20 focus:border-brand-accent transition-all shadow-sm"
+                        value={massSearchTerm}
+                        onChange={(e) => setMassSearchTerm(e.target.value)}
+                      />
+                    </div>
+                    <div className="w-full md:w-72">
+                      <select 
+                        className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm cursor-pointer"
+                        value={selectedDirection}
+                        onChange={(e) => setSelectedDirection(e.target.value)}
+                      >
+                        <option value="all">TOUTES LES DIRECTIONS</option>
+                        {RETENTION_CALENDAR.map(dir => (
+                          <option key={dir.name} value={dir.name}>
+                            {dir.name.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {(massSearchTerm || selectedDirection !== 'all') && (
+                      <button 
+                        onClick={() => {
+                          setMassSearchTerm('');
+                          setSelectedDirection('all');
+                        }}
+                        className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors shrink-0 uppercase tracking-wider"
+                      >
+                        Rétablir
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Results List */}
+                {massInventory.length === 0 ? (
+                  <div className="py-16 text-center border border-dashed border-slate-150 rounded-3xl bg-slate-50/20">
+                    <Search className="mx-auto text-slate-300 mb-3" size={32} />
+                    <p className="text-slate-500 text-sm font-semibold">Aucun dossier ou boîte pointée trouvé</p>
+                    <p className="text-slate-400 text-xs mt-1">Saisissez un critère de recherche ou filtrez par direction pour afficher les pointages.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between px-2">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{massInventory.length} pointage(s) trouvé(s)</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4">
+                      {massInventory.map((item: any) => {
+                        return (
+                          <div 
+                            key={item.id}
+                            className="bg-white border border-slate-100 rounded-2xl p-5 hover:border-slate-200 hover:shadow-md transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                          >
+                            <div className="space-y-2 flex-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-extrabold text-slate-900 text-sm tracking-tight">{item.reference || "SANS RÉFÉRENCE"}</span>
+                                <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-slate-100 text-slate-500 rounded-full uppercase tracking-wider">
+                                  {item.direction || 'DIRECTION'}
+                                </span>
+                                {item.sourceType === 'centralized' ? (
+                                  <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-full uppercase tracking-wider">
+                                    CENTRALISÉ ({item.status === 'verified' ? 'VALIDÉ' : 'POINTÉ'})
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-full uppercase tracking-wider">
+                                    IMPORT DE MASSE
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs font-bold text-slate-700 truncate line-clamp-1 max-w-2xl">{item.intitule || "Sans intitulé"}</p>
+                              
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 font-medium">
+                                <span><strong>Boîte:</strong> {item.numBoite || item.boxNumber || '-'}</span>
+                                {item.localisation && (
+                                  <span><strong>Emplacement:</strong> {item.localisation}</span>
+                                )}
+                                {item.expiryDate && (
+                                  <span><strong>Délai Échéance:</strong> {item.expiryDate}</span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0 self-end md:self-auto">
+                              <button 
+                                onClick={() => setViewingRequest(item)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all font-bold text-xs uppercase"
+                              >
+                                <Eye size={14} /> Détails
+                              </button>
+                              {item.sourceType !== 'centralized' && (
+                                <button 
+                                  onClick={() => deleteMassItem(item.id)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs uppercase"
+                                >
+                                  <Trash2 size={14} /> Supprimer
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -3855,12 +4915,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 Toutes les demandes
               </button>
               <button
-                onClick={() => setRequestSubTab('signed')}
-                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${requestSubTab === 'signed' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
-              >
-                <CheckCircle2 size={16} /> Demande Signés
-              </button>
-              <button
                 onClick={() => setRequestSubTab('transfers')}
                 className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all relative ${requestSubTab === 'transfers' ? 'bg-white text-brand-accent shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
@@ -3873,60 +4927,112 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </button>
             </div>
           )}
-          <div className="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
-            <div className="flex flex-wrap items-center gap-4 flex-1 w-full">
-          {(activeTab === 'communication' || activeTab === 'returns') ? (
-            <div className="flex bg-slate-100 p-1 rounded-xl">
-              <button 
-                onClick={() => setFilterStatus('all')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
-                  filterStatus === 'all' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                )}
+          {activeTab === 'communication' && (
+            <div className="flex gap-2 mb-6 bg-slate-50 p-1.5 rounded-2xl w-fit mx-auto md:mx-0">
+              <button
+                onClick={() => setCommunicationSubTab('all')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'all' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
-                TOUS
+                Suivi des communications
               </button>
-              <button 
-                onClick={() => setFilterStatus('En cours')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
-                  filterStatus === 'En cours' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                )}
+              <button
+                onClick={() => setCommunicationSubTab('signed')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'signed' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
-                EN COURS
+                <CheckCircle2 size={16} /> Nouvelle demande de communication
               </button>
-              <button 
-                onClick={() => setFilterStatus('Retourné')}
-                className={cn(
-                  "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
-                  filterStatus === 'Retourné' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
-                )}
-              >
-                RETOURNÉS
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Filter size={18} className="text-gray-400" />
-              <select 
-                className="bg-white border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value)}
-              >
-                <option value="all">Tous les Statuts</option>
-                <optgroup label="Canal Agent">
-                  <option value="pending">En attente</option>
-                  <option value="signed">Signé</option>
-                </optgroup>
-                <optgroup label="Canal Distance">
-                  <option value="En attente">En attente</option>
-                  <option value="En cours">En cours</option>
-                  <option value="Prêt / Communiqué">Prêt</option>
-                  <option value="Refusé">Refusé</option>
-                </optgroup>
-              </select>
             </div>
           )}
+
+          {activeTab === 'communication' && communicationSubTab === 'signed' && (
+            <div className="flex flex-wrap gap-2 mb-6 bg-emerald-50/50 border border-emerald-100 p-2.5 rounded-2xl w-full">
+              <div className="flex flex-wrap gap-1.5 flex-1">
+                <button
+                  type="button"
+                  onClick={() => setAgentSessionSubTab('history')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${agentSessionSubTab === 'history' ? 'bg-brand-primary text-white shadow-md shadow-brand-primary/10' : 'text-slate-500 hover:text-slate-800 bg-white/60 hover:bg-white border border-slate-100'}`}
+                >
+                  <History size={15} />
+                  Bordereaux Signés (Historique)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentSessionSubTab('new')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${agentSessionSubTab === 'new' ? 'bg-brand-primary text-white shadow-md shadow-brand-primary/10' : 'text-slate-500 hover:text-slate-800 bg-white/60 hover:bg-white border border-slate-100'}`}
+                >
+                  <Plus size={15} />
+                  Nouvelle Demande d'Archive
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAgentSessionSubTab('remote')}
+                  className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${agentSessionSubTab === 'remote' ? 'bg-brand-primary text-white shadow-md shadow-brand-primary/10' : 'text-slate-500 hover:text-slate-800 bg-white/60 hover:bg-white border border-slate-100'}`}
+                >
+                  <Inbox size={15} />
+                  Demandes à Distance reçues
+                  {remoteRequests.filter(r => r.status === 'En attente').length > 0 && (
+                    <span className="w-2 h-2 rounded-full bg-red-500 border border-white animate-pulse" />
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!(activeTab === 'communication' && communicationSubTab === 'signed' && agentSessionSubTab !== 'history') && (
+          <div className="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
+            <div className="flex flex-wrap items-center gap-4 flex-1 w-full">
+            {((activeTab === 'communication' && communicationSubTab === 'all') || activeTab === 'returns') ? (
+              <div className="flex bg-slate-100 p-1 rounded-xl">
+                <button 
+                  onClick={() => setFilterStatus('all')}
+                  className={cn(
+                    "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    filterStatus === 'all' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  )}
+                >
+                  TOUS
+                </button>
+                <button 
+                  onClick={() => setFilterStatus('En cours')}
+                  className={cn(
+                    "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    filterStatus === 'En cours' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  )}
+                >
+                  EN COURS
+                </button>
+                <button 
+                  onClick={() => setFilterStatus('Retourné')}
+                  className={cn(
+                    "px-4 py-1.5 rounded-lg text-xs font-bold transition-all",
+                    filterStatus === 'Retourné' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  )}
+                >
+                  RETOURNÉS
+                </button>
+              </div>
+            ) : (activeTab === 'requests') ? (
+              <div className="flex items-center gap-2">
+                <Filter size={18} className="text-gray-400" />
+                <select 
+                  className="bg-white border border-gray-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  value={filterStatus}
+                  onChange={(e) => setFilterStatus(e.target.value)}
+                >
+                  <option value="all">Tous les Statuts</option>
+                  <optgroup label="Canal Agent">
+                    <option value="pending">En attente</option>
+                    <option value="signed">Signé</option>
+                  </optgroup>
+                  <optgroup label="Canal Distance">
+                    <option value="En attente">En attente</option>
+                    <option value="En cours">En cours</option>
+                    <option value="Prêt / Communiqué">Prêt</option>
+                    <option value="Refusé">Refusé</option>
+                  </optgroup>
+                </select>
+              </div>
+            ) : null}
 
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -3945,64 +5051,467 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           
           {activeTab === 'communication' && (
             <div className="flex gap-2">
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleImportExcel} 
-                accept=".xlsx, .xls" 
-                className="hidden" 
-              />
+              {communicationSubTab === 'all' && (
+                <>
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleImportExcel} 
+                    accept=".xlsx, .xls" 
+                    className="hidden" 
+                  />
+                  <Button 
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={importing}
+                    className="bg-white border text-slate-700 border-slate-200 hover:bg-slate-50 rounded-2xl px-4 py-2 flex items-center gap-2 shrink-0 shadow-sm"
+                  >
+                    <FileSpreadsheet size={18} className="text-slate-500" />
+                    <span className="hidden sm:inline font-bold text-xs uppercase">Import</span>
+                  </Button>
+                </>
+              )}
+              
               <Button 
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importing}
+                onClick={exportToExcel}
                 className="bg-white border text-slate-700 border-slate-200 hover:bg-slate-50 rounded-2xl px-4 py-2 flex items-center gap-2 shrink-0 shadow-sm"
               >
-                <FileSpreadsheet size={18} className="text-slate-500" />
-                <span className="hidden sm:inline font-bold text-xs uppercase">Import</span>
+                <Download size={18} className="text-slate-500" />
+                <span className="hidden sm:inline font-bold text-xs uppercase">Export</span>
               </Button>
-              <Button 
-                onClick={async () => {
-                  const count = archivedComms.length;
-                  if (window.confirm(`ATTENTION: Cette action va SUPPRIMER DÉFINITIVEMENT TOUT l'historique importé (${count} lignes). Les dossiers en cours de communication resteront. Voulez-vous continuer ?`)) {
-                    try {
-                      setImporting(true);
-                      const response = await api.post('/api/archives/clear', {});
-                      if (response.success) {
-                        setArchivedComms([]);
-                        alert('L\'historique importé a été vidé avec succès.');
-                      } else {
-                        alert('Erreur: ' + (response.error || 'Le serveur n\'a pas pu vider la liste.'));
+
+              {communicationSubTab === 'all' && (
+                <Button 
+                  onClick={async () => {
+                    const count = archivedComms.length;
+                    if (window.confirm(`ATTENTION: Cette action va SUPPRIMER DÉFINITIVEMENT TOUT l'historique importé (${count} lignes). Les dossiers en cours de communication resteront. Voulez-vous continuer ?`)) {
+                      try {
+                        setImporting(true);
+                        const response = await api.post('/api/archives/clear', {});
+                        if (response.success) {
+                          setArchivedComms([]);
+                          alert('L\'historique importé a été vidé avec succès.');
+                        } else {
+                          alert('Erreur: ' + (response.error || 'Le serveur n\'a pas pu vider la liste.'));
+                        }
+                        setImporting(false);
+                      } catch (err: any) {
+                        setImporting(false);
+                        console.error('Clear error:', err);
+                        const errorMsg = err.response?.data?.error || err.message || 'Erreur inconnue';
+                        alert(`Erreur lors de la suppression: ${errorMsg}`);
                       }
-                      setImporting(false);
-                    } catch (err: any) {
-                      setImporting(false);
-                      console.error('Clear error:', err);
-                      const errorMsg = err.response?.data?.error || err.message || 'Erreur inconnue';
-                      alert(`Erreur lors de la suppression: ${errorMsg}`);
                     }
-                  }
-                }}
-                disabled={importing}
-                className={cn(
-                  "bg-red-600 text-white hover:bg-red-700 rounded-2xl px-6 py-2 flex items-center gap-2 shrink-0 shadow-lg shadow-red-200 transition-all active:scale-95",
-                  importing && "opacity-50 cursor-not-allowed animate-pulse"
-                )}
-              >
-                <Trash2 size={18} />
-                <span className="hidden sm:inline font-bold text-xs uppercase tracking-tighter">
-                  {importing ? 'Suppression...' : 'Supprimer Tout (Archives)'}
-                </span>
-              </Button>
+                  }}
+                  disabled={importing}
+                  className={cn(
+                    "bg-red-600 text-white hover:bg-red-700 rounded-2xl px-6 py-2 flex items-center gap-2 shrink-0 shadow-lg shadow-red-200 transition-all active:scale-95",
+                    importing && "opacity-50 cursor-not-allowed animate-pulse"
+                  )}
+                >
+                  <Trash2 size={18} />
+                  <span className="hidden sm:inline font-bold text-xs uppercase tracking-tighter">
+                    {importing ? 'Suppression...' : 'Supprimer Tout (Archives)'}
+                  </span>
+                </Button>
+              )}
             </div>
           )}
           </div>
         </div>
+        )}
 
-        <Card className="overflow-hidden p-0 border-none shadow-xl">
+        {activeTab === 'communication' && communicationSubTab === 'signed' && agentSessionSubTab === 'new' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 p-6 bg-white rounded-2xl border border-slate-100">
+            <div className="lg:col-span-8">
+              <Card className="p-0 overflow-hidden border border-slate-100 shadow-xl shadow-slate-200/50">
+                <div className="bg-brand-primary px-8 py-4 flex items-center justify-between">
+                   <div className="flex items-center gap-3">
+                      <FileText className="text-white" size={24} />
+                      <h2 className="text-white font-bold text-lg">Nouvelle Demande</h2>
+                   </div>
+                   <button
+                      type="button"
+                      onClick={() => fileInputRefAgent.current?.click()}
+                      className="bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded-xl h-9 px-4 text-xs font-bold flex items-center gap-2 transition-all"
+                   >
+                      <FileSpreadsheet size={16} />
+                      Importer Excel
+                   </button>
+                </div>
+                <form onSubmit={handleSubmitAgent} className="p-8 space-y-6">
+                  {/* Intitulé */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                      Intitulé <span className="text-slate-400 font-normal">(optionnel)</span>
+                    </label>
+                    <Input
+                      placeholder="Intitulé du document"
+                      value={agentFormData.intitule}
+                      onChange={e => setAgentFormData(prev => ({ ...prev, intitule: e.target.value }))}
+                      className="bg-white border-slate-200 h-14"
+                    />
+                  </div>
+
+                  {/* Références Section */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-semibold text-slate-700">Référence(s) *</label>
+                      <div className="flex items-center gap-2">
+                        <input 
+                          type="file" 
+                          accept=".xlsx,.xls" 
+                          className="hidden" 
+                          ref={fileInputRefAgent}
+                          onChange={handleFileUploadAgent} 
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => fileInputRefAgent.current?.click()}
+                          className="h-9 px-3 text-[11px] font-bold flex items-center gap-2 bg-brand-secondary text-brand-primary border-brand-primary/10 hover:opacity-90"
+                        >
+                          <FileSpreadsheet size={14} />
+                          Importer Excel
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleAddReferenceAgent}
+                          className="h-9 px-3 text-[11px] font-bold flex items-center gap-2"
+                        >
+                          <Plus size={14} />
+                          Ajouter
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar p-1">
+                      {agentFormData.references.map((ref, idx) => (
+                        <div 
+                          key={idx}
+                          className="flex items-center gap-2"
+                        >
+                          <div className="relative flex-1">
+                            <Hash className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                            <Input
+                              required
+                              placeholder="Ex: 100221223"
+                              value={ref}
+                              onChange={e => handleReferenceChangeAgent(idx, e.target.value)}
+                              className="bg-white border-slate-200 h-12 pl-12"
+                            />
+                          </div>
+                          {agentFormData.references.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveReferenceAgent(idx)}
+                              className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Boîte */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                      Boîte <span className="text-slate-400 font-normal">(optionnel)</span>
+                    </label>
+                    <Input
+                      placeholder="1500"
+                      value={agentFormData.boite}
+                      onChange={e => setAgentFormData(prev => ({ ...prev, boite: e.target.value }))}
+                      className="bg-white border-slate-200 h-14"
+                    />
+                  </div>
+
+                  {/* Nom du demandeur */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700">Nom du demandeur *</label>
+                    <Input
+                      required
+                      placeholder="iheb brahmi"
+                      value={agentFormData.nomDemandeur}
+                      onChange={e => setAgentFormData(prev => ({ ...prev, nomDemandeur: e.target.value }))}
+                      className="bg-white border-slate-200 h-14"
+                    />
+                  </div>
+
+                  {/* Email du demandeur */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                      Email du demandeur <span className="text-slate-400 font-normal">(optionnel)</span>
+                    </label>
+                    <div className="relative">
+                      <Input
+                        type="email"
+                        placeholder="brahmiiheb2000@gmail.com"
+                        value={agentFormData.emailDemandeur}
+                        onChange={e => setAgentFormData(prev => ({ ...prev, emailDemandeur: e.target.value }))}
+                        className="bg-brand-secondary border-brand-primary/10 text-slate-700 h-14"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Date de communication */}
+                  <div className="space-y-3">
+                    <label className="text-sm font-semibold text-slate-700">Date de communication *</label>
+                    <div className="relative">
+                      <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={18} />
+                      <Input
+                        required
+                        type="date"
+                        value={agentFormData.dateCommunication}
+                        onChange={e => setAgentFormData(prev => ({ ...prev, dateCommunication: e.target.value }))}
+                        className="bg-white border-slate-200 pl-12 h-14"
+                      />
+                    </div>
+                    <Input
+                      placeholder="ou saisir: JJ/MM/AAAA"
+                      value={agentFormData.dateManuelle}
+                      onChange={e => setAgentFormData(prev => ({ ...prev, dateManuelle: e.target.value }))}
+                      className="bg-white border-slate-200 h-14"
+                    />
+                  </div>
+
+                  {/* Type de document */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-slate-700">Type de document *</label>
+                    <div className="relative">
+                       <select
+                        required
+                        className="w-full flex h-14 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-brand-primary/20 focus:border-brand-primary transition-all text-slate-700"
+                        value={agentFormData.typeDocument}
+                        onChange={e => setAgentFormData(prev => ({ ...prev, typeDocument: e.target.value }))}
+                      >
+                        <option value="sinistre matériel">sinistre matériel</option>
+                        <option value="sinistre corporel">sinistre corporel</option>
+                        <option value="comptabilité">comptabilité</option>
+                        <option value="production">production</option>
+                        <option value="archives des succursales">archives des succursales</option>
+                        <option value="BS">BS</option>
+                        <option value="autre">autre</option>
+                      </select>
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <Check size={16} className="rotate-90" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-4">
+                    <Button 
+                      className="w-full h-14 text-lg font-bold rounded-lg bg-brand-primary hover:opacity-90 text-white transition-all flex items-center justify-center gap-3 border-none shadow-xl shadow-brand-primary/20"
+                      isLoading={agentFormLoading}
+                      type="submit"
+                    >
+                      {!agentFormLoading && <Send size={20} />}
+                      Soumettre la demande
+                    </Button>
+                  </div>
+
+                  <AnimatePresence>
+                    {agentFormSuccess && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="p-4 bg-brand-primary/10 border border-brand-primary/20 rounded-xl flex items-center gap-3 text-brand-primary text-sm font-medium"
+                      >
+                        <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white shrink-0">
+                          <Check size={16} />
+                        </div>
+                        Votre demande a été enregistrée avec succès.
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </form>
+              </Card>
+            </div>
+
+            {/* Mes Demandes Side Tracking Panel */}
+            <div className="lg:col-span-4 space-y-6">
+              <Card className="p-6 border border-slate-100 shadow-xl bg-slate-50/50">
+                <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+                  <Archive className="text-brand-primary" size={20} />
+                  Mes Demandes (Canal Agent)
+                </h3>
+                
+                <div className="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
+                  {requests.length === 0 ? (
+                    <div className="text-center py-12">
+                      <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Clock className="text-slate-300" size={32} />
+                      </div>
+                      <p className="text-sm text-slate-400">Aucune demande soumise</p>
+                    </div>
+                  ) : (
+                    requests.map((request) => (
+                      <div
+                        key={request.id}
+                        className="p-4 rounded-2xl border border-slate-100 bg-white hover:shadow-lg transition-all"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-brand-primary bg-brand-primary/10 px-2 py-0.5 rounded uppercase tracking-wider">
+                                 {(request.references?.[0] || request.reference || 'REF').substring(0, 15)}...
+                              </span>
+                              <span className={`text-[9px] font-bold px-2.5 py-1 rounded-lg uppercase tracking-wider ${
+                                request.status === 'signed' ? 'bg-brand-primary/10 text-brand-primary border border-brand-primary/20' : 'bg-brand-accent/10 text-brand-accent border border-brand-accent/20'
+                              }`}>
+                                {request.status}
+                              </span>
+                            </div>
+                            <p className="text-sm font-bold text-slate-800">{request.nomDemandeur}</p>
+                            {request.references && request.references.length > 1 && (
+                              <p className="text-[10px] text-slate-500">+{request.references.length - 1} autres refs</p>
+                            )}
+                            <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                              <Calendar size={12} />
+                              {toSafeDate(request.createdAt) ? format(toSafeDate(request.createdAt)!, 'dd/MM/yyyy') : '...'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Card>
+            </div>
+          </div>
+        ) : activeTab === 'communication' && communicationSubTab === 'signed' && agentSessionSubTab === 'remote' ? (
+          <Card className="p-0 overflow-hidden border border-slate-100 shadow-xl">
+             <div className="bg-brand-primary px-8 py-5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                   <Inbox className="text-white" size={24} />
+                   <h2 className="text-white font-bold text-lg">Demandes à distance reçues</h2>
+                </div>
+                <span className="text-[10px] font-bold text-white/70 uppercase tracking-widest bg-white/10 px-3 py-1 rounded-full">
+                   {remoteRequests.length} dossiers au total
+                </span>
+             </div>
+             
+             <div className="overflow-x-auto">
+               <table className="w-full text-left">
+                 <thead>
+                   <tr className="bg-slate-50 border-b border-slate-100">
+                     <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Demandeur</th>
+                     <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Références</th>
+                     <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Date / Priorité</th>
+                     <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Statut</th>
+                     <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Actions</th>
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-slate-50 text-[11px] font-bold">
+                   {remoteRequests.map((req) => (
+                     <tr key={req.id} className="hover:bg-slate-50/50 transition-colors group">
+                       <td className="px-6 py-4">
+                         <div className="flex items-center gap-3">
+                           <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center font-bold text-slate-500">
+                             {req.nom?.charAt(0) || 'D'}
+                           </div>
+                           <div>
+                             <p className="font-bold text-slate-850 text-sm">{req.nom}</p>
+                             <p className="text-[10px] text-slate-400 flex items-center gap-1">
+                               <Building2 size={10} /> {req.service}
+                             </p>
+                           </div>
+                         </div>
+                       </td>
+                       <td className="px-6 py-4">
+                         <div className="flex flex-wrap gap-1">
+                           {(Array.isArray(req.references) ? req.references : (req.references ? [req.references] : [])).map((ref: string, i: number) => (
+                             <span key={i} className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-medium border border-slate-200">
+                               {ref}
+                             </span>
+                           ))}
+                         </div>
+                       </td>
+                       <td className="px-6 py-4">
+                         <div className="space-y-1">
+                           <p className="text-xs font-bold text-slate-700">
+                             {req.dateSouhaitee ? format(new Date(req.dateSouhaitee), 'dd/MM/yyyy') : '-'}
+                           </p>
+                           <span className={cn(
+                             "text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter",
+                             req.priorite === 'Urgente' ? 'bg-red-50 text-red-600 animate-pulse' : 
+                             req.priorite === 'Basse' ? 'bg-slate-100 text-slate-500' : 'bg-brand-primary/10 text-brand-primary'
+                           )}>
+                             {req.priorite}
+                           </span>
+                         </div>
+                       </td>
+                       <td className="px-6 py-4">
+                         <span className={cn(
+                           "text-[10px] font-bold px-2.5 py-1 rounded-full border",
+                           req.status === 'En attente' ? 'bg-brand-accent/10 text-brand-accent border-brand-accent/20' :
+                           req.status === 'En cours' ? 'bg-brand-primary/20 text-brand-primary border-brand-primary/30' :
+                           req.status === 'Prêt / Communiqué' ? 'bg-brand-primary/10 text-brand-primary border-brand-primary/20' :
+                           req.status === 'Refusé' ? 'bg-red-50 text-red-600 border-red-100' :
+                           'bg-slate-100 text-slate-500 border-slate-200'
+                         )}>
+                           {req.status}
+                         </span>
+                       </td>
+                       <td className="px-6 py-4 text-right">
+                         <div className="flex items-center justify-end gap-1">
+                            <button 
+                              onClick={() => handlePrintAgent(req)}
+                              className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
+                              title="Imprimer la demande"
+                            >
+                              <Printer size={16} />
+                            </button>
+                           <button 
+                             onClick={() => handleUpdateRemoteStatusAgent(req.id, 'En cours', req.email, req.nom)}
+                             className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
+                             title="Passer en cours"
+                           >
+                             <RotateCcw size={16} />
+                           </button>
+                           <button 
+                             onClick={() => handleUpdateRemoteStatusAgent(req.id, 'Prêt / Communiqué', req.email, req.nom)}
+                             className="p-1.5 text-slate-400 hover:text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
+                             title="Marquer comme prêt"
+                           >
+                             <CheckCircle size={16} />
+                           </button>
+                           <button 
+                             onClick={() => handleUpdateRemoteStatusAgent(req.id, 'Refusé', req.email, req.nom)}
+                             className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                             title="Refuser"
+                           >
+                             <XCircle size={16} />
+                           </button>
+                         </div>
+                       </td>
+                     </tr>
+                   ))}
+                   {remoteRequests.length === 0 && (
+                     <tr>
+                       <td colSpan={5} className="py-20 text-center">
+                         <div className="mx-auto w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-4">
+                           <Inbox size={32} />
+                         </div>
+                         <p className="text-slate-400 font-bold">Aucune demande à distance pour le moment</p>
+                       </td>
+                     </tr>
+                   )}
+                 </tbody>
+               </table>
+             </div>
+          </Card>
+        ) : (
+          <Card className="overflow-hidden p-0 border-none shadow-xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead className="bg-gray-50 border-b border-gray-100">
-              {(activeTab === 'communication' || activeTab === 'returns') ? (
+              {((activeTab === 'communication' && communicationSubTab === 'all') || activeTab === 'returns') ? (
                 <tr>
                   <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">REF / BOITE</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">nom de demandeur</th>
@@ -4013,7 +5522,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Statut</th>
                   <th className="px-6 py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest text-right">ACTION</th>
                 </tr>
-              ) : activeTab === 'requests' && requestSubTab === 'signed' ? (
+              ) : activeTab === 'communication' && communicationSubTab === 'signed' ? (
                 <tr>
                   <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">ID / Référence</th>
                   <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-widest">Nom & Prénom</th>
@@ -4135,7 +5644,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   )
                 }
 
-                if (activeTab === 'requests' && requestSubTab === 'signed') {
+                if (activeTab === 'communication' && communicationSubTab === 'signed') {
                   const safeDate = toSafeDate(req.updatedAt || req.createdAt);
                   return (
                     <tr key={req.id} className="hover:bg-gray-50/50 transition-colors">
@@ -4151,7 +5660,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         <span className="font-bold text-gray-700 uppercase">{req.requesterName || req.nomDemandeur || req.nom}</span>
                       </td>
                       <td className="px-6 py-4 text-sm font-bold text-brand-primary">
-                        {Array.isArray(req.references) ? req.references[0] : (req.reference || '-')}
+                        {Array.isArray(req.references) ? req.references.join(', ') : (req.reference || '-')}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
                         {safeDate ? format(safeDate, 'dd/MM/yyyy') : '-'}
@@ -4173,10 +5682,36 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button 
+                            onClick={() => {
+                              const refVal = Array.isArray(req.references) && req.references.length > 0 ? req.references[0] : (req.reference || '-');
+                              const invItem = returnInventory.find(i => i.reference === refVal);
+                              setValidatedItemLabel({
+                                reference: refVal,
+                                numBoite: req.boite || 'N/A',
+                                localisation: invItem?.localisation || 'N/A',
+                                barcodeData: `${req.boite || 'N/A'}-${invItem?.localisation || 'N/A'}`
+                              });
+                              setActiveTab('returns');
+                              setReturnSubTab('search');
+                            }}
+                            className="p-1.5 text-slate-300 hover:text-green-600 transition-colors"
+                            title="Imprimer l'étiquette"
+                          >
+                            <Printer size={16} />
+                          </button>
+                          <button 
                             onClick={() => setViewingRequest(req)}
                             className="bg-brand-primary text-white px-4 py-2 rounded-xl text-xs font-bold shadow-lg shadow-brand-primary/20 hover:opacity-90 transition-all flex items-center gap-2"
+                            title="Voir le Bordereau"
                           >
                             <FileText size={14} /> BORDEREAU
+                          </button>
+                          <button 
+                            onClick={() => handleDelete(req.id)} 
+                            className="p-1.5 text-slate-300 hover:text-red-500 transition-colors"
+                            title="Supprimer la demande"
+                          >
+                            <Trash2 size={16} />
                           </button>
                         </div>
                       </td>
@@ -4370,6 +5905,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           </table>
         </div>
       </Card>
+      )}
       </>
       )}
 

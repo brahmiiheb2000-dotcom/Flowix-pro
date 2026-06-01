@@ -73,6 +73,25 @@ db.exec(`
     boxesList TEXT,
     source TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS system_users (
+    email TEXT PRIMARY KEY,
+    role TEXT,
+    displayName TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS departments (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    code TEXT,
+    description TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS barcode_prefixes (
+    id TEXT PRIMARY KEY,
+    direction TEXT UNIQUE,
+    prefix TEXT
+  );
 `);
 
 // Migration: Add new columns if missing
@@ -80,7 +99,7 @@ const newCols = [
   'dossier', 'codeAgence', 'sin', 'police', 'adherant', 
   'dateDeclaration', 'typeSinistre', 'dateCloture', 
   'etatSinistre', 'paquet', 'ruleId', 'expiryDate', 'archivalStatus', 'rawData',
-  'isEliminated'
+  'isEliminated', 'scanFile'
 ];
 newCols.forEach(col => {
   try {
@@ -91,7 +110,7 @@ newCols.forEach(col => {
 });
 
 // Migration for centralized_inventory
-const centralizedCols = ['ruleId', 'expiryDate', 'archivalStatus', 'direction', 'intitule', 'isEliminated'];
+const centralizedCols = ['ruleId', 'expiryDate', 'archivalStatus', 'direction', 'intitule', 'isEliminated', 'scanFile'];
 centralizedCols.forEach(col => {
   try {
     db.exec(`ALTER TABLE centralized_inventory ADD COLUMN ${col} TEXT`);
@@ -308,12 +327,78 @@ const USERS = [
   { email: 'agent@flowix.pro', role: 'Agent', displayName: 'Agent MAE' },
   { email: 'archiviste@flowix.pro', role: 'Archivist', displayName: 'Archiviste MAE' },
   { email: 'demandeur@flowix.pro', role: 'Demandeur', displayName: 'Demandeur Distance' },
-  { email: 'brahmiiheb2000@gmail.com', role: 'Admin', displayName: 'Administrateur' }
+  { email: 'brahmiiheb2000@gmail.com', role: 'Admin', displayName: 'Administrateur' },
+  { email: 'responsable@flowix.pro', role: 'Responsable', displayName: 'Responsable Audit' }
 ];
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // Seed system_users on startup
+  try {
+    const userCount = db.prepare("SELECT COUNT(*) as count FROM system_users").get() as any;
+    if (userCount && userCount.count === 0) {
+      const insertUser = db.prepare("INSERT INTO system_users (email, role, displayName) VALUES (?, ?, ?)");
+      USERS.forEach(u => {
+        insertUser.run(u.email, u.role, u.displayName);
+      });
+      console.log("system_users table seeded with default accounts.");
+    }
+  } catch (err) {
+    console.error("Failed to seed system_users:", err);
+  }
+
+  // Seed departments on startup
+  try {
+    const depCount = db.prepare("SELECT COUNT(*) as count FROM departments").get() as any;
+    if (depCount && depCount.count === 0) {
+      const insertDep = db.prepare("INSERT INTO departments (id, name, code, description) VALUES (?, ?, ?, ?)");
+      const initialDeps = [
+        { name: "Direction Commune", code: "COM-COMMUNE", desc: "PV, assemblées et documents généraux" },
+        { name: "Direction Equipements et Affaires Immobilières", code: "EQ-IMM", desc: "Gestion immobilière et équipements" },
+        { name: "Direction Contrôle de la Conformité", code: "CONF", desc: "Rapports réglementaires et PV" },
+        { name: "Direction Commerciale", code: "COM", desc: "Contrats, conventions et relations courtiers" },
+        { name: "Direction Audit Interne et Organisation", code: "AIO", desc: "Missions d'audit et procédures" },
+        { name: "Direction Finance et Comptabilité", code: "FIN", desc: "Comptabilité générale, factures et comptabilité auxiliaire" },
+        { name: "Direction Sinistre Matériels", code: "SIN-M", desc: "Dossiers de sinistres matériels" },
+        { name: "Direction Sinistre Corporel", code: "SIN-C", desc: "Dossiers de sinistres corporels" },
+        { name: "Direction des Ressources Humaines", code: "DRH", desc: "Dossiers du personnel et paie" }
+      ];
+      db.transaction(() => {
+        initialDeps.forEach((dep, idx) => {
+          insertDep.run(`DEP_${idx + 1}`, dep.name, dep.code, dep.desc);
+        });
+      })();
+      console.log("departments table seeded with organizational departments.");
+    }
+  } catch (err) {
+    console.error("Failed to seed departments:", err);
+  }
+
+  // Seed barcode prefixes on startup
+  try {
+    const prefixCount = db.prepare("SELECT COUNT(*) as count FROM barcode_prefixes").get() as any;
+    if (prefixCount && prefixCount.count === 0) {
+      const insertPrefix = db.prepare("INSERT INTO barcode_prefixes (id, direction, prefix) VALUES (?, ?, ?)");
+      const prefixes = [
+        { dir: "Direction Sinistre Corporel", pre: "Sin.C." },
+        { dir: "Direction Sinistre Matériels", pre: "Sin.M." },
+        { dir: "Direction Finance et Comptabilité", pre: "Compta." },
+        { dir: "Direction des Ressources Humaines", pre: "R.H." },
+        { dir: "Direction Commerciale", pre: "Prod." },
+        { dir: "Direction Contrôle de la Conformité", pre: "Tech." }
+      ];
+      db.transaction(() => {
+        prefixes.forEach((p, idx) => {
+          insertPrefix.run(`PRE_${idx + 1}`, p.dir, p.pre);
+        });
+      })();
+      console.log("barcode_prefixes table seeded successfully.");
+    }
+  } catch (err) {
+    console.error("Failed to seed barcode prefixes:", err);
+  }
 
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
@@ -348,11 +433,24 @@ async function startServer() {
   app.post("/api/login", (req, res) => {
     const { email } = req.body;
     console.log("LOGIN BYPASS ATTEMPT:", { email });
-    const user = USERS.find(u => u.email === email) || { 
-      email, 
-      role: 'Demandeur', 
-      displayName: email.split('@')[0] 
-    };
+    let user = USERS.find(u => u.email === email);
+    if (!user) {
+      try {
+        const dbUser = db.prepare("SELECT * FROM system_users WHERE email = ?").get(email) as any;
+        if (dbUser) {
+          user = { email: dbUser.email, role: dbUser.role, displayName: dbUser.displayName };
+        }
+      } catch (err) {
+        console.error("DB User lookup failed during login:", err);
+      }
+    }
+    if (!user) {
+      user = { 
+        email, 
+        role: 'Demandeur', 
+        displayName: email.split('@')[0] 
+      };
+    }
     
     console.log("LOGIN BYPASS SUCCESS for:", email);
 
@@ -404,6 +502,13 @@ async function startServer() {
 
     try {
       const decoded = jwt.verify(token, JWT_SECRET) as any;
+      try {
+        const dbUser = db.prepare("SELECT * FROM system_users WHERE email = ?").get(decoded.email) as any;
+        if (dbUser) {
+          decoded.role = dbUser.role;
+          decoded.displayName = dbUser.displayName;
+        }
+      } catch (err) {}
       res.json({ user: decoded });
     } catch (err) {
       res.json({ user: null });
@@ -477,6 +582,68 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.get("/api/responsable/stats-directions", authenticate, (req, res) => {
+    try {
+      const organigrammeRows = db.prepare("SELECT name FROM organigramme").all() as any[];
+      const massDirectionsRows = db.prepare("SELECT DISTINCT direction FROM mass_inventory WHERE direction IS NOT NULL AND direction != ''").all() as any[];
+      const centralDirectionsRows = db.prepare("SELECT DISTINCT direction FROM centralized_inventory WHERE direction IS NOT NULL AND direction != ''").all() as any[];
+
+      const directionsSet = new Set<string>();
+      organigrammeRows.forEach(r => { if (r.name) directionsSet.add(r.name.trim()); });
+      massDirectionsRows.forEach(r => { if (r.direction) directionsSet.add(r.direction.trim()); });
+      centralDirectionsRows.forEach(r => { if (r.direction) directionsSet.add(r.direction.trim()); });
+
+      const uniqueDirections = Array.from(directionsSet).sort();
+
+      const directionStats = uniqueDirections.map(dir => {
+        const massCount = (db.prepare("SELECT COUNT(*) as count FROM mass_inventory WHERE TRIM(direction) = ?").get(dir) as any)?.count || 0;
+        const centralCount = (db.prepare("SELECT COUNT(*) as count FROM centralized_inventory WHERE TRIM(direction) = ?").get(dir) as any)?.count || 0;
+        const totalFolders = massCount + centralCount;
+
+        const boxesCount = (db.prepare(`
+          SELECT COUNT(DISTINCT box) as count FROM (
+            SELECT numBoite as box FROM mass_inventory WHERE TRIM(direction) = ? AND numBoite IS NOT NULL AND numBoite != ''
+            UNION
+            SELECT boxNumber as box FROM centralized_inventory WHERE TRIM(direction) = ? AND boxNumber IS NOT NULL AND boxNumber != ''
+          )
+        `).get(dir, dir) as any)?.count || 0;
+
+        return {
+          direction: dir,
+          massCount,
+          centralCount,
+          totalFolders,
+          boxesCount
+        };
+      });
+
+      const totalMass = (db.prepare("SELECT COUNT(*) as count FROM mass_inventory").get() as any)?.count || 0;
+      const totalCentral = (db.prepare("SELECT COUNT(*) as count FROM centralized_inventory").get() as any)?.count || 0;
+      const grandTotalRecords = totalMass + totalCentral;
+
+      const totalBoxes = (db.prepare(`
+        SELECT COUNT(DISTINCT box) as count FROM (
+          SELECT numBoite as box FROM mass_inventory WHERE numBoite IS NOT NULL AND numBoite != ''
+          UNION
+          SELECT boxNumber as box FROM centralized_inventory WHERE boxNumber IS NOT NULL AND boxNumber != ''
+        )
+      `).get() as any)?.count || 0;
+
+      res.json({
+        directionStats,
+        totals: {
+          totalMass,
+          totalCentral,
+          grandTotalRecords,
+          totalBoxes
+        }
+      });
+    } catch (err: any) {
+      console.error("Error fetching directions statistics:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/mass-inventory/clear", authenticate, (req: any, res) => {
     if (req.user.role !== 'Admin' && req.user.role !== 'Agent' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
     try {
@@ -542,6 +709,7 @@ async function startServer() {
           (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, '')) AS localisation,
           ci.direction AS direction,
           ci.isEliminated AS isEliminated,
+          ci.scanFile AS scanFile,
           COALESCE(ci.verifiedAt, ci.pointedAt, ci.updatedAt) AS createdAt,
           'centralized' AS sourceType,
           ci.status AS status,
@@ -627,6 +795,117 @@ async function startServer() {
       return res.status(400).json({ error: "Aucun fichier fourni" });
     }
     res.json({ success: true, filename: req.file.filename });
+  });
+
+  // Storage setup for Dossier Scan PDFs
+  const SCANS_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans');
+  if (!fs.existsSync(SCANS_DIR)) {
+    fs.mkdirSync(SCANS_DIR, { recursive: true });
+  }
+
+  const scanStorage = multer.diskStorage({
+    destination: (req, file, cb) => { cb(null, SCANS_DIR); },
+    filename: (req, file, cb) => {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const cleanOriginal = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+      cb(null, `${timestamp}_${cleanOriginal}`);
+    }
+  });
+  const uploadScan = multer({ storage: scanStorage });
+
+  app.post("/api/inventory/:id/upload-scan", authenticate, uploadScan.single('file'), (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit. Action réservée aux administrateurs, agents ou archivistes." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "Aucun fichier fourni" });
+    }
+
+    let itemId = req.params.id;
+    if (itemId.startsWith('centralized_')) {
+      itemId = itemId.replace('centralized_', '');
+    }
+
+    try {
+      const fileName = req.file.filename;
+
+      // Update in mass_inventory
+      const updateMass = db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(fileName, itemId);
+      let updated = updateMass.changes > 0;
+
+      // Update in centralized_inventory
+      if (!updated) {
+        const updateCentral = db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(fileName, itemId);
+        updated = updateCentral.changes > 0;
+      }
+
+      if (!updated) {
+        try { fs.unlinkSync(req.file.path); } catch (e) {}
+        return res.status(404).json({ error: "Dossier introuvable" });
+      }
+
+      res.json({ success: true, scanFile: fileName });
+    } catch (err: any) {
+      console.error("Error linking scan file:", err);
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/scans/:filename", authenticate, (req: any, res) => {
+    try {
+      const filename = req.params.filename;
+      const safeFilename = path.basename(filename);
+      const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', safeFilename);
+      
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: "Fichier scan introuvable sur le serveur" });
+      }
+      
+      res.sendFile(filePath);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/inventory/:id/delete-scan", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    let itemId = req.params.id;
+    if (itemId.startsWith('centralized_')) {
+      itemId = itemId.replace('centralized_', '');
+    }
+
+    try {
+      let filename: string | null = null;
+      const massRow = db.prepare("SELECT scanFile FROM mass_inventory WHERE id = ?").get(itemId) as any;
+      if (massRow?.scanFile) {
+        filename = massRow.scanFile;
+      } else {
+        const centralRow = db.prepare("SELECT scanFile FROM centralized_inventory WHERE reference = ?").get(itemId) as any;
+        if (centralRow?.scanFile) {
+          filename = centralRow.scanFile;
+        }
+      }
+
+      db.prepare("UPDATE mass_inventory SET scanFile = NULL WHERE id = ?").run(itemId);
+      db.prepare("UPDATE centralized_inventory SET scanFile = NULL WHERE reference = ?").run(itemId);
+
+      if (filename) {
+        const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', filename);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Error deleting scan:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.post("/api/mass-inventory/import", authenticate, (req: any, res) => {
@@ -1006,8 +1285,68 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.get("/api/elimination/pending-pv", authenticate, (req: any, res) => {
+    try {
+      const results = db.prepare(`
+        SELECT er.id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        FROM elimination_requests er
+        JOIN mass_inventory mi ON er.inventoryId = mi.id
+        LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
+        WHERE er.status = 'Pending'
+
+        UNION ALL
+
+        SELECT er.id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        FROM elimination_requests er
+        JOIN centralized_inventory ci ON er.inventoryId = ci.reference
+        LEFT JOIN archival_directory ad ON ci.ruleId = ad.id
+        WHERE er.status = 'Pending'
+        
+        ORDER BY id DESC
+      `).all() as any[];
+
+      const mapped = results.map((r, index) => ({
+        ...r,
+        pvNumber: `PV-2026-${String(index + 1).padStart(4, '0')}`
+      }));
+
+      res.json(mapped);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/elimination/requests", authenticate, (req: any, res) => {
+    try {
+      const results = db.prepare(`
+        SELECT er.id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        FROM elimination_requests er
+        JOIN mass_inventory mi ON er.inventoryId = mi.id
+        LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
+
+        UNION ALL
+
+        SELECT er.id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        FROM elimination_requests er
+        JOIN centralized_inventory ci ON er.inventoryId = ci.reference
+        LEFT JOIN archival_directory ad ON ci.ruleId = ad.id
+        
+        ORDER BY id DESC
+      `).all() as any[];
+
+      const mapped = results.map((r, index) => ({
+        ...r,
+        pvNumber: `PV-2026-${String(index + 1).padStart(4, '0')}`
+      }));
+
+      res.json(mapped);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/elimination/validate-pv", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist') return res.status(403).json({ error: "Interdit" });
+    if (req.user.role !== 'Admin' && req.user.role !== 'Archivist' && req.user.role !== 'Responsable') return res.status(403).json({ error: "Interdit" });
     try {
       const { requestIds } = req.body;
       const today = new Date().toISOString();
@@ -1838,6 +2177,274 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("Stats error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==========================================
+  // --- SESSION RESPONSABLE (AUDIT) ENDPOINTS ---
+  // ==========================================
+
+  // 1. Manage System Users
+  app.get("/api/users", authenticate, (req: any, res) => {
+    try {
+      const users = db.prepare("SELECT * FROM system_users").all();
+      res.json(users);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/users", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Rôle de Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const { email, role, displayName } = req.body;
+      if (!email || !role || !displayName) {
+        return res.status(400).json({ error: "Champs manquants." });
+      }
+      db.prepare(`
+        INSERT INTO system_users (email, role, displayName)
+        VALUES (?, ?, ?)
+        ON CONFLICT(email) DO UPDATE SET role=excluded.role, displayName=excluded.displayName
+      `).run(email.trim().toLowerCase(), role, displayName.trim());
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/users/:email", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Rôle de Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const { email } = req.params;
+      db.prepare("DELETE FROM system_users WHERE email = ?").run(email.toLowerCase());
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // 2. Manage Organigramme / Departments
+  app.get("/api/organigramme", authenticate, (req: any, res) => {
+    try {
+      const deps = db.prepare("SELECT * FROM departments").all();
+      res.json(deps);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/organigramme", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Rôle de Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const { name, code, description } = req.body;
+      if (!name || !code) {
+        return res.status(400).json({ error: "Champs manquants. Saisir le titre de la direction et son code trigramme." });
+      }
+      const id = `DEP_${Date.now()}`;
+      db.prepare("INSERT INTO departments (id, name, code, description) VALUES (?, ?, ?, ?)")
+        .run(id, name.trim(), code.trim().toUpperCase(), (description || '').trim());
+      res.json({ success: true, id });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.patch("/api/organigramme/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Rôle de Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const { id } = req.params;
+      const { name, code, description } = req.body;
+      db.prepare(`
+        UPDATE departments 
+        SET name = COALESCE(?, name), code = COALESCE(?, code), description = COALESCE(?, description)
+        WHERE id = ?
+      `).run(name ? name.trim() : null, code ? code.trim().toUpperCase() : null, description ? description.trim() : null, id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.delete("/api/organigramme/:id", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { id } = req.params;
+      db.prepare("DELETE FROM departments WHERE id = ?").run(id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // 3. Custom Box Barcode Prefix Rules
+  app.get("/api/barcode-settings", authenticate, (req: any, res) => {
+    try {
+      const prefixes = db.prepare("SELECT * FROM barcode_prefixes").all();
+      res.json(prefixes);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/barcode-settings", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { direction, prefix } = req.body;
+      if (!direction || !prefix) return res.status(400).json({ error: "Saisir la direction et le préfixe." });
+
+      const id = `PRE_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO barcode_prefixes (id, direction, prefix)
+        VALUES (?, ?, ?)
+        ON CONFLICT(direction) DO UPDATE SET prefix = excluded.prefix
+      `).run(id, direction.trim(), prefix.trim());
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/barcode-settings/delete", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { direction } = req.body;
+      db.prepare("DELETE FROM barcode_prefixes WHERE direction = ?").run(direction);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // 4. Central Backup Export & Import (Restauration totale de la Base)
+  app.get("/api/backup/export", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const massInventory = db.prepare("SELECT * FROM mass_inventory").all();
+      const centralizedInventory = db.prepare("SELECT * FROM centralized_inventory").all();
+      const centralizedBoxes = db.prepare("SELECT * FROM centralized_boxes").all();
+      const centralizedHistory = db.prepare("SELECT * FROM centralized_validation_history").all();
+      const archivalDirectory = db.prepare("SELECT * FROM archival_directory").all();
+      const eliminationRequests = db.prepare("SELECT * FROM elimination_requests").all();
+      const systemUsers = db.prepare("SELECT * FROM system_users").all();
+      const departments = db.prepare("SELECT * FROM departments").all();
+      const barcodePrefixes = db.prepare("SELECT * FROM barcode_prefixes").all();
+
+      res.json({
+        mass_inventory: massInventory,
+        centralized_inventory: centralizedInventory,
+        centralized_boxes: centralizedBoxes,
+        centralized_validation_history: centralizedHistory,
+        archival_directory: archivalDirectory,
+        elimination_requests: eliminationRequests,
+        system_users: systemUsers,
+        departments,
+        barcode_prefixes: barcodePrefixes,
+        exportedAt: new Date().toISOString()
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/backup/restore", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit. Responsable d'Audit ou Admin requis." });
+    }
+    try {
+      const payload = req.body;
+      if (!payload) return res.status(400).json({ error: "Données vides." });
+
+      db.transaction(() => {
+        // Tables list to replace
+        if (payload.system_users && Array.isArray(payload.system_users)) {
+          db.prepare("DELETE FROM system_users").run();
+          const ins = db.prepare("INSERT INTO system_users (email, role, displayName) VALUES (?, ?, ?)");
+          for (const u of payload.system_users) {
+            ins.run(u.email, u.role, u.displayName);
+          }
+        }
+        if (payload.departments && Array.isArray(payload.departments)) {
+          db.prepare("DELETE FROM departments").run();
+          const ins = db.prepare("INSERT INTO departments (id, name, code, description) VALUES (?, ?, ?, ?)");
+          for (const d of payload.departments) {
+            ins.run(d.id, d.name, d.code, d.description || '');
+          }
+        }
+        if (payload.barcode_prefixes && Array.isArray(payload.barcode_prefixes)) {
+          db.prepare("DELETE FROM barcode_prefixes").run();
+          const ins = db.prepare("INSERT INTO barcode_prefixes (id, direction, prefix) VALUES (?, ?, ?)");
+          for (const b of payload.barcode_prefixes) {
+            ins.run(b.id, b.direction, b.prefix);
+          }
+        }
+        if (payload.archival_directory && Array.isArray(payload.archival_directory)) {
+          db.prepare("DELETE FROM archival_directory").run();
+          const ins = db.prepare("INSERT INTO archival_directory (id, reference, title, direction, docType, activeYears, semiActiveYears, finalDisposition, support, retentionTrigger, isCritical, category, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          for (const r of payload.archival_directory) {
+            ins.run(r.id, r.reference, r.title, r.direction, r.docType || '', r.activeYears || 0, r.semiActiveYears || 0, r.finalDisposition || 'EL', r.support || 'Papier', r.retentionTrigger || '', r.isCritical || 0, r.category || '', r.createdAt || new Date().toISOString());
+          }
+        }
+        if (payload.centralized_boxes && Array.isArray(payload.centralized_boxes)) {
+          db.prepare("DELETE FROM centralized_boxes").run();
+          const ins = db.prepare("INSERT INTO centralized_boxes (id, number, title, isOpen, depot, travee, tablette, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          for (const b of payload.centralized_boxes) {
+            ins.run(b.id, b.number, b.title, b.isOpen ? 1 : 0, b.depot || '', b.travee || '', b.tablette || '', b.createdAt || new Date().toISOString(), b.updatedAt || new Date().toISOString());
+          }
+        }
+        if (payload.centralized_inventory && Array.isArray(payload.centralized_inventory)) {
+          db.prepare("DELETE FROM centralized_inventory").run();
+          const ins = db.prepare("INSERT INTO centralized_inventory (reference, dateCloture, status, boxNumber, pointedAt, verifiedAt, updatedAt, ruleId, expiryDate, archivalStatus, direction, intitule, isEliminated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          for (const f of payload.centralized_inventory) {
+            ins.run(f.reference, f.dateCloture || '', f.status || 'pending', f.boxNumber || '', f.pointedAt || '', f.verifiedAt || '', f.updatedAt || '', f.ruleId || '', f.expiryDate || '', f.archivalStatus || 'Active', f.direction || '', f.intitule || '', f.isEliminated || 0);
+          }
+        }
+        if (payload.mass_inventory && Array.isArray(payload.mass_inventory)) {
+          db.prepare("DELETE FROM mass_inventory").run();
+          const ins = db.prepare("INSERT INTO mass_inventory (id, reference, intitule, direction, numBoite, localisation, dateDebut, dateFin, dossier, codeAgence, sin, police, adherant, dateDeclaration, typeSinistre, dateCloture, etatSinistre, paquet, ruleId, expiryDate, archivalStatus, rawData, createdAt, isEliminated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          for (const m of payload.mass_inventory) {
+            ins.run(m.id, m.reference, m.intitule, m.direction, m.numBoite, m.localisation, m.dateDebut, m.dateFin, m.dossier, m.codeAgence, m.sin, m.police, m.adherant, m.dateDeclaration, m.typeSinistre, m.dateCloture, m.etatSinistre, m.paquet, m.ruleId, m.expiryDate, m.archivalStatus, m.rawData, m.createdAt || new Date().toISOString(), m.isEliminated || 0);
+          }
+        }
+        if (payload.elimination_requests && Array.isArray(payload.elimination_requests)) {
+          db.prepare("DELETE FROM elimination_requests").run();
+          const ins = db.prepare("INSERT INTO elimination_requests (id, inventoryId, ruleId, reference, intitule, docType, direction, finalDisposition, retentionYears, activeYears, semiActiveYears, expiryDate, status, comment, submittedBy, approvedBy, submittedAt, approvedAt, eliminationDate, pvNumber) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+          for (const e of payload.elimination_requests) {
+            ins.run(e.id, e.inventoryId, e.ruleId, e.reference, e.intitule, e.docType, e.direction, e.finalDisposition, e.retentionYears, e.activeYears, e.semiActiveYears, e.expiryDate, e.status, e.comment, e.submittedBy, e.approvedBy, e.submittedAt, e.approvedAt, e.eliminationDate, e.pvNumber);
+          }
+        }
+      })();
+      res.json({ success: true, message: "Restauration terminée avec succès !" });
+    } catch (err: any) {
+      console.error("Database restore error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 5. Final Audit Validation locks
+  app.post("/api/audit/finalize-inventory", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { references } = req.body;
+      if (!references || !Array.isArray(references)) return res.status(400).json({ error: "Références manquantes." });
+
+      const today = new Date().toISOString();
+      db.transaction(() => {
+        const updateCentral = db.prepare(`
+          UPDATE centralized_inventory 
+          SET status = 'verified', verifiedAt = ?, archivalStatus = 'Active'
+          WHERE reference = ?
+        `);
+        const updateMass = db.prepare(`
+          UPDATE mass_inventory 
+          SET archivalStatus = 'Active'
+          WHERE reference = ?
+        `);
+        for (const ref of references) {
+          updateCentral.run(today, ref);
+          updateMass.run(ref);
+        }
+      })();
+      res.json({ success: true, count: references.length });
+    } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });

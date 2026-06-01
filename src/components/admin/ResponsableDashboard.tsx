@@ -1,0 +1,2053 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  Shield, 
+  CheckSquare, 
+  Users, 
+  Settings, 
+  Plus, 
+  Trash2, 
+  Edit3, 
+  Save, 
+  X, 
+  Calendar, 
+  RefreshCw, 
+  Check, 
+  AlertTriangle, 
+  Barcode,
+  Search,
+  BookOpen,
+  ArrowRight,
+  Database,
+  Download,
+  Upload,
+  Info,
+  BarChart3,
+  FileText,
+  TrendingUp,
+  ExternalLink
+} from 'lucide-react';
+import { api } from '../../lib/api';
+
+// Simple Alert Toast in French
+interface AlertInfo {
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
+export function ResponsableDashboard() {
+  const [activeTab, setActiveTab] = useState<'audit' | 'rules' | 'organigramme' | 'users' | 'barcodes' | 'backup' | 'search' | 'analytics'>('audit');
+  const [toast, setToast] = useState<AlertInfo | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
+  const [pdfViewerTitle, setPdfViewerTitle] = useState<string>('');
+
+  // Lists state
+  const [pendingInventories, setPendingInventories] = useState<any[]>([]);
+  const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
+  const [rules, setRules] = useState<any[]>([]);
+  const [organigramme, setOrganigramme] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [barcodeSettings, setBarcodeSettings] = useState<any[]>([]);
+
+  // Search/Filters state (For pending validation tab)
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedDirection, setSelectedDirection] = useState('');
+
+  // Global Search states
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSelectedDirection, setGlobalSelectedDirection] = useState('');
+  const [showEliminatedArchives, setShowEliminatedArchives] = useState(false);
+  const [globalInventoryResults, setGlobalInventoryResults] = useState<any[]>([]);
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
+
+  // Statistics states
+  const [statsDirectionsData, setStatsDirectionsData] = useState<any>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+
+  // Selected references for bulk validation
+  const [selectedInventories, setSelectedInventories] = useState<string[]>([]);
+  const [selectedEliminations, setSelectedEliminations] = useState<string[]>([]);
+
+  // Editing items state
+  const [editingItem, setEditingItem] = useState<any | null>(null);
+
+  // New Rule Modal
+  const [showRuleModal, setShowRuleModal] = useState(false);
+  const [newRule, setNewRule] = useState({
+    reference: '',
+    title: '',
+    direction: '',
+    docType: '',
+    activeYears: 5,
+    semiActiveYears: 10,
+    finalDisposition: 'EL',
+    support: 'Papier',
+    retentionTrigger: 'Date de clôture',
+    isCritical: 0,
+    category: ''
+  });
+
+  // New User Form
+  const [newUser, setNewUser] = useState({
+    email: '',
+    displayName: '',
+    role: 'Agent'
+  });
+
+  // New Org Form
+  const [newOrg, setNewOrg] = useState({
+    name: '',
+    code: '',
+    description: ''
+  });
+  const [editingOrg, setEditingOrg] = useState<any | null>(null);
+
+  // New Barcode Rule Form
+  const [newBarcodeRule, setNewBarcodeRule] = useState({
+    direction: '',
+    prefix: ''
+  });
+
+  // Show dynamic toast helper
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4500);
+  };
+
+  // ----------------------------------------------------
+  // --- FETCHING ACTIONS ---
+  // ----------------------------------------------------
+
+  const loadAllData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch pending inventories
+      try {
+        const massInv = await api.get('/api/mass-inventory');
+        // Keep files/folders with pending status or general active review
+        setPendingInventories(massInv.filter((item: any) => item.archivalStatus !== 'Eliminated'));
+      } catch (e) {
+        console.error("Failed to load inventories", e);
+      }
+
+      // 2. Fetch pending elimination requests
+      try {
+        const elims = await api.get('/api/elimination/pending-pv');
+        setEliminationRequests(elims || []);
+      } catch (e) {
+        // Fallback or retry
+        try {
+          const allElim = await api.get('/api/elimination/requests');
+          setEliminationRequests(allElim.filter((e: any) => e.status === 'Pending'));
+        } catch (err) {
+          console.error("Failed to load elimination requests", err);
+        }
+      }
+
+      // 3. Fetch conservation rules
+      try {
+        const directory = await api.get('/api/archival-directory');
+        setRules(directory || []);
+      } catch (e) {
+        console.error("Failed to load archival directory", e);
+      }
+
+      // 4. Fetch organigramme
+      try {
+        const orgs = await api.get('/api/organigramme');
+        setOrganigramme(orgs || []);
+      } catch (e) {
+        console.error("Failed to load organigramme", e);
+      }
+
+      // 5. Fetch users
+      try {
+        const usrList = await api.get('/api/users');
+        setUsers(usrList || []);
+      } catch (e) {
+        console.error("Failed to load users", e);
+      }
+
+      // 6. Fetch barcode prefix settings
+      try {
+        const prefixRules = await api.get('/api/barcode-settings');
+        setBarcodeSettings(prefixRules || []);
+      } catch (e) {
+        console.error("Failed to load barcode settings", e);
+      }
+
+    } catch (err: any) {
+      showToast("Certaines données n'ont pas pu être chargées", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGlobalSearch = async () => {
+    setGlobalSearchLoading(true);
+    try {
+      const qParams = new URLSearchParams({
+        search: globalSearchQuery,
+        direction: globalSelectedDirection || 'all',
+        showEliminated: showEliminatedArchives ? 'true' : 'false'
+      });
+      const results = await api.get(`/api/mass-inventory?${qParams.toString()}`);
+      setGlobalInventoryResults(results || []);
+    } catch (err: any) {
+      showToast("Erreur de recherche globale: " + err.message, "error");
+    } finally {
+      setGlobalSearchLoading(false);
+    }
+  };
+
+  const handleLoadStats = async () => {
+    setStatsLoading(true);
+    try {
+      const stats = await api.get('/api/responsable/stats-directions');
+      setStatsDirectionsData(stats);
+    } catch (err: any) {
+      showToast("Erreur lors du calcul des statistiques: " + err.message, "error");
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'search') {
+      handleGlobalSearch();
+    } else if (activeTab === 'analytics') {
+      handleLoadStats();
+    }
+  }, [activeTab, showEliminatedArchives]);
+
+  useEffect(() => {
+    loadAllData();
+  }, []);
+
+  // ----------------------------------------------------
+  // --- USER CONTROLS ACTIONS ---
+  // ----------------------------------------------------
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUser.email || !newUser.displayName) {
+      showToast("Veuillez remplir tous les champs utilisateur.", "error");
+      return;
+    }
+    try {
+      await api.post('/api/users', newUser);
+      showToast(`Utilisateur ${newUser.displayName} enregistré avec succès !`);
+      setNewUser({ email: '', displayName: '', role: 'Agent' });
+      // reload
+      const usrList = await api.get('/api/users');
+      setUsers(usrList || []);
+    } catch (err: any) {
+      showToast(err.message || "Erreur de création", "error");
+    }
+  };
+
+  const handleDeleteUser = async (email: string) => {
+    if (!window.confirm(`Supprimer l'accès pour ${email} ?`)) return;
+    try {
+      await api.delete(`/api/users/${encodeURIComponent(email)}`);
+      showToast("Utilisateur supprimé de la base.");
+      const usrList = await api.get('/api/users');
+      setUsers(usrList || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- ORGANIGRAMME ACTIONS ---
+  // ----------------------------------------------------
+  const handleAddOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newOrg.name || !newOrg.code) {
+      showToast("Veuillez saisir le nom de la direction et le code.", "error");
+      return;
+    }
+    try {
+      await api.post('/api/organigramme', newOrg);
+      showToast(`Direction ${newOrg.name} ajoutée à l'organigramme !`);
+      setNewOrg({ name: '', code: '', description: '' });
+      const orgs = await api.get('/api/organigramme');
+      setOrganigramme(orgs || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const handleUpdateOrg = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingOrg) return;
+    try {
+      await api.patch(`/api/organigramme/${editingOrg.id}`, editingOrg);
+      showToast("Organigramme mis à jour !");
+      setEditingOrg(null);
+      const orgs = await api.get('/api/organigramme');
+      setOrganigramme(orgs || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const handleDeleteOrg = async (id: string) => {
+    if (!window.confirm("Supprimer cette direction ?")) return;
+    try {
+      await api.delete(`/api/organigramme/${id}`);
+      showToast("Direction supprimée.");
+      const orgs = await api.get('/api/organigramme');
+      setOrganigramme(orgs || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- BARCODE PREFIX ACTIONS ---
+  // ----------------------------------------------------
+  const handleSaveBarcodePrefix = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBarcodeRule.direction || !newBarcodeRule.prefix) {
+      showToast("Veuillez renseigner la direction et le préfixe.", "error");
+      return;
+    }
+    try {
+      await api.post('/api/barcode-settings', newBarcodeRule);
+      showToast(`Préfixe "${newBarcodeRule.prefix}" lié à ${newBarcodeRule.direction} !`);
+      setNewBarcodeRule({ direction: '', prefix: '' });
+      const prefixRules = await api.get('/api/barcode-settings');
+      setBarcodeSettings(prefixRules || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const handleDeleteBarcodePrefix = async (direction: string) => {
+    try {
+      await api.post('/api/barcode-settings/delete', { direction });
+      showToast("Préfixe supprimé !");
+      const prefixRules = await api.get('/api/barcode-settings');
+      setBarcodeSettings(prefixRules || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- CONSERVATION RULES ACTIONS ---
+  // ----------------------------------------------------
+  const handleAddRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRule.reference || !newRule.title || !newRule.direction) {
+      showToast("Champs requis manquants.", "error");
+      return;
+    }
+    try {
+      await api.post('/api/archival-rules', newRule);
+      showToast(`Règle "${newRule.reference}" créée avec succès !`);
+      setShowRuleModal(false);
+      setNewRule({
+        reference: '',
+        title: '',
+        direction: '',
+        docType: '',
+        activeYears: 5,
+        semiActiveYears: 10,
+        finalDisposition: 'EL',
+        support: 'Papier',
+        retentionTrigger: 'Date de clôture',
+        isCritical: 0,
+        category: ''
+      });
+      const directory = await api.get('/api/archival-directory');
+      setRules(directory || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // Delete conservation rule
+  const handleDeleteRule = async (id: string) => {
+    if (!window.confirm("Supprimer cette règle de conservation définitivement ?")) return;
+    try {
+      await api.delete(`/api/archival-rules/${id}`);
+      showToast("Règle de conservation supprimée.");
+      const directory = await api.get('/api/archival-directory');
+      setRules(directory || []);
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- AUDIT VALIDATIONS & BULK ACTIONS ---
+  // ----------------------------------------------------
+  const handleBulkFinalizeInventories = async () => {
+    if (selectedInventories.length === 0) {
+      showToast("Aucun inventaire sélectionné.", "info");
+      return;
+    }
+    try {
+      await api.post('/api/audit/finalize-inventory', { references: selectedInventories });
+      showToast(`L'audit final de validation a été scellé pour ${selectedInventories.length} dossier(s) !`);
+      setSelectedInventories([]);
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const handleBulkFinalizeEliminations = async () => {
+    if (selectedEliminations.length === 0) {
+      showToast("Aucune élimination sélectionnée.", "info");
+      return;
+    }
+    try {
+      await api.post('/api/elimination/validate-pv', { requestIds: selectedEliminations });
+      showToast(`Élimination finale validée pour ${selectedEliminations.length} PV(s) !`);
+      setSelectedEliminations([]);
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- INVENTORY ITEM DIRECT EDIT (modifier les contenus) ---
+  // ----------------------------------------------------
+  const startEditItem = (item: any) => {
+    setEditingItem({ ...item });
+  };
+
+  const handleSaveEditedItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingItem) return;
+    try {
+      await api.patch(`/api/mass-inventory/${editingItem.id}`, editingItem);
+      showToast(`Contenu de l'inventaire ${editingItem.reference} modifié !`);
+      setEditingItem(null);
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  // ----------------------------------------------------
+  // --- COMPLETE BACKUP / RESTORE WORKFLOW ---
+  // ----------------------------------------------------
+  const handleBackupExport = async () => {
+    try {
+      const data = await api.get('/api/backup/export');
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `backup_integrale_mae_archives_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast("Base de données exportée avec succès !");
+    } catch (err: any) {
+      showToast(err.message, "error");
+    }
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportDatabase = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!window.confirm("Êtes-vous sûr de vouloir IMPORTER et ÉCRASER toute la base de données actuelle ? Cette opération est irréversible !")) {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text);
+
+        setLoading(true);
+        const res = await api.post('/api/backup/restore', parsed);
+        showToast(res.message || "Base de données importée et restaurée !");
+        loadAllData();
+      } catch (err: any) {
+        showToast("Échec de l'importation. Format JSON invalide ou incompatible.", "error");
+      } finally {
+        setLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Header quick statistics
+  const pendingAuditsCount = pendingInventories.filter(i => i.archivalStatus === 'pending' || !i.archivalStatus).length;
+  const pendingEliminationsCount = eliminationRequests.length;
+
+  // Filter pending items based on search/direction
+  const filteredInventories = pendingInventories.filter(item => {
+    const matchesSearch = 
+      (item.reference || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.intitule || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.numBoite || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesDirection = !selectedDirection || item.direction === selectedDirection;
+    return matchesSearch && matchesDirection;
+  });
+
+  return (
+    <div className="space-y-6 w-full max-w-7xl mx-auto pb-12" id="responsable-dashboard-container">
+      
+      {/* Toast Alert Notice */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className={`fixed top-4 right-4 z-50 px-5 py-3.5 rounded-xl shadow-xl flex items-center gap-3 backdrop-blur-md text-sm border font-medium ${
+              toast.type === 'success' ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20' :
+              toast.type === 'error' ? 'bg-rose-500/10 text-rose-600 border-rose-500/20' :
+              'bg-blue-500/10 text-blue-600 border-blue-500/20'
+            }`}
+          >
+            {toast.type === 'success' && <Check className="w-4 h-4 text-emerald-500 animate-bounce" />}
+            {toast.type === 'error' && <AlertTriangle className="w-4 h-4 text-rose-500 animate-pulse" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-blue-500" />}
+            <span>{toast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Header Profile Title banner */}
+      <div className="bg-slate-900 text-white rounded-3xl p-6 lg:p-8 shadow-xl relative overflow-hidden bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-700 via-slate-900 to-slate-950">
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-blue-400 text-xs font-bold tracking-widest uppercase">
+              <Shield className="w-4 h-4 text-blue-400 fill-blue-400/20" />
+              <span>Console d'Audit de Sécurité Totale</span>
+            </div>
+            <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Session Responsable Audit</h1>
+            <p className="text-slate-300 text-sm max-w-xl">
+              Valider les inventaires et les éliminations, modifier les contenus, éditer l'organigramme et les préfixes ou importer l'intégralité de la base de données.
+            </p>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <button 
+              onClick={loadAllData} 
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold select-none transition-all cursor-pointer border border-white/5 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Actualiser</span>
+            </button>
+            <div className="px-4 py-2 bg-blue-500/25 border border-blue-400/30 text-blue-200 rounded-xl text-xs font-semibold">
+              Rôle : Contrôleur en Chef
+            </div>
+          </div>
+        </div>
+
+        {/* Matrix Metrics Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 pt-6 border-t border-white/10">
+          <div>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Audit Inventaires</p>
+            <p className="text-xl md:text-2xl font-black text-white mt-1">{pendingAuditsCount} <span className="text-xs font-medium text-amber-400">à revoir</span></p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Éliminations Suspendues</p>
+            <p className="text-xl md:text-2xl font-black text-rose-300 mt-1">{pendingEliminationsCount} <span className="text-xs font-medium text-rose-400">en attente</span></p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Directions Organisées</p>
+            <p className="text-xl md:text-2xl font-black text-blue-300 mt-1">{organigramme.length}</p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Règles Actives</p>
+            <p className="text-xl md:text-2xl font-black text-emerald-300 mt-1">{rules.length}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs Navigation Rail */}
+      <div className="flex flex-wrap items-center gap-1.5 p-1 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-x-auto">
+        <button
+          onClick={() => setActiveTab('audit')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'audit' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <CheckSquare className="w-3.5 h-3.5" />
+          <span>Audit & Validations</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('search')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'search' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Search className="w-3.5 h-3.5" />
+          <span>Recherche Globale</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('analytics')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'analytics' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
+          <span>Statistiques d'Archives</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('rules')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'rules' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Calendar className="w-3.5 h-3.5" />
+          <span>Calendrier de Conservation</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('organigramme')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'organigramme' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <BookOpen className="w-3.5 h-3.5" />
+          <span>Éditer l'Organigramme</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('users')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'users' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Users className="w-3.5 h-3.5" />
+          <span>Ajouter des Utilisateurs</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('barcodes')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'barcodes' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Barcode className="w-3.5 h-3.5" />
+          <span>Barres Codes Boîtes</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('backup')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'backup' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5" />
+          <span>Sauvegarde & Restauration Totale</span>
+        </button>
+      </div>
+
+      {/* Main Container Layout */}
+      <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm min-h-[450px]">
+        
+        {/* TAB 1: AUDIT & VALIDATIONS */}
+        {activeTab === 'audit' && (
+          <div className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Validation Finale des Inventaires</h3>
+                <p className="text-slate-500 text-xs">Passez en revue les inventaires de masse soumis avec outils d'édition intégrés.</p>
+              </div>
+
+              {/* Barcode filter controls */}
+              <div className="flex items-center gap-2">
+                <Search className="w-4 h-4 text-slate-400" />
+                <input 
+                  type="text" 
+                  placeholder="Rechercher par référence, titre..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs w-[200px] focus:outline-none focus:ring-1 focus:ring-slate-900"
+                />
+                
+                <select
+                  value={selectedDirection}
+                  onChange={e => setSelectedDirection(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-slate-900"
+                >
+                  <option value="">Tous les services</option>
+                  {organigramme.map(d => (
+                    <option key={d.id} value={d.name}>{d.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* List Table of pending items */}
+            {filteredInventories.length === 0 ? (
+              <div className="text-center py-12 border border-dashed border-slate-200 rounded-2xl bg-slate-50">
+                <CheckSquare className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                <p className="text-slate-600 text-sm font-semibold">Aucun versement d'inventaires à valider.</p>
+                <p className="text-slate-400 text-xs">Veuillez vérifier les filtres ou actualiser.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-3 bg-slate-100 rounded-xl">
+                  <span className="text-xs text-slate-600 font-bold">
+                    {selectedInventories.length} item(s) coché(s) pour validation finale.
+                  </span>
+                  
+                  <button
+                    onClick={handleBulkFinalizeInventories}
+                    disabled={selectedInventories.length === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold disabled:opacity-50 select-none cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Appliquer la Validation Finale (Audit Réussi)</span>
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
+                        <th className="p-3 w-10">
+                          <input 
+                            type="checkbox"
+                            checked={selectedInventories.length === filteredInventories.length && filteredInventories.length > 0}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedInventories(filteredInventories.map(i => i.reference));
+                              } else {
+                                setSelectedInventories([]);
+                              }
+                            }}
+                            className="rounded"
+                          />
+                        </th>
+                        <th className="p-3">Référence carton</th>
+                        <th className="p-3">Intitulé / Contenu</th>
+                        <th className="p-3">Direction</th>
+                        <th className="p-3">Boîte de dépôt</th>
+                        <th className="p-3 text-center">Dates extrêmes</th>
+                        <th className="p-3">Statut Archival</th>
+                        <th className="p-3 text-right">Outils d'Édition</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredInventories.map(item => {
+                        const isChecked = selectedInventories.includes(item.reference);
+                        return (
+                          <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                            <td className="p-3">
+                              <input 
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  if (isChecked) {
+                                    setSelectedInventories(selectedInventories.filter(ref => ref !== item.reference));
+                                  } else {
+                                    setSelectedInventories([...selectedInventories, item.reference]);
+                                  }
+                                }}
+                                className="rounded"
+                              />
+                            </td>
+                            <td className="p-3 font-semibold text-slate-900">{item.reference}</td>
+                            <td className="p-3">
+                              <div className="space-y-0.5">
+                                <p className="font-medium text-slate-800">{item.intitule || 'Sans titre'}</p>
+                                <p className="text-[10px] text-slate-400">Carton : {item.numBoite || 'Non assigné'}</p>
+                              </div>
+                            </td>
+                            <td className="p-3 text-slate-600">{item.direction}</td>
+                            <td className="p-3 font-mono text-xs">{item.localisation || 'Étagère Non Définie'}</td>
+                            <td className="p-3 text-center text-slate-500 font-mono">
+                              {item.dateDebut || '?'} - {item.dateFin || '?'}
+                            </td>
+                            <td className="p-3">
+                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                                item.archivalStatus === 'Active' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {item.archivalStatus || 'En attente d\'Audit'}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right">
+                              <button
+                                onClick={() => startEditItem(item)}
+                                className="inline-flex items-center gap-1.5 px-2 py-1 text-blue-600 hover:bg-blue-50 hover:text-blue-700 rounded-md font-semibold text-[11px] cursor-pointer"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>Modifier</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-section: Pending Elimination requests */}
+            <div className="pt-6 border-t border-slate-100">
+              <h3 className="text-base font-bold text-slate-800">Validation Finale des Éliminations (PV suspects)</h3>
+              <p className="text-slate-500 text-xs mb-4">Ces demandes d'élimination de documents en fin de cycle requièrent l'œil de l'auditeur en chef.</p>
+              
+              {eliminationRequests.length === 0 ? (
+                <div className="text-center py-8 border border-dashed border-slate-200 rounded-2xl bg-slate-50">
+                  <Check className="w-6 h-6 text-emerald-500 mx-auto mb-1 animate-pulse" />
+                  <p className="text-slate-500 text-xs font-semibold">Toutes les éliminations ont déjà été auditées et purgées.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-3 bg-slate-100 rounded-xl">
+                    <span className="text-xs text-slate-600 font-bold">
+                      {selectedEliminations.length} demande(s) cochée(s) pour élimination définitive.
+                    </span>
+                    
+                    <button
+                      onClick={handleBulkFinalizeEliminations}
+                      disabled={selectedEliminations.length === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold disabled:opacity-50 select-none cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Confirmer l'Élimination Électronique Finale</span>
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
+                          <th className="p-3 w-10">
+                            <input 
+                              type="checkbox"
+                              checked={selectedEliminations.length === eliminationRequests.length && eliminationRequests.length > 0}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedEliminations(eliminationRequests.map(r => r.id));
+                                } else {
+                                  setSelectedEliminations([]);
+                                }
+                              }}
+                              className="rounded"
+                            />
+                          </th>
+                          <th className="p-3">N° PV</th>
+                          <th className="p-3">Référence dossier</th>
+                          <th className="p-3">Intitulé</th>
+                          <th className="p-3">Service Demandeur</th>
+                          <th className="p-3">Disposition finale prévue</th>
+                          <th className="p-3">Demandé par</th>
+                          <th className="p-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {eliminationRequests.map(er => {
+                          const isChecked = selectedEliminations.includes(er.id);
+                          return (
+                            <tr key={er.id} className="border-b border-slate-100 hover:bg-slate-50/50">
+                              <td className="p-3">
+                                <input 
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => {
+                                    if (isChecked) {
+                                      setSelectedEliminations(selectedEliminations.filter(id => id !== er.id));
+                                    } else {
+                                      setSelectedEliminations([...selectedEliminations, er.id]);
+                                    }
+                                  }}
+                                  className="rounded"
+                                />
+                              </td>
+                              <td className="p-3 font-mono text-[11px] text-slate-700 font-bold">{er.pvNumber || 'PV-DEMANDE-A1'}</td>
+                              <td className="p-3 font-semibold text-slate-900">{er.reference}</td>
+                              <td className="p-3 text-slate-800 font-medium">{er.intitule}</td>
+                              <td className="p-3 text-slate-600">{er.direction}</td>
+                              <td className="p-3">
+                                <span className="text-xs bg-rose-50 text-rose-700 border border-rose-100 px-2 py-0.5 rounded font-black">
+                                  {er.finalDisposition || 'ELIMINATE'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-slate-500">{er.submittedBy || 'Archiviste'}</td>
+                              <td className="p-3">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 uppercase tracking-wider animate-pulse">
+                                  {er.status}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB: RECHERCHE GLOBALE D'ARCHIVES */}
+        {activeTab === 'search' && (
+          <div className="space-y-6" id="responsable-global-search-tab">
+            <div className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Recherche Avancée d'Archives Stockées (Multi-Inventaires)</h3>
+                <p className="text-slate-500 text-xs">Recherchez instantanément par directions, par références ou par intitulés parmi tous les dossiers d'archives (de masse et centralisés).</p>
+              </div>
+              <button
+                onClick={handleGlobalSearch}
+                disabled={globalSearchLoading}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 select-none cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${globalSearchLoading ? 'animate-spin' : ''}`} />
+                <span>Recharger les résultats</span>
+              </button>
+            </div>
+
+            {/* Moteur de recherche & filtres */}
+            <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+              <div className="md:col-span-4">
+                <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center gap-1.5">
+                  <Search className="w-3 h-3 text-slate-500" />
+                  <span>Saisir un terme / mot-clé</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="Référence, titre, adhérent, police, n° boîte..."
+                  value={globalSearchQuery}
+                  onChange={e => setGlobalSearchQuery(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleGlobalSearch(); }}
+                  className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 focus:outline-none bg-white text-slate-800"
+                />
+              </div>
+
+              <div className="md:col-span-3">
+                <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Filtrer par direction</label>
+                <select
+                  value={globalSelectedDirection}
+                  onChange={e => setGlobalSelectedDirection(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 focus:outline-none bg-white font-medium text-slate-700"
+                >
+                  <option value="">Toutes les directions</option>
+                  {organigramme.map(dir => (
+                    <option key={dir.id} value={dir.name}>{dir.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="md:col-span-3 flex items-center h-10">
+                <label className="inline-flex items-center gap-2.5 cursor-pointer text-xs font-medium text-slate-700 select-none">
+                  <input
+                    type="checkbox"
+                    checked={showEliminatedArchives}
+                    onChange={e => setShowEliminatedArchives(e.target.checked)}
+                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                  />
+                  <span>Visualiser les archives éliminées</span>
+                </label>
+              </div>
+
+              <div className="md:col-span-2">
+                <button
+                  type="button"
+                  onClick={handleGlobalSearch}
+                  disabled={globalSearchLoading}
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center justify-center gap-2 select-none cursor-pointer"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Rechercher</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Résultats de recherche */}
+            {globalSearchLoading ? (
+              <div className="text-center py-20">
+                <RefreshCw className="w-10 h-10 text-slate-400 animate-spin mx-auto mb-4" />
+                <p className="text-slate-500 text-sm">Extraction sécurisée des archives dans la base de données...</p>
+              </div>
+            ) : globalInventoryResults.length === 0 ? (
+              <div className="text-center py-16 border border-dashed border-slate-200 rounded-2xl bg-slate-50/50">
+                <FileText className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-slate-600 text-sm font-semibold">Aucun enregistrement d'archive ne correspond à vos filtres.</p>
+                <p className="text-slate-400 text-xs mt-1">Essayez d'élargir vos critères ou de recharger la recherche.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                  <span>{globalInventoryResults.length} archive(s) localisée(s) au total</span>
+                  <span className="font-mono text-[10px]">SQLite Database</span>
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
+                        <th className="p-3">Source / Type</th>
+                        <th className="p-3">Référence</th>
+                        <th className="p-3">Intitulé / Contenu</th>
+                        <th className="p-3 text-center">Scan PDF</th>
+                        <th className="p-3">Direction</th>
+                        <th className="p-3">Carton / Boîte</th>
+                        <th className="p-3">Localisation</th>
+                        <th className="p-3">Statut Conservation</th>
+                        <th className="p-3 text-right">Date d'archivage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {globalInventoryResults.map((item, idx) => {
+                        const isCentral = item.sourceType === 'centralized';
+                        return (
+                          <tr key={item.id || idx} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                            <td className="p-3">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[9px] font-extrabold ${
+                                isCentral ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'
+                              }`}>
+                                {isCentral ? 'Dossier Unitaire' : 'Versement en Masse'}
+                              </span>
+                            </td>
+                            <td className="p-3 font-mono font-bold text-slate-900">{item.reference}</td>
+                            <td className="p-3">
+                              <div className="space-y-0.5">
+                                <p className="font-medium text-slate-800">{item.intitule || 'Sans intitulé principal'}</p>
+                                {item.dossier && item.dossier !== item.reference && (
+                                  <p className="text-[10px] text-slate-400">Dossier rattaché: {item.dossier}</p>
+                                )}
+                              </div>
+                            </td>
+                            <td className="p-3 text-center">
+                              {item.scanFile ? (
+                                <button 
+                                  onClick={() => {
+                                    setPdfViewerFile(item.scanFile);
+                                    setPdfViewerTitle(item.intitule || item.reference || "Scan Dossier");
+                                  }}
+                                  className="mx-auto flex items-center justify-center gap-1 bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 rounded-lg px-2 py-1 text-[10px] font-extrabold tracking-tight uppercase cursor-pointer"
+                                  title="Voir le Scan PDF de ce dossier"
+                                >
+                                  <FileText size={12} className="text-emerald-600 animate-pulse" />
+                                  <span>Voir Scan</span>
+                                </button>
+                              ) : (
+                                <span className="text-slate-400/70 text-[10px] italic">Aucun scan</span>
+                              )}
+                            </td>
+                            <td className="p-3 text-slate-600 font-medium">{item.direction || '—'}</td>
+                            <td className="p-3 font-mono font-semibold text-slate-700">{item.numBoite || item.boxNumber || '—'}</td>
+                            <td className="p-3 text-slate-500 text-[11px]">{item.localisation || '—'}</td>
+                            <td className="p-3">
+                              {item.isEliminated === 1 || item.archivalStatus === 'Eliminated' ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200 shadow-sm uppercase tracking-wider">
+                                  Éliminé
+                                </span>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  item.archivalStatus === 'Active' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
+                                  item.archivalStatus === 'SemiActive' ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                                  item.archivalStatus === 'Expired' ? 'bg-rose-50 text-rose-700 border-rose-100' :
+                                  'bg-slate-50 text-slate-700 border-slate-100'
+                                }`}>
+                                  {item.archivalStatus || (item.status === 'verified' ? 'Vérifié' : 'Archivé (Standard)')}
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-3 text-right text-slate-400 font-mono text-[11px]">
+                              {item.createdAt ? new Date(item.createdAt).toLocaleDateString('fr-FR') : '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB: STATISTIQUES DECIMALES & VOLUMETRIE PAR DIRECTION */}
+        {activeTab === 'analytics' && (
+          <div className="space-y-6" id="responsable-stats-tab">
+            <div className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Analyses Volumétriques par Direction</h3>
+                <p className="text-slate-500 text-xs">Visualisez et suivez le nombre précis de dossiers, versements et de boîtes physiques d'archivage alloués à chaque direction.</p>
+              </div>
+              <button
+                onClick={handleLoadStats}
+                disabled={statsLoading}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 select-none cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${statsLoading ? 'animate-spin' : ''}`} />
+                <span>Actualiser les statistiques</span>
+              </button>
+            </div>
+
+            {statsLoading || !statsDirectionsData ? (
+              <div className="text-center py-20">
+                <RefreshCw className="w-10 h-10 text-slate-400 animate-spin mx-auto mb-4" />
+                <p className="text-slate-500 text-sm">Calcul de la volumétrie en cours...</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                
+                {/* Cartes KPI Global */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-slate-900 text-white rounded-2xl p-5 border border-slate-800 shadow-md relative overflow-hidden">
+                    <div className="absolute right-3 top-3 w-12 h-12 bg-white/5 rounded-xl flex items-center justify-center">
+                      <Database className="w-6 h-6 text-blue-400" />
+                    </div>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Total Enregistrements</p>
+                    <p className="text-3xl font-extrabold text-blue-300 mt-2">{statsDirectionsData.totals.grandTotalRecords}</p>
+                    <p className="text-[10px] text-slate-400 mt-1">Dossiers physiques cumulés dans l'app</p>
+                  </div>
+
+                  <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div className="absolute right-3 top-3 w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center">
+                      <Barcode className="w-6 h-6 text-emerald-600" />
+                    </div>
+                    <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider text-slate-400">Boîtes de stockage physiques</p>
+                    <p className="text-3xl font-extrabold text-emerald-600 mt-2">{statsDirectionsData.totals.totalBoxes}</p>
+                    <p className="text-[10px] text-slate-500 mt-1">Cartons d'archives physiques distincts</p>
+                  </div>
+
+                  <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div className="absolute right-3 top-3 w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center">
+                      <FileText className="w-6 h-6 text-amber-600" />
+                    </div>
+                    <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider text-slate-400">Versements en Masse</p>
+                    <p className="text-3xl font-extrabold text-amber-600 mt-2">{statsDirectionsData.totals.totalMass}</p>
+                    <p className="text-[10px] text-slate-500 mt-1">Total de versement par lots</p>
+                  </div>
+
+                  <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm relative overflow-hidden">
+                    <div className="absolute right-3 top-3 w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center">
+                      <CheckSquare className="w-6 h-6 text-purple-600" />
+                    </div>
+                    <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wider text-slate-400">Dossiers Unitaires</p>
+                    <p className="text-3xl font-extrabold text-purple-600 mt-2">{statsDirectionsData.totals.totalCentral}</p>
+                    <p className="text-[10px] text-slate-500 mt-1">Enregistrements unitaires centralisés</p>
+                  </div>
+                </div>
+
+                {/* Tableau principal par Direction */}
+                <div className="space-y-3">
+                  <h4 className="text-xs font-black uppercase text-slate-700 tracking-wider flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-slate-500" />
+                    <span>Répartition de l'Occupation et Volumétrie des Archives par Direction</span>
+                  </h4>
+
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold">
+                          <th className="p-4 w-1/3">Direction / Service Rattaché</th>
+                          <th className="p-4 text-center">Versements (En Masse)</th>
+                          <th className="p-4 text-center">Dossiers Unitaires (Centralisés)</th>
+                          <th className="p-4 text-center">Boîtes de stockage (Cartons uniques)</th>
+                          <th className="p-4 text-center">Total Enregistrements</th>
+                          <th className="p-4 w-1/4">Proportion du Capital Archivé</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statsDirectionsData.directionStats.map((stat: any, idx: number) => {
+                          const totalAll = statsDirectionsData.totals.grandTotalRecords || 1;
+                          const percentage = Math.round((stat.totalFolders / totalAll) * 100);
+                          
+                          return (
+                            <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                              <td className="p-4 font-bold text-slate-800 flex items-center gap-2">
+                                <div className="w-2.5 h-2.5 rounded bg-blue-600"></div>
+                                <span>{stat.direction}</span>
+                              </td>
+                              <td className="p-4 text-center font-semibold text-slate-600 bg-slate-50/20">{stat.massCount}</td>
+                              <td className="p-4 text-center font-semibold text-slate-600">{stat.centralCount}</td>
+                              <td className="p-4 text-center">
+                                <span className="px-2.5 py-1 text-xs font-bold font-mono bg-emerald-50 text-emerald-800 rounded-lg border border-emerald-100">
+                                  {stat.boxesCount}
+                                </span>
+                              </td>
+                              <td className="p-4 text-center font-black text-slate-900 bg-slate-50/40 text-[13px]">{stat.totalFolders}</td>
+                              <td className="p-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full bg-blue-600 rounded-full transition-all" 
+                                      style={{ width: `${Math.max(percentage, 1)}%` }}
+                                    ></div>
+                                  </div>
+                                  <span className="font-mono text-[11px] font-bold text-slate-500 w-8 text-right">{percentage}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Section descriptive de responsabilité */}
+                <div className="p-5 border border-blue-100 bg-blue-50/30 rounded-2xl flex gap-3 text-xs text-blue-800">
+                  <Info className="w-4 h-4 shrink-0 mt-0.5 text-blue-600" />
+                  <div className="space-y-1">
+                    <p className="font-bold">Interprétation de la Volumétrie des Archives :</p>
+                    <p className="leading-relaxed">
+                      Ces statistiques décisionnelles permettent au Responsable de piloter l'espace de stockage physique total au sein des rayonnages. Les directions ayant le plus fort pourcentage d'allocation peuvent être planifiées pour des campagnes d'épuration anticipées selon le calendrier légal de conservation.
+                    </p>
+                  </div>
+                </div>
+
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 2: CALENDRIER DE CONSERVATION */}
+        {activeTab === 'rules' && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Calendrier & Règles de Conservation (Archivage Légal)</h3>
+                <p className="text-slate-500 text-xs">Mettre à jour les années d'âge actif, semi-actif et les règles de destruction obligatoires.</p>
+              </div>
+
+              <button
+                onClick={() => setShowRuleModal(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-950 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all select-none cursor-pointer"
+              >
+                <Plus className="w-4 h-4 text-white" />
+                <span>Ajouter une Nouvelle Règle</span>
+              </button>
+            </div>
+
+            {/* List of active rules block */}
+            <div className="overflow-x-auto rounded-xl border border-slate-200">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-100 text-slate-700 border-b border-slate-200 font-extrabold">
+                    <th className="p-3">Trigramme Réf.</th>
+                    <th className="p-3">Titre de la Règle / Catégorie</th>
+                    <th className="p-3">Service liant</th>
+                    <th className="p-3 text-center">Séjour Actif (Années)</th>
+                    <th className="p-3 text-center">Séjour Semi-Actif (Années)</th>
+                    <th className="p-3">Sort final</th>
+                    <th className="p-3">Support requis</th>
+                    <th className="p-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rules.map(rule => (
+                    <tr key={rule.id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="p-3 font-mono font-bold text-[11px] text-slate-800">{rule.reference}</td>
+                      <td className="p-3">
+                        <div className="space-y-0.5">
+                          <p className="font-bold text-slate-900">{rule.title}</p>
+                          {rule.docType && <p className="text-[10px] text-slate-400 font-medium">Type : {rule.docType}</p>}
+                        </div>
+                      </td>
+                      <td className="p-3 text-slate-600">{rule.direction}</td>
+                      <td className="p-3 text-center font-semibold text-slate-800">{rule.activeYears} ans</td>
+                      <td className="p-3 text-center font-semibold text-slate-800">{rule.semiActiveYears} ans</td>
+                      <td className="p-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black border ${
+                          rule.finalDisposition === 'CP' ? 'bg-emerald-50 text-emerald-800 border-emerald-150' : 'bg-rose-50 text-rose-800 border-rose-150'
+                        }`}>
+                          {rule.finalDisposition === 'CP' ? 'Conservation Permanente (CP)' : 'Destruction / Élimination (EL)'}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        <span className="px-2 py-0.5 rounded text-[10px] bg-slate-100 border border-slate-200 font-medium text-slate-600">
+                          {rule.support || 'Papier'}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          onClick={() => handleDeleteRule(rule.id)}
+                          className="p-1 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700 rounded-md transition-all select-none cursor-pointer"
+                          title="Supprimer la règle"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 inline" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB 3: ÉDITER L'ORGANIGRAMME */}
+        {activeTab === 'organigramme' && (
+          <div className="space-y-6">
+            <div className="pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800">Structure de l'Organigramme</h3>
+              <p className="text-slate-500 text-xs">Ajuster ou modifier les directions et services de l'entreprise MAE.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* Add form */}
+              <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl h-fit">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 mb-3 flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-brand-primary" />
+                  <span>Nouvelle Direction / Service</span>
+                </h4>
+
+                <form onSubmit={handleAddOrg} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Nom du service</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="e.g. Direction Sinistre Corporel"
+                      value={newOrg.name}
+                      onChange={e => setNewOrg({...newOrg, name: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Code Trigramme</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="e.g. SIN-C"
+                      value={newOrg.code}
+                      onChange={e => setNewOrg({...newOrg, code: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Description</label>
+                    <textarea 
+                      placeholder="Courte description d'archivage..."
+                      value={newOrg.description}
+                      onChange={e => setNewOrg({...newOrg, description: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white h-20"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2 bg-slate-900 hover:bg-slate-850 text-white rounded-xl text-xs font-bold transition-all shadow select-none cursor-pointer"
+                  >
+                    Ajouter au Catalogue
+                  </button>
+                </form>
+              </div>
+
+              {/* List grid */}
+              <div className="md:col-span-2 space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-600">Directions en vigueur ({organigramme.length})</h4>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {organigramme.map(d => (
+                    <div key={d.id} className="relative p-4 border border-slate-200 hover:border-slate-350 rounded-2xl bg-white shadow-sm flex flex-col justify-between group">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] font-black bg-slate-100 text-slate-800 px-1.5 py-0.5 rounded border border-slate-200">
+                            {d.code}
+                          </span>
+                        </div>
+                        <h5 className="font-bold text-slate-900 text-xs pt-1">{d.name}</h5>
+                        {d.description && <p className="text-[11px] text-slate-400 font-medium line-clamp-2">{d.description}</p>}
+                      </div>
+
+                      <div className="flex items-center justify-end gap-1.5 mt-3 pt-3 border-t border-slate-100">
+                        <button
+                          onClick={() => setEditingOrg(d)}
+                          className="p-1 text-blue-600 hover:bg-blue-50 hover:text-blue-700 rounded transition-all select-none cursor-pointer"
+                          title="Modifier"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteOrg(d.id)}
+                          className="p-1 text-rose-600 hover:bg-rose-50 hover:text-rose-700 rounded transition-all select-none cursor-pointer"
+                          title="Supprimer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Editing Org Modal Dialog */}
+            <AnimatePresence>
+              {editingOrg && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    className="bg-white border border-slate-200 rounded-3xl p-6 shadow-2xl w-full max-w-md space-y-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-extrabold text-slate-800 text-sm">Modifier la Direction</h4>
+                      <button onClick={() => setEditingOrg(null)} className="p-1 text-slate-400 hover:text-slate-600 cursor-pointer">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleUpdateOrg} className="space-y-3">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Nom</label>
+                        <input 
+                          type="text"
+                          required
+                          value={editingOrg.name}
+                          onChange={e => setEditingOrg({...editingOrg, name: e.target.value})}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Code</label>
+                        <input 
+                          type="text"
+                          required
+                          value={editingOrg.code}
+                          onChange={e => setEditingOrg({...editingOrg, code: e.target.value})}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-900 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-0.5">Description d'archives</label>
+                        <textarea 
+                          value={editingOrg.description || ''}
+                          onChange={e => setEditingOrg({...editingOrg, description: e.target.value})}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-900 h-20"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2">
+                        <button 
+                          type="button" 
+                          onClick={() => setEditingOrg(null)}
+                          className="px-3 py-1.5 text-slate-600 hover:bg-slate-100 rounded-lg text-xs"
+                        >
+                          Annuler
+                        </button>
+                        <button 
+                          type="submit" 
+                          className="px-4 py-1.5 bg-slate-900 border hover:bg-slate-850 text-white rounded-lg text-xs font-bold shadow"
+                        >
+                          Enregistrer les Modifications
+                        </button>
+                      </div>
+                    </form>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+          </div>
+        )}
+
+        {/* TAB 4: AJOUTER DES UTILISATEURS */}
+        {activeTab === 'users' && (
+          <div className="space-y-6">
+            <div className="pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800">Gestion des Utilisateurs & Attribution des Rôles</h3>
+              <p className="text-slate-500 text-xs">Créer des profils, habiliter ou supprimer les droits d'audit ou d'agent de transit.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* Form container */}
+              <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 mb-3 flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-brand-primary" />
+                  <span>Nouveau Profil Utilisateur</span>
+                </h4>
+
+                <form onSubmit={handleAddUser} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Nom complet</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="e.g. Mohamed Ben Ali"
+                      value={newUser.displayName}
+                      onChange={e => setNewUser({...newUser, displayName: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Adresse Email unique</label>
+                    <input 
+                      type="email"
+                      required
+                      placeholder="e.g. mohamed@flowix.pro"
+                      value={newUser.email}
+                      onChange={e => setNewUser({...newUser, email: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Rôle d'habilitation</label>
+                    <select
+                      value={newUser.role}
+                      onChange={e => setNewUser({...newUser, role: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    >
+                      <option value="Agent">Agent de transit (Saisie active)</option>
+                      <option value="Archivist">Archiviste MAE (PV, règles locales)</option>
+                      <option value="Demandeur">Dossier Demandeur (Consultation seulement)</option>
+                      <option value="Admin">Administrateur Technique</option>
+                      <option value="Responsable">Responsable Audit Totale (Auditeur)</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow select-none cursor-pointer"
+                  >
+                    Habiliter le Profil
+                  </button>
+                </form>
+              </div>
+
+              {/* List grid */}
+              <div className="md:col-span-2 space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-600">Comptes configurés en base ({users.length})</h4>
+                
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold">
+                        <th className="p-3">Utilisateur</th>
+                        <th className="p-3">Email de connexion</th>
+                        <th className="p-3">Rôle Assigné</th>
+                        <th className="p-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {users.map(u => (
+                        <tr key={u.email} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="p-3">
+                            <div className="flex items-center gap-2">
+                              <span className="w-8 h-8 rounded-full bg-slate-200 text-slate-700 font-extrabold flex items-center justify-center text-xs">
+                                {u.displayName.slice(0, 2).toUpperCase()}
+                              </span>
+                              <span className="font-extrabold text-slate-800">{u.displayName}</span>
+                            </div>
+                          </td>
+                          <td className="p-3 text-slate-600 font-mono text-xs">{u.email}</td>
+                          <td className="p-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              u.role === 'Responsable' ? 'bg-indigo-100 text-indigo-800 border-indigo-200 font-black' :
+                              u.role === 'Admin' ? 'bg-rose-100 text-rose-800 border-rose-200' :
+                              u.role === 'Archivist' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
+                              'bg-slate-100 text-slate-800 border-slate-200'
+                            }`}>
+                              {u.role === 'Responsable' ? 'Responsable d\'Audit' : u.role}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => handleDeleteUser(u.email)}
+                              className="p-1 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700 rounded-md transition-all inline-flex items-center gap-1 select-none cursor-pointer font-bold text-[11px]"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Retirer</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: BARCODE CONFIGURATIONS BY DIRECTION */}
+        {activeTab === 'barcodes' && (
+          <div className="space-y-6">
+            <div className="pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800">Codes-barres Boîtes et Préfixes par Direction</h3>
+              <p className="text-slate-500 text-xs">Définir des indicatifs spécifiques (trigrammes carton) par service pour l'impression finale des étiquettes.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* Form */}
+              <div className="bg-slate-50 border border-slate-200 p-5 rounded-2xl h-fit">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-700 mb-3 flex items-center gap-1.5">
+                  <Barcode className="w-4 h-4 text-brand-primary" />
+                  <span>Associer un Code/Préfixe</span>
+                </h4>
+
+                <form onSubmit={handleSaveBarcodePrefix} className="space-y-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Direction de destination</label>
+                    <select
+                      value={newBarcodeRule.direction}
+                      onChange={e => setNewBarcodeRule({...newBarcodeRule, direction: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white font-medium"
+                      required
+                    >
+                      <option value="">Sélectionner une direction...</option>
+                      {organigramme.map(d => (
+                        <option key={d.id} value={d.name}>{d.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Préfixe imprimable codes-barres</label>
+                    <input 
+                      type="text"
+                      required
+                      placeholder="e.g. SIN-CORP. ou COM."
+                      value={newBarcodeRule.prefix}
+                      onChange={e => setNewBarcodeRule({...newBarcodeRule, prefix: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white font-mono"
+                    />
+                    <span className="text-[10px] text-slate-400 block pt-1">Sert de tag initial pour les codes 128 des boîtes archivées.</span>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow select-none cursor-pointer"
+                  >
+                    Sauvegarder le Préfixe de Carton
+                  </button>
+                </form>
+              </div>
+
+              {/* Grid lists */}
+              <div className="md:col-span-2 space-y-4">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-600">Règles enregistrées ({barcodeSettings.length})</h4>
+                
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold">
+                        <th className="p-3">Direction</th>
+                        <th className="p-3">Indicatif de boîte (Préfixe)</th>
+                        <th className="p-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {barcodeSettings.map(rule => (
+                        <tr key={rule.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="p-3 font-bold text-slate-800">{rule.direction}</td>
+                          <td className="p-3">
+                            <span className="font-mono text-xs text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded font-bold">
+                              {rule.prefix}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right">
+                            <button
+                              onClick={() => handleDeleteBarcodePrefix(rule.direction)}
+                              className="p-1 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700 rounded-md transition-all inline-flex items-center gap-1 select-none cursor-pointer font-bold"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Supprimer</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+        {/* TAB 6: BACKUP & INTEGRAL DATABASE RESTORATION */}
+        {activeTab === 'backup' && (
+          <div className="space-y-6">
+            <div className="pb-4 border-b border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800">Sauvegarde & Restauration Intégrale de la Base de Données</h3>
+              <p className="text-slate-500 text-xs">Faites un instantané de sécurité globale ou importez un versement total pour mettre à jour l'application en bloc.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              
+              {/* Back up block */}
+              <div className="border border-slate-200 rounded-2xl p-6 space-y-4 bg-slate-50 flex flex-col justify-between">
+                <div className="space-y-2">
+                  <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                    <Download className="w-5 h-5 text-blue-700" />
+                  </div>
+                  <h4 className="font-extrabold text-slate-800 text-sm">Télécharger un Back-up Global</h4>
+                  <p className="text-slate-500 text-xs leading-relaxed">
+                    Exporte toutes les tables SQLite de l'application (Dossiers, Boîtes de stockage, PV, Archivage légal, Habilitations, Préfixes) dans un versement JSON structuré et normalisé.
+                  </p>
+                </div>
+
+                <div className="pt-4">
+                  <button
+                    onClick={handleBackupExport}
+                    className="w-full py-2.5 bg-slate-900 border hover:bg-slate-850 text-white rounded-xl text-xs font-bold transition-all shadow flex items-center justify-center gap-2 select-none cursor-pointer"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Sauvegarder & Exporter (Instantané JSON)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Import Restore Database block */}
+              <div className="border border-slate-200 rounded-2xl p-6 space-y-4 bg-slate-50 flex flex-col justify-between">
+                <div className="space-y-2">
+                  <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                    <Upload className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <h4 className="font-extrabold text-slate-800 text-sm">Importer & Restaurer Toute la Base (Versement Total)</h4>
+                  <p className="text-slate-505 text-xs text-slate-500 leading-relaxed">
+                    Écrase et remplace instantanément la totalité des tables existantes avec les données contenues dans votre fichier JSON de sauvegarde d'audit.
+                  </p>
+                </div>
+
+                <div className="relative pt-4">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept=".json"
+                    onChange={handleImportDatabase}
+                    className="hidden"
+                    id="db-backup-selector"
+                  />
+                  <label
+                    htmlFor="db-backup-selector"
+                    className="w-full py-2.5 bg-amber-500 border border-amber-600 hover:bg-amber-600 text-white rounded-xl text-xs font-black transition-all shadow flex items-center justify-center gap-2 select-none cursor-pointer"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Importer Toute la Base de Données (Fichier JSON)</span>
+                  </label>
+                  <span className="text-[10px] text-red-500 block text-center pt-1.5 font-bold">⚠️ Écrase toutes les données en cours !</span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Editing inventory CONTENT popup modal (modifier les inventaires et les contenu) */}
+      <AnimatePresence>
+        {editingItem && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden"
+            >
+              <div className="bg-slate-900 text-white p-5 flex items-center justify-between">
+                <div>
+                  <h3 className="font-extrabold text-sm flex items-center gap-2">
+                    <Edit3 className="w-4 h-4 text-blue-400" />
+                    <span>Modifier de contenu du Dossier Carton : {editingItem.reference}</span>
+                  </h3>
+                  <p className="text-slate-400 text-[11px] pt-0.5">Corriger des informations de versement d'archives pour audit légal.</p>
+                </div>
+                
+                <button onClick={() => setEditingItem(null)} className="p-1 text-slate-400 hover:text-white cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveEditedItem} className="p-6 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Intitulé Principal</label>
+                    <input 
+                      type="text"
+                      required
+                      value={editingItem.intitule || ''}
+                      onChange={e => setEditingItem({ ...editingItem, intitule: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Direction de raccordement</label>
+                    <select
+                      value={editingItem.direction || ''}
+                      onChange={e => setEditingItem({ ...editingItem, direction: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                      required
+                    >
+                      {organigramme.map(d => (
+                        <option key={d.id} value={d.name}>{d.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">N° Boîte / Carton Suffixe</label>
+                    <input 
+                      type="text"
+                      value={editingItem.numBoite || ''}
+                      onChange={e => setEditingItem({ ...editingItem, numBoite: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Étagère / Localisation</label>
+                    <input 
+                      type="text"
+                      value={editingItem.localisation || ''}
+                      onChange={e => setEditingItem({ ...editingItem, localisation: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:ring-1 focus:ring-slate-950 block focus:outline-none bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Date Début Extrême</label>
+                    <input 
+                      type="text"
+                      value={editingItem.dateDebut || ''}
+                      onChange={e => setEditingItem({ ...editingItem, dateDebut: e.target.value })}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Date Fin Extrême</label>
+                    <input 
+                      type="text"
+                      value={editingItem.dateFin || ''}
+                      onChange={e => setEditingItem({ ...editingItem, dateFin: e.target.value })}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2 text-xs">
+                  <button 
+                    type="button" 
+                    onClick={() => setEditingItem(null)}
+                    className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl"
+                  >
+                    Annuler
+                  </button>
+                  
+                  <button 
+                    type="submit"
+                    className="px-5 py-2 bg-slate-900 border hover:bg-slate-800 text-white font-bold rounded-xl shadow"
+                  >
+                    Mettre à jour l'inventaires
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Adding a custom new conservation rule Modal dialog */}
+      <AnimatePresence>
+        {showRuleModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden"
+            >
+              <div className="bg-slate-900 text-white p-5 flex items-center justify-between">
+                <div>
+                  <h4 className="font-extrabold text-sm">Ajouter une Règle d'Archivage</h4>
+                </div>
+                <button onClick={() => setShowRuleModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleAddRule} className="p-6 space-y-4 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Désignation Trigramme / Référence</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="e.g. FIN-FACT-PV1"
+                    value={newRule.reference}
+                    onChange={e => setNewRule({ ...newRule, reference: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Titre de la Règle / Catégorie</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="e.g. Dossiers de Factures d'investissements et fiches de paie"
+                    value={newRule.title}
+                    onChange={e => setNewRule({ ...newRule, title: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Direction de raccordement</label>
+                  <select
+                    value={newRule.direction}
+                    onChange={e => setNewRule({ ...newRule, direction: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                    required
+                  >
+                    <option value="">Sélectionner...</option>
+                    {organigramme.map(d => (
+                      <option key={d.id} value={d.name}>{d.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Séjour Actif (Années)</label>
+                    <input 
+                      type="number"
+                      required
+                      min="0"
+                      value={newRule.activeYears}
+                      onChange={e => setNewRule({ ...newRule, activeYears: parseInt(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Séjour Semi-Actif (Années)</label>
+                    <input 
+                      type="number"
+                      required
+                      min="0"
+                      value={newRule.semiActiveYears}
+                      onChange={e => setNewRule({ ...newRule, semiActiveYears: parseInt(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Sort Final</label>
+                    <select
+                      value={newRule.finalDisposition}
+                      onChange={e => setNewRule({ ...newRule, finalDisposition: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                    >
+                      <option value="EL">Élimination (EL)</option>
+                      <option value="CP">Conservation Permanente (CP)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">Support de Conservation</label>
+                    <select
+                      value={newRule.support}
+                      onChange={e => setNewRule({ ...newRule, support: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                    >
+                      <option value="Papier">Papier d'origine</option>
+                      <option value="Numérique">Numérique uniquement</option>
+                      <option value="Hybride">Hybride (Papier + Numérique)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+                  <button 
+                    type="button" 
+                    onClick={() => setShowRuleModal(false)}
+                    className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-xl"
+                  >
+                    Annuler
+                  </button>
+                  <button 
+                    type="submit"
+                    className="px-5 py-2 bg-slate-900 border hover:bg-slate-800 text-white font-bold rounded-xl shadow"
+                  >
+                    Créer la Règle
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* View Scan PDF Modal / Overlay Sidebar */}
+      <AnimatePresence>
+        {pdfViewerFile && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
+            <motion.div
+              initial={{ x: '100%', opacity: 0.9 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: '100%', opacity: 0.9 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
+            >
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
+                <div className="space-y-0.5">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
+                  <p className="font-extrabold text-sm truncate max-w-xl text-slate-100 uppercase tracking-tight" title={pdfViewerTitle}>{pdfViewerTitle}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <a 
+                    href={`/api/scans/${pdfViewerFile}`} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="flex items-center gap-1 text-[10px] font-black bg-slate-800 text-white rounded-lg px-3 py-1.5 hover:bg-slate-700 transition"
+                  >
+                    <ExternalLink size={12} />
+                    <span>PLEIN ÉCRAN</span>
+                  </a>
+                  <button 
+                    onClick={() => {
+                      setPdfViewerFile(null);
+                      setPdfViewerTitle('');
+                    }}
+                    className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 bg-slate-100 relative">
+                <iframe
+                  src={`/api/scans/${pdfViewerFile}#toolbar=1`}
+                  className="w-full h-full border-0 bg-white"
+                  title="Document original numérisé"
+                />
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}

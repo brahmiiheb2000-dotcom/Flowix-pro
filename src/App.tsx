@@ -5,6 +5,7 @@ import { AgentDashboard } from './components/agent/AgentDashboard';
 import { ArchivistDashboard } from './components/archivist/ArchivistDashboard';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { DemandeurDashboard } from './components/demandeur/DemandeurDashboard';
+import { ResponsableDashboard } from './components/admin/ResponsableDashboard';
 import { motion, AnimatePresence } from 'motion/react';
 import { LogOut, User as UserIcon, FileText, Clock, Layers, FileStack, BarChart3, RefreshCw, Inbox, Send, Bell, Check } from 'lucide-react';
 import { Button } from './components/UI';
@@ -13,7 +14,7 @@ import { api } from './lib/api';
 
 import { RemoteRequestForm } from './components/RemoteRequestForm';
 
-type UserRole = 'Admin' | 'Agent' | 'Archivist' | 'Demandeur';
+type UserRole = 'Admin' | 'Agent' | 'Archivist' | 'Demandeur' | 'Responsable';
 
 interface AuthContextType {
   user: any | null;
@@ -321,7 +322,7 @@ export default function App() {
                 <div className="flex items-center gap-4">
                   {/* Role Switcher Popover simple */}
                   <div className="flex items-center gap-2 p-1 bg-brand-secondary border border-slate-200 rounded-xl overflow-hidden shrink-0">
-                    {(['Admin', 'Agent', 'Archivist', 'Demandeur'] as UserRole[]).map((r) => (
+                    {(['Admin', 'Agent', 'Archivist', 'Demandeur', 'Responsable'] as UserRole[]).map((r) => (
                       <button
                         key={r}
                         onClick={() => switchRole(r)}
@@ -332,7 +333,11 @@ export default function App() {
                             : "text-slate-500 hover:text-slate-800"
                         )}
                       >
-                        {r === 'Demandeur' ? 'Interface Demandeur' : r}
+                        {cn(
+                          r === 'Demandeur' && 'Interface Demandeur',
+                          r === 'Responsable' && 'Responsable Audit',
+                          r !== 'Demandeur' && r !== 'Responsable' && r
+                        )}
                       </button>
                     ))}
                   </div>
@@ -369,6 +374,7 @@ export default function App() {
                       {role === 'Archivist' && <ArchivistDashboard />}
                       {role === 'Admin' && <AdminDashboard initialTab={activeView === 'remote' ? 'requests' : 'stats'} />}
                       {role === 'Demandeur' && <DemandeurDashboard />}
+                      {role === 'Responsable' && <ResponsableDashboard />}
                     </motion.div>
                   </AnimatePresence>
                 </div>

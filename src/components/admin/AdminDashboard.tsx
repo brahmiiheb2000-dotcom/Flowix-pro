@@ -102,20 +102,75 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const processedItems = useMemo(() => {
     if (mappedItems.length === 0) return [];
     
+    const ensurePrefix = (boxNum: string, direction: string): string => {
+      if (!boxNum) return '';
+      const trimmed = boxNum.trim();
+      const dirLower = (direction || '').toLowerCase();
+
+      let targetPrefix = '';
+      if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) {
+        targetPrefix = 'Sin.C.';
+      } else if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre m') || dirLower.includes('sinistre')) {
+        targetPrefix = 'Sin.M.';
+      } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
+        targetPrefix = 'Compta.';
+      } else if (dirLower.includes('prod')) {
+        targetPrefix = 'Prod.';
+      } else if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) {
+        targetPrefix = 'R.H.';
+      } else if (dirLower.includes('technique') || dirLower.includes('tech')) {
+        targetPrefix = 'Tech.';
+      }
+
+      if (targetPrefix) {
+        if (trimmed.toLowerCase().startsWith(targetPrefix.toLowerCase())) {
+          return trimmed;
+        }
+
+        const prefixLetters = targetPrefix.replace(/[^a-zA-Z]/g, '').toLowerCase();
+        
+        if (prefixLetters === 'rh' && !trimmed.toLowerCase().startsWith('r.h.')) {
+          return 'R.H.' + trimmed.replace(/^rh\.?/i, '');
+        }
+        if (prefixLetters === 'sinm' && !trimmed.toLowerCase().startsWith('sin.m.')) {
+          return 'Sin.M.' + trimmed.replace(/^sin\.?m\.?/i, '');
+        }
+        if (prefixLetters === 'sinc' && !trimmed.toLowerCase().startsWith('sin.c.')) {
+          return 'Sin.C.' + trimmed.replace(/^sin\.?c\.?/i, '');
+        }
+        if (prefixLetters === 'compta' && !trimmed.toLowerCase().startsWith('compta.')) {
+          return 'Compta.' + trimmed.replace(/^compta\.?/i, '');
+        }
+        if (prefixLetters === 'prod' && !trimmed.toLowerCase().startsWith('prod.')) {
+          return 'Prod.' + trimmed.replace(/^prod\.?/i, '');
+        }
+        if (prefixLetters === 'tech' && !trimmed.toLowerCase().startsWith('tech.')) {
+          return 'Tech.' + trimmed.replace(/^tech\.?/i, '');
+        }
+
+        return targetPrefix + trimmed;
+      }
+      return trimmed;
+    };
+
     // Auto-detect prefix
     let prefix = 'ARCH.';
     if (autoBoxPrefix && autoBoxPrefix !== 'auto') {
       prefix = autoBoxPrefix;
     } else {
       const dirLower = (importingDirection || '').toLowerCase();
-      if (dirLower.includes('sinistre')) {
+      if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) {
+        prefix = 'Sin.C.';
+      } else if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre')) {
         prefix = 'Sin.M.';
       } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
         prefix = 'Compta.';
       } else if (dirLower.includes('prod')) {
         prefix = 'Prod.';
-      } else if (dirLower.includes('rh') || dirLower.includes('ressources')) {
-        prefix = 'RH.';
+      } else if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) {
+        prefix = 'R.H.';
+      } else if (dirLower.includes('technique') || dirLower.includes('tech')) {
+        prefix = 'Tech.';
       }
     }
 
@@ -128,6 +183,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       } else {
         numBoite = numBoite || 'SANS_BOITE';
       }
+
+      numBoite = ensurePrefix(numBoite, importingDirection);
 
       // Generate a unique 12-digit barcode for this box
       const cleanBoxStr = numBoite.toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -315,8 +372,10 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [isSearching, setIsSearching] = useState(false);
   const [searchResult, setSearchResult] = useState<any | null>(null);
   const [validatedItemLabel, setValidatedItemLabel] = useState<any | null>(null);
+  const [isExportingLabels, setIsExportingLabels] = useState(false);
   const labelRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const importLabelsRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -326,6 +385,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
   const [viewingRequest, setViewingRequest] = useState<any | null>(null);
+  const [uploadingScanItemId, setUploadingScanItemId] = useState<string | null>(null);
+  const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
+  const [pdfViewerTitle, setPdfViewerTitle] = useState<string>('');
 
   useEffect(() => {
     if (viewingRequest && viewingRequest.rawData) {
@@ -693,6 +755,24 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     }
   };
 
+  const deleteDossierScan = async (id: string) => {
+    if (!confirm("Supprimer le scan de ce dossier ?")) return;
+    try {
+      await api.delete(`/api/inventory/${id}/delete-scan`);
+      setMassInventory(prev => prev.map(m => {
+        const itemIdToCompare = id.startsWith('centralized_') ? id.replace('centralized_', '') : id;
+        const matchId = m.sourceType === 'centralized' ? m.reference : m.id;
+        if (matchId === itemIdToCompare) {
+          return { ...m, scanFile: null };
+        }
+        return m;
+      }));
+      alert("Le scan du dossier a été supprimé.");
+    } catch (err: any) {
+      alert("Erreur lors de la suppression du scan : " + err.message);
+    }
+  };
+
   // Search for mass inventory under sub-tab 'search'
   useEffect(() => {
     if (activeTab !== 'massInventory' || massSubTab !== 'search') return;
@@ -933,6 +1013,43 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
   const printLabel = () => {
     window.print();
+  };
+
+  const downloadAllImportLabels = async () => {
+    if (!importLabelsRef.current) return;
+    setIsExportingLabels(true);
+    try {
+      const canvas = await html2canvas(importLabelsRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgWidth = 190;
+      const pageHeight = 277;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 10;
+
+      pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight + 10;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      pdf.save(`Planche_Etiquettes_Import_${new Date().getTime()}.pdf`);
+    } catch (err) {
+      console.error("Error generating plates PDF:", err);
+      alert("Erreur lors du téléchargement du PDF des étiquettes.");
+    } finally {
+      setIsExportingLabels(false);
+    }
   };
 
   const deleteHistoryEntry = async (id: string) => {
@@ -3305,13 +3422,23 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                             </p>
                           </div>
                           
-                          <Button 
-                            type="button"
-                            onClick={() => window.print()}
-                            className="bg-slate-900 hover:bg-black text-white shrink-0 font-black text-xs px-5 py-3 rounded-2xl flex items-center gap-2 shadow-lg"
-                          >
-                            <Printer size={16} /> IMPRIMER LES ÉTIQUETTES
-                          </Button>
+                          <div className="flex gap-3">
+                            <Button 
+                              type="button"
+                              onClick={downloadAllImportLabels}
+                              disabled={isExportingLabels}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0 font-black text-xs px-5 py-3 rounded-2xl flex items-center gap-2 shadow-lg disabled:opacity-50 cursor-pointer"
+                            >
+                              <Download size={16} /> {isExportingLabels ? "GÉNÉRATION..." : "TÉLÉCHARGER LE PDF"}
+                            </Button>
+                            <Button 
+                              type="button"
+                              onClick={() => window.print()}
+                              className="bg-slate-900 hover:bg-black text-white shrink-0 font-black text-xs px-5 py-3 rounded-2xl flex items-center gap-2 shadow-lg cursor-pointer"
+                            >
+                              <Printer size={16} /> IMPRIMER LES ÉTIQUETTES
+                            </Button>
+                          </div>
                         </div>
 
                         <div className="bg-brand-accent/5 border border-brand-accent/10 p-4 rounded-3xl text-xs text-slate-800 space-y-1 font-semibold">
@@ -3320,7 +3447,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         </div>
 
                         {/* Printable sheet container */}
-                        <div className="bg-white border border-slate-200/80 p-6 rounded-3xl shadow-xl">
+                        <div ref={importLabelsRef} className="bg-white border border-slate-200/80 p-6 rounded-3xl shadow-xl">
                           <h5 className="text-[11px] font-black uppercase text-slate-400 tracking-wider mb-6">Planche d'étiquettes de traçabilité</h5>
                           
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -3972,17 +4099,52 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 shrink-0 self-end md:self-auto">
+                            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
+                              {item.scanFile ? (
+                                <div className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 animate-fade-in">
+                                  <button 
+                                    onClick={() => {
+                                      setPdfViewerFile(item.scanFile);
+                                      setPdfViewerTitle(item.intitule || item.reference || "Scan Dossier");
+                                    }}
+                                    className="flex items-center gap-1.5 px-2.5 py-1 text-emerald-800 hover:bg-emerald-100 rounded-lg transition-all font-bold text-xs uppercase cursor-pointer"
+                                    title="Voir le document PDF scanné"
+                                  >
+                                    <FileText size={14} className="text-emerald-600" />
+                                    <span>Voir Scan</span>
+                                  </button>
+                                  <button
+                                    onClick={() => deleteDossierScan(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id)}
+                                    className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded-lg transition-all cursor-pointer animate-pulse"
+                                    title="Supprimer le scan PDF de ce dossier"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={() => {
+                                    setUploadingScanItemId(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id);
+                                    setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
+                                  }}
+                                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
+                                  title="Associer un scan PDF numérisé"
+                                >
+                                  <Plus size={14} />
+                                  <span>+ Scan PDF</span>
+                                </button>
+                              )}
+
                               <button 
                                 onClick={() => setViewingRequest(item)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all font-bold text-xs uppercase"
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all font-bold text-xs uppercase select-none cursor-pointer"
                               >
                                 <Eye size={14} /> Détails
                               </button>
                               {item.sourceType !== 'centralized' && (
                                 <button 
                                   onClick={() => deleteMassItem(item.id)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs uppercase"
+                                  className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
                                 >
                                   <Trash2 size={14} /> Supprimer
                                 </button>
@@ -6696,6 +6858,133 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Upload Scan PDF Modal */}
+      <AnimatePresence>
+        {uploadingScanItemId && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100"
+            >
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <div className="space-y-0.5">
+                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">Associer un Scan PDF</h3>
+                  <p className="text-slate-400 text-[10px] uppercase font-bold">{pdfViewerTitle || 'Dossier'}</p>
+                </div>
+                <button 
+                  onClick={() => setUploadingScanItemId(null)}
+                  className="p-1.5 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="p-4 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50 flex flex-col items-center justify-center text-center space-y-2 relative hover:border-slate-300 transition-colors">
+                  <FileText size={32} className="text-slate-400 animate-pulse" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-slate-700">Sélectionner le fichier PDF numérisé</p>
+                    <p className="text-[10px] text-slate-400 font-medium">Uniquement au format .pdf (Max. 50Mo)</p>
+                  </div>
+                  <input 
+                    type="file" 
+                    accept="application/pdf"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+                        alert("Le fichier doit obligatoirement être un document PDF.");
+                        return;
+                      }
+
+                      try {
+                        const targetId = uploadingScanItemId;
+                        const res = await api.postFile(`/api/inventory/${targetId}/upload-scan`, file);
+                        
+                        if (res.success) {
+                          setMassInventory(prev => prev.map(m => {
+                            const itemId = targetId.startsWith('centralized_') ? targetId.replace('centralized_', '') : targetId;
+                            const matchId = m.sourceType === 'centralized' ? m.reference : m.id;
+                            if (matchId === itemId) {
+                              return { ...m, scanFile: res.scanFile };
+                            }
+                            return m;
+                          }));
+                          
+                          setUploadingScanItemId(null);
+                          alert("Le scan PDF a été importé et lié avec succès !");
+                        } else {
+                          alert("Erreur lors du transfert : " + (res.error || "Raison inconnue"));
+                        }
+                      } catch (err: any) {
+                        alert("Erreur lors du transfert : " + err.message);
+                      }
+                    }}
+                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  />
+                </div>
+                
+                <p className="text-[10px] text-slate-400 text-center leading-relaxed font-semibold uppercase">
+                  Le fichier PDF sera stocké et associé à ce dossier. Vous pourrez le consulter en un clic à tout moment depuis les résultats de recherche.
+                </p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* View Scan PDF Modal / Overlay Sidebar */}
+      <AnimatePresence>
+        {pdfViewerFile && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
+            <motion.div
+              initial={{ x: '100%', opacity: 0.9 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: '100%', opacity: 0.9 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
+            >
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
+                <div className="space-y-0.5">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
+                  <p className="font-extrabold text-sm truncate max-w-xl text-slate-100 uppercase tracking-tight" title={pdfViewerTitle}>{pdfViewerTitle}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <a 
+                    href={`/api/scans/${pdfViewerFile}`} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="flex items-center gap-1 text-[10px] font-black bg-slate-800 text-white rounded-lg px-3 py-1.5 hover:bg-slate-700 transition"
+                  >
+                    <ExternalLink size={12} />
+                    <span>PLEIN ÉCRAN</span>
+                  </a>
+                  <button 
+                    onClick={() => {
+                      setPdfViewerFile(null);
+                      setPdfViewerTitle('');
+                    }}
+                    className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 min-h-0 bg-slate-100 relative">
+                <iframe
+                  src={`/api/scans/${pdfViewerFile}#toolbar=1`}
+                  className="w-full h-full border-0 bg-white"
+                  title="Document original numérisé"
+                />
+              </div>
             </motion.div>
           </div>
         )}

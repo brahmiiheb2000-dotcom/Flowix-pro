@@ -50,6 +50,65 @@ const TABLETTES = Array.from({ length: 300 }, (_, i) => String(i + 1));
 // --- UTILS ---
 const generateId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
+const ensurePrefix = (boxNum: string, direction: string): string => {
+  if (!boxNum) return '';
+  const trimmed = boxNum.trim();
+  const dirLower = (direction || '').toLowerCase();
+
+  let targetPrefix = '';
+  if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) {
+    targetPrefix = 'Sin.C.';
+  } else if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre m') || dirLower.includes('sinistre')) {
+    targetPrefix = 'Sin.M.';
+  } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
+    targetPrefix = 'Compta.';
+  } else if (dirLower.includes('prod')) {
+    targetPrefix = 'Prod.';
+  } else if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) {
+    targetPrefix = 'R.H.';
+  } else if (dirLower.includes('technique') || dirLower.includes('tech')) {
+    targetPrefix = 'Tech.';
+  } else if (direction.trim() && direction !== 'auto' && direction !== 'Indéfinie') {
+    const clean = direction.trim().toUpperCase().replace(/[^A-Z\s]/g, '');
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+      targetPrefix = words[0].substring(0, 6) + '.';
+    } else if (words.length > 1) {
+      targetPrefix = words.map(w => w[0]).join('') + '.';
+    }
+  }
+
+  if (targetPrefix) {
+    if (trimmed.toLowerCase().startsWith(targetPrefix.toLowerCase())) {
+      return trimmed;
+    }
+
+    const prefixLetters = targetPrefix.replace(/[^a-zA-Z]/g, '').toLowerCase();
+    
+    if (prefixLetters === 'rh' && !trimmed.toLowerCase().startsWith('r.h.')) {
+      return 'R.H.' + trimmed.replace(/^rh\.?/i, '');
+    }
+    if (prefixLetters === 'sinm' && !trimmed.toLowerCase().startsWith('sin.m.')) {
+      return 'Sin.M.' + trimmed.replace(/^sin\.?m\.?/i, '');
+    }
+    if (prefixLetters === 'sinc' && !trimmed.toLowerCase().startsWith('sin.c.')) {
+      return 'Sin.C.' + trimmed.replace(/^sin\.?c\.?/i, '');
+    }
+    if (prefixLetters === 'compta' && !trimmed.toLowerCase().startsWith('compta.')) {
+      return 'Compta.' + trimmed.replace(/^compta\.?/i, '');
+    }
+    if (prefixLetters === 'prod' && !trimmed.toLowerCase().startsWith('prod.')) {
+      return 'Prod.' + trimmed.replace(/^prod\.?/i, '');
+    }
+    if (prefixLetters === 'tech' && !trimmed.toLowerCase().startsWith('tech.')) {
+      return 'Tech.' + trimmed.replace(/^tech\.?/i, '');
+    }
+
+    return targetPrefix + trimmed;
+  }
+  return trimmed;
+};
+
 export const CentralizedInventory = () => {
   const [activeTab, setActiveTab] = useState<Tab>('pointage');
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -337,6 +396,7 @@ export const CentralizedInventory = () => {
               key="im" 
               folders={folders} 
               setFolders={setFolders} 
+              boxes={boxes}
               setBoxes={setBoxes} 
               archivalRules={archivalRules}
             />
@@ -1106,6 +1166,9 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
   const [detailsPage, setDetailsPage] = useState(1);
   const [printBox, setPrintBox] = useState<Box | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
+  const [boxSubTab, setBoxSubTab] = useState<'manual' | 'successive'>('manual');
+  const [startNumVal, setStartNumVal] = useState<number>(6159);
+  const [qtyVal, setQtyVal] = useState<number>(5);
   const detailsItemsPerPage = 20;
 
   // Sync state with toast
@@ -1119,8 +1182,10 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
     const list = new Set<string>([
       "Sinistre Matériel",
       "Comptabilité",
+      "Sinistre Corporel",
       "Production",
-      "Ressources Humaines"
+      "Ressources Humaines",
+      "Direction Technique"
     ]);
     (folders || []).forEach((f: any) => { if (f.direction) list.add(f.direction.trim()); });
     (archivalRules || []).forEach((r: any) => { if (r.direction) list.add(r.direction.trim()); });
@@ -1132,31 +1197,33 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
     return selectedDirection;
   }, [selectedDirection, customDirection]);
 
+  const getPrefixForDirection = useCallback((dirName: string) => {
+    if (!dirName) return 'BOX.';
+    const dirLower = dirName.trim().toLowerCase();
+    if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) return 'Sin.C.';
+    if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre m') || dirLower.includes('sinistre')) return 'Sin.M.';
+    if (dirLower.includes('compta') || dirLower.includes('finance')) return 'Compta.';
+    if (dirLower.includes('prod')) return 'Prod.';
+    if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) return 'R.H.';
+    if (dirLower.includes('technique') || dirLower.includes('tech')) return 'Tech.';
+    
+    const clean = dirName.trim().toUpperCase().replace(/[^A-Z\s]/g, '');
+    const words = clean.split(/\s+/).filter(Boolean);
+    if (words.length === 1) {
+      return words[0].substring(0, 6) + '.';
+    } else if (words.length > 1) {
+      return words.map(w => w[0]).join('') + '.';
+    }
+    return 'BOX.';
+  }, []);
+
   // Helper code-barres format / next number suggestion
   const getNextBoxNumber = useCallback((directionName: string, currentBoxes: Box[]) => {
-    let prefix = "BOX";
-    const dir = directionName.trim().toLowerCase();
-    if (dir.includes("sinistre matériel") || dir.includes("sinistre")) {
-      prefix = "SIN.M";
-    } else if (dir.includes("comptabilité") || dir.includes("compta")) {
-      prefix = "COMPTA";
-    } else if (dir.includes("production") || dir.includes("prod")) {
-      prefix = "PROD";
-    } else if (dir.includes("ressources humaines") || dir.includes("rh")) {
-      prefix = "RH";
-    } else if (directionName.trim()) {
-      const clean = directionName.trim().toUpperCase().replace(/[^A-Z\s]/g, '');
-      const words = clean.split(/\s+/).filter(Boolean);
-      if (words.length === 1) {
-        prefix = words[0].substring(0, 6);
-      } else if (words.length > 1) {
-        prefix = words.map(w => w[0]).join('');
-      }
-    }
+    const prefix = getPrefixForDirection(directionName);
 
     // Find highest suffix count among matching box formats
     let maxNum = 0;
-    const regex = new RegExp(`^${prefix}\\.(\\d+)$`, 'i');
+    const regex = new RegExp(`^${prefix.replace(/\./g, '\\.')}\\.?(\\d+)$`, 'i');
     
     currentBoxes.forEach((b: Box) => {
       const match = b.number.trim().match(regex);
@@ -1170,8 +1237,8 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
 
     const nextNum = maxNum + 1;
     const padded = String(nextNum).padStart(4, '0');
-    return `${prefix}.${padded}`;
-  }, []);
+    return `${prefix}${padded}`;
+  }, [getPrefixForDirection]);
 
   // Sync / Save Boxes to Server
   const syncWithServer = async (updatedBoxes: Box[]) => {
@@ -1235,6 +1302,61 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
     setNewBoxName(nextSugg);
     setClotureTextVal('');
     setClotureDateVal('');
+  };
+
+  const generatedSuccessiveList = useMemo(() => {
+    const list = [];
+    const prefix = getPrefixForDirection(activeDirection);
+    for (let i = 0; i < qtyVal; i++) {
+      const currentNum = startNumVal + i;
+      const boxName = `${prefix}${currentNum}`;
+      list.push(boxName);
+    }
+    return list;
+  }, [activeDirection, startNumVal, qtyVal, getPrefixForDirection]);
+
+  const successiveDuplicates = useMemo(() => {
+    return generatedSuccessiveList.filter(name => 
+      boxes.some((b: any) => b.number.toUpperCase().trim() === name.toUpperCase().trim())
+    );
+  }, [generatedSuccessiveList, boxes]);
+
+  const handleGenerateSuccessive = async () => {
+    if (qtyVal <= 0) return;
+    if (successiveDuplicates.length > 0) {
+      if (!window.confirm(`⚠️ Certaines boîtes (${successiveDuplicates.join(', ')}) existent déjà. Voulez-vous continuer ? Les doublons seront ignorés.`)) {
+        return;
+      }
+    }
+
+    const newGeneratedBoxes: Box[] = [];
+    generatedSuccessiveList.forEach(name => {
+      // Avoid duplicate
+      if (boxes.some((b: any) => b.number.toUpperCase().trim() === name.toUpperCase().trim())) {
+        return;
+      }
+      
+      newGeneratedBoxes.push({
+        id: generateId(),
+        number: name.toUpperCase().trim(),
+        title: activeDirection || 'Générale',
+        isOpen: true,
+        depot: '', travee: '', tablette: '',
+        direction: activeDirection || 'Générale',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    });
+
+    if (newGeneratedBoxes.length === 0) {
+      triggerToast("Aucune nouvelle boîte n'a été créée (toutes existent déjà).", "warning");
+      return;
+    }
+
+    const updatedBoxes = [...boxes, ...newGeneratedBoxes];
+    setBoxes(updatedBoxes);
+    await syncWithServer(updatedBoxes);
+    triggerToast(`${newGeneratedBoxes.length} boîtes successives générées avec succès !`, 'success');
   };
 
   const handleReset = async () => {
@@ -1400,6 +1522,35 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
           </div>
         )}
 
+        {/* Sub-onglet navigation inside Boites tab */}
+        <div className="flex gap-4 border-b border-slate-200/60 pb-px mb-8 max-w-7xl mx-auto w-full">
+          <button
+            type="button"
+            onClick={() => setBoxSubTab('manual')}
+            className={cn(
+              "pb-3.5 px-3 text-xs font-black uppercase tracking-wider border-b-2 transition-all cursor-pointer",
+              boxSubTab === 'manual'
+                ? "border-brand-primary text-brand-primary font-black"
+                : "border-transparent text-slate-400 hover:text-slate-600"
+            )}
+          >
+            ✍️ Création de boîte unitaire / assistée
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setBoxSubTab('successive')}
+            className={cn(
+              "pb-3.5 px-3 text-xs font-black uppercase tracking-wider border-b-2 transition-all cursor-pointer flex items-center gap-2",
+              boxSubTab === 'successive'
+                ? "border-brand-primary text-brand-primary font-black"
+                : "border-transparent text-slate-400 hover:text-slate-600"
+            )}
+          >
+            ⚡ Génération de codes-barres successifs
+          </button>
+        </div>
+
         {/* Header & Configuration Area */}
         <div className="bg-white border border-slate-200 rounded-[2rem] p-8 shadow-sm mb-12 relative overflow-hidden">
           <div className="absolute top-0 left-0 right-0 h-[4px] bg-gradient-to-r from-brand-primary to-blue-500" />
@@ -1436,121 +1587,268 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-end">
-            
-            {/* Direction sector */}
-            <div className="lg:col-span-4 space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans">
-                🏢 1. Direction / Service
-              </label>
-              <select
-                value={selectedDirection}
-                onChange={(e) => setSelectedDirection(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-xs font-bold text-slate-700 focus:outline-none focus:border-brand-primary cursor-pointer transition-all h-[52px]"
-              >
-                {directionsList.map((dir) => (
-                  <option key={dir} value={dir}>🏢 {dir}</option>
-                ))}
-                <option value="custom">✍️ Saisie Libre (Autre direction)</option>
-              </select>
-            </div>
+          {boxSubTab === 'successive' ? (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                
+                {/* Paramètres Formulaire */}
+                <div className="lg:col-span-4 space-y-5 bg-slate-50/50 p-6 rounded-3xl border border-slate-200/60">
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">Paramètres de génération</h3>
+                  
+                  {/* Select Direction */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans block">
+                      🏢 1. Direction / Service concerné
+                    </label>
+                    <select
+                      value={selectedDirection}
+                      onChange={(e) => setSelectedDirection(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary cursor-pointer transition-all h-[50px]"
+                    >
+                      {directionsList.map((dir) => (
+                        <option key={dir} value={dir}>🏢 {dir}</option>
+                      ))}
+                      <option value="custom">✍️ Saisie Libre (Autre direction)</option>
+                    </select>
+                  </div>
 
-            {/* If custom is selected, show input */}
-            {selectedDirection === 'custom' && (
-              <div className="lg:col-span-3 space-y-2">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans">
-                  Nom de la direction
-                </label>
-                <input 
-                  type="text"
-                  value={customDirection}
-                  onChange={(e) => setCustomDirection(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary h-[52px]"
-                  placeholder="Ex: Services Généraux"
-                />
-              </div>
-            )}
-
-            {/* Suffix/code input and Continue Option */}
-            <div className={cn(
-              "space-y-2 relative",
-              selectedDirection === 'custom' ? "lg:col-span-5" : "lg:col-span-8"
-            )}>
-              <div className="flex justify-between items-center">
-                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1.5">
-                  🏷️ 2. Référence & Code unique
-                </label>
-                <button 
-                  type="button"
-                  onClick={handleContinueSequence}
-                  className="text-brand-primary font-black uppercase text-[10px] tracking-wider flex items-center gap-1 hover:underline cursor-pointer"
-                >
-                  🔄 Continuer les boîtes existantes
-                </button>
-              </div>
-
-              <div className="flex gap-3">
-                <div className="relative flex-1">
-                  <input 
-                    value={newBoxName}
-                    onChange={e => setNewBoxName(e.target.value)}
-                    className={cn(
-                      "w-full bg-slate-50 border rounded-2xl px-5 py-4 text-sm font-black text-slate-700 focus:outline-none focus:border-brand-primary transition-all h-[52px]",
-                      isDuplicate ? "border-red-400 bg-red-50 text-red-900" : "border-slate-200"
-                    )}
-                    placeholder="Format automatique (ex: SIN.M.0001)"
-                  />
-                  {isDuplicate && (
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-red-500 text-[10px] font-extrabold font-mono uppercase tracking-widest bg-white px-2 py-1 rounded border border-red-200">
-                      Doublon !
-                    </span>
+                  {/* Saisie Libre */}
+                  {selectedDirection === 'custom' && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans block">
+                        Nom de la direction
+                      </label>
+                      <input 
+                        type="text"
+                        value={customDirection}
+                        onChange={(e) => setCustomDirection(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary h-[50px]"
+                        placeholder="Ex: Services Généraux"
+                      />
+                    </div>
                   )}
+
+                  {/* Start Number */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans block">
+                      🔢 2. Numéro de départ (Début)
+                    </label>
+                    <input 
+                      type="number"
+                      min="1"
+                      value={startNumVal}
+                      onChange={(e) => setStartNumVal(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary h-[50px]"
+                      placeholder="Ex: 6159"
+                    />
+                  </div>
+
+                  {/* Quantity */}
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans block">
+                      📦 3. Quantité de boîtes à générer
+                    </label>
+                    <input 
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={qtyVal}
+                      onChange={(e) => setQtyVal(Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1)))}
+                      className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary h-[50px]"
+                      placeholder="Ex: 5"
+                    />
+                  </div>
+
+                  {/* Information du Préfixe */}
+                  <div className="bg-brand-secondary/40 p-4 rounded-2xl border border-brand-primary/5 text-slate-600 space-y-1">
+                    <span className="text-[9px] font-black uppercase text-brand-primary tracking-widest block">Préfixe appliqué d'après la direction</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-black text-slate-800 font-mono tracking-wider">{getPrefixForDirection(activeDirection)}</span>
+                      <span className="text-[10px] bg-white px-2 py-0.5 rounded-md border border-slate-200/60 text-slate-500 font-medium">Déduction active</span>
+                    </div>
+                  </div>
+
+                  {/* Bouton de génération */}
+                  <button 
+                    onClick={handleGenerateSuccessive}
+                    disabled={qtyVal <= 0}
+                    className="w-full h-[52px] bg-brand-primary hover:opacity-95 text-white disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-black uppercase text-[11px] tracking-widest shadow-lg shadow-brand-primary/15 transition-all flex items-center justify-center gap-2 cursor-pointer font-sans"
+                  >
+                    <Sparkles size={16} /> Générer & Enregistrer ({qtyVal} boîtes)
+                  </button>
                 </div>
 
-                <button 
-                  onClick={handleCreate}
-                  disabled={isDuplicate || !newBoxName.trim()}
-                  className="px-6 h-[52px] bg-brand-primary text-white disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-black uppercase text-[11px] tracking-wider shadow-lg shadow-brand-primary/10 hover:opacity-95 transition-all flex items-center gap-2 cursor-pointer font-sans shrink-0"
-                >
-                  <Plus size={16} /> Enregistrer
-                </button>
+                {/* Live Preview Sticker Sheets */}
+                <div className="lg:col-span-8 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400">Aperçu en temps réel des {qtyVal} étiquettes prêtes</h4>
+                    <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded">Génération séquentielle</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[390px] overflow-y-auto pr-2 custom-scrollbar bg-slate-50/30 p-4 rounded-3xl border border-slate-200/60">
+                    {generatedSuccessiveList.map((boxName, idx) => {
+                      const alreadyExists = boxes.some((b: any) => b.number.toUpperCase().trim() === boxName.toUpperCase().trim());
+                      return (
+                        <div 
+                          key={idx}
+                          className={cn(
+                            "bg-white border rounded-2xl p-4 flex flex-col justify-between transition-all relative overflow-hidden",
+                            alreadyExists ? "border-amber-400/60 bg-amber-50/10 shadow-sm" : "border-slate-200 shadow-sm"
+                          )}
+                        >
+                          <div className="flex justify-between items-start mb-2">
+                            <div>
+                              <span className="text-[7px] font-black text-brand-primary bg-brand-secondary/80 px-2 py-0.5 rounded uppercase tracking-widest inline-block leading-none font-sans mb-1">
+                                {activeDirection}
+                              </span>
+                              <h5 className="text-sm font-black text-slate-800 leading-none tracking-tight">{boxName}</h5>
+                            </div>
+                            {alreadyExists && (
+                              <span className="text-[8px] font-black text-amber-700 bg-amber-105 border border-amber-200/50 px-2 py-0.5 rounded uppercase font-mono tracking-widest">
+                                Existe déjà
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Visual Barcode rendering */}
+                          <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100/85 flex flex-col items-center justify-center">
+                            <Barcode 
+                              value={boxName} 
+                              width={0.8}
+                              height={16}
+                              format="CODE128"
+                              displayValue={false}
+                              margin={0}
+                            />
+                            <span className="text-[8px] font-semibold font-mono text-slate-500 mt-1 leading-none">{boxName}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
               </div>
             </div>
+          ) : (
+            <div>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-end">
+                
+                {/* Direction sector */}
+                <div className="lg:col-span-4 space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans">
+                    🏢 1. Direction / Service
+                  </label>
+                  <select
+                    value={selectedDirection}
+                    onChange={(e) => setSelectedDirection(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3.5 text-xs font-bold text-slate-700 focus:outline-none focus:border-brand-primary cursor-pointer transition-all h-[52px]"
+                  >
+                    {directionsList.map((dir) => (
+                      <option key={dir} value={dir}>🏢 {dir}</option>
+                    ))}
+                    <option value="custom">✍️ Saisie Libre (Autre direction)</option>
+                  </select>
+                </div>
 
-          </div>
+                {/* If custom is selected, show input */}
+                {selectedDirection === 'custom' && (
+                  <div className="lg:col-span-3 space-y-2">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans">
+                      Nom de la direction
+                    </label>
+                    <input 
+                      type="text"
+                      value={customDirection}
+                      onChange={(e) => setCustomDirection(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3 text-xs font-bold text-slate-705 focus:outline-none focus:border-brand-primary h-[52px]"
+                      placeholder="Ex: Services Généraux"
+                    />
+                  </div>
+                )}
 
-          {/* Optional Closing options row */}
-          <div className="mt-6 pt-6 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1">
-                🔒 Date de Clôture (Facultatif)
-              </label>
-              <input 
-                type="date"
-                value={clotureDateVal}
-                onChange={e => setClotureDateVal(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3.5 text-xs font-semibold text-slate-700 focus:outline-none focus:border-brand-primary h-[52px]"
-              />
+                {/* Suffix/code input and Continue Option */}
+                <div className={cn(
+                  "space-y-2 relative",
+                  selectedDirection === 'custom' ? "lg:col-span-5" : "lg:col-span-8"
+                )}>
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1.5">
+                      🏷️ 2. Référence & Code unique
+                    </label>
+                    <button 
+                      type="button"
+                      onClick={handleContinueSequence}
+                      className="text-brand-primary font-black uppercase text-[10px] tracking-wider flex items-center gap-1 hover:underline cursor-pointer"
+                    >
+                      🔄 Continuer les boîtes existantes
+                    </button>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <div className="relative flex-1">
+                      <input 
+                        value={newBoxName}
+                        onChange={e => setNewBoxName(e.target.value)}
+                        className={cn(
+                          "w-full bg-slate-50 border rounded-2xl px-5 py-4 text-sm font-black text-slate-700 focus:outline-none focus:border-brand-primary transition-all h-[52px]",
+                          isDuplicate ? "border-red-400 bg-red-50 text-red-900" : "border-slate-200"
+                        )}
+                        placeholder="Format automatique (ex: SIN.M.0001)"
+                      />
+                      {isDuplicate && (
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-red-500 text-[10px] font-extrabold font-mono uppercase tracking-widest bg-white px-2 py-1 rounded border border-red-200">
+                          Doublon !
+                        </span>
+                      )}
+                    </div>
+
+                    <button 
+                      onClick={handleCreate}
+                      disabled={isDuplicate || !newBoxName.trim()}
+                      className="px-6 h-[52px] bg-brand-primary text-white disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-black uppercase text-[11px] tracking-wider shadow-lg shadow-brand-primary/10 hover:opacity-95 transition-all flex items-center gap-2 cursor-pointer font-sans shrink-0"
+                    >
+                      <Plus size={16} /> Enregistrer
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Optional Closing options row */}
+              <div className="mt-6 pt-6 border-t border-slate-100 grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1">
+                    🔒 Date de Clôture (Facultatif)
+                  </label>
+                  <input 
+                    type="date"
+                    value={clotureDateVal}
+                    onChange={e => setClotureDateVal(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3.5 text-xs font-semibold text-slate-700 focus:outline-none focus:border-brand-primary h-[52px]"
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1">
+                    🏷️ Référence secondaire / Clôture sous la boîte (ex : 2025/001)
+                  </label>
+                  <input 
+                    type="text"
+                    value={clotureTextVal}
+                    onChange={e => setClotureTextVal(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3.5 text-xs font-semibold text-slate-705 placeholder:text-slate-350 focus:outline-none focus:border-brand-primary h-[52px]"
+                    placeholder="Ex : 2025/001"
+                  />
+                </div>
+              </div>
+
+              {isDuplicate && (
+                <p className="text-red-600 text-[10px] font-bold uppercase tracking-widest mt-4 flex items-center gap-1.5 bg-red-50/50 p-2.5 rounded-xl border border-red-100">
+                  ⚠️ Ce numéro de boîte est déjà attribué. Veuillez cliquer sur "Continuer les boîtes existantes" ou changer le suffixe pour éviter les doublons.
+                </p>
+              )}
             </div>
-            
-            <div className="space-y-2">
-              <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest font-sans flex items-center gap-1">
-                🏷️ Référence secondaire / Clôture sous la boîte (ex : 2025/001)
-              </label>
-              <input 
-                type="text"
-                value={clotureTextVal}
-                onChange={e => setClotureTextVal(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-5 py-3.5 text-xs font-semibold text-slate-705 placeholder:text-slate-350 focus:outline-none focus:border-brand-primary h-[52px]"
-                placeholder="Ex : 2025/001"
-              />
-            </div>
-          </div>
-
-          {isDuplicate && (
-            <p className="text-red-600 text-[10px] font-bold uppercase tracking-widest mt-4 flex items-center gap-1.5 bg-red-50/50 p-2.5 rounded-xl border border-red-100">
-              ⚠️ Ce numéro de boîte est déjà attribué. Veuillez cliquer sur "Continuer les boîtes existantes" ou changer le suffixe pour éviter les doublons.
-            </p>
           )}
         </div>
 
@@ -3286,7 +3584,7 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
   );
 };
 
-const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => {
+const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules }: any) => {
   const [resetModal, setResetModal] = useState(false);
   const [importQueue, setImportQueue] = useState<{
     id: string;
@@ -3426,15 +3724,45 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
     setIsSyncing(true);
     try {
       const merged = mergeImportedFolders(folders, allSuccessfulFolders);
-      await api.post('/api/centralized-inventory/sync', { folders: merged, boxes: [] });
+      
+      // Auto-create missing boxes 
+      const existingBoxNumbers = new Set(boxes.map((b: any) => b.number.toUpperCase().trim()));
+      const newBoxesToCreate: Box[] = [];
+
+      allSuccessfulFolders.forEach(f => {
+        if (f.boxNumber) {
+          const bNum = f.boxNumber.toUpperCase().trim();
+          if (bNum && !existingBoxNumbers.has(bNum)) {
+            existingBoxNumbers.add(bNum);
+            newBoxesToCreate.push({
+              id: generateId(),
+              number: bNum,
+              title: f.direction || 'Générale',
+              isOpen: true,
+              depot: '',
+              travee: '',
+              tablette: '',
+              direction: f.direction || 'Générale',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      });
+
+      const mergedBoxes = [...boxes, ...newBoxesToCreate];
+
+      await api.post('/api/centralized-inventory/sync', { folders: merged, boxes: mergedBoxes });
       setFolders(merged);
+      setBoxes(mergedBoxes);
       await set('ci_folders_v2', merged);
+      localStorage.setItem('ci_boxes_v2', JSON.stringify(mergedBoxes));
     } catch (err) {
       console.error("Connection error during auto-sync:", err);
     } finally {
       setIsSyncing(false);
     }
-  }, [folders, setFolders]);
+  }, [folders, setFolders, boxes, setBoxes]);
 
   const processFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
@@ -3496,6 +3824,13 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
             finalDirection = matchedRule.direction;
           }
 
+          // Format box number with the appropriate directory prefix
+          let rawBoxNum = (folder.boxNumber || '').trim();
+          let finalBoxNumber = '';
+          if (rawBoxNum) {
+            finalBoxNumber = ensurePrefix(rawBoxNum, finalDirection);
+          }
+
           if (matchedRule) {
             const ruleActive = parseInt(String(matchedRule.activeYears || 0));
             const ruleSemi = parseInt(String(matchedRule.semiActiveYears || 0));
@@ -3525,6 +3860,8 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
               direction: finalDirection,
               intitule: folder.intitule || matchedRule.title || `Dossier ${folder.reference}`,
               category: matchedRule.category || matchedRule.docType || 'Autre',
+              boxNumber: finalBoxNumber,
+              status: finalBoxNumber ? 'pointed' : 'pending',
               expiryDate,
               archivalStatus
             };
@@ -3534,6 +3871,8 @@ const ImportModule = ({ folders, setFolders, setBoxes, archivalRules }: any) => 
               direction: finalDirection,
               intitule: folder.intitule || `Dossier ${folder.reference}`,
               category: 'Inconnue',
+              boxNumber: finalBoxNumber,
+              status: finalBoxNumber ? 'pointed' : 'pending',
               archivalStatus: 'Active'
             };
           }

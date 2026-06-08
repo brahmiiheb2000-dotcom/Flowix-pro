@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -20,6 +20,7 @@ import {
 import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../services/archiveAIService';
 
 import { CentralizedInventory } from './CentralizedInventory';
+import { TabHelpPrompts } from './TabHelpPrompts';
 
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
   const { user, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
@@ -29,8 +30,14 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination'>(initialTab);
   const [requestSubTab, setRequestSubTab] = useState<'all' | 'transfers'>('all');
-  const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed'>('all');
+  const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed' | 'processus'>('all');
   const [agentSessionSubTab, setAgentSessionSubTab] = useState<'history' | 'new' | 'remote'>('history');
+  
+  // Filtres et recherche pour le processus des dossiers
+  const [processSearchTerm, setProcessSearchTerm] = useState('');
+  const [processFilterYear, setProcessFilterYear] = useState('all');
+  const [processFilterDirection, setProcessFilterDirection] = useState('all');
+  const [processFilterState, setProcessFilterState] = useState('all');
   
   // Agent Form state matching AgentDashboard
   const fileInputRefAgent = useRef<HTMLInputElement>(null);
@@ -51,6 +58,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [importProgress, setImportProgress] = useState(0);
   const [archivedComms, setArchivedComms] = useState<any[]>([]);
   const [returnSubTab, setReturnSubTab] = useState<'import' | 'search' | 'history' | 'inventory'>('search');
+  const [statsSubTab, setStatsSubTab] = useState<'indicators' | 'guide'>('indicators');
   const [returnInventory, setReturnInventory] = useState<any[]>([]);
   const [returnHistory, setReturnHistory] = useState<any[]>([]);
   const [returnSearchTerm, setReturnSearchTerm] = useState('');
@@ -385,9 +393,26 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
   const [viewingRequest, setViewingRequest] = useState<any | null>(null);
+  const [viewingSignedBordereauOnly, setViewingSignedBordereauOnly] = useState<any | null>(null);
+  const [viewingCirculationProcess, setViewingCirculationProcess] = useState<any | null>(null);
+  const [allRequests, setAllRequests] = useState<any[]>([]);
+  const [allRemoteRequests, setAllRemoteRequests] = useState<any[]>([]);
   const [uploadingScanItemId, setUploadingScanItemId] = useState<string | null>(null);
   const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
   const [pdfViewerTitle, setPdfViewerTitle] = useState<string>('');
+
+  const fetchAllRequestsForSignatures = async () => {
+    try {
+      const [reqs, remotes] = await Promise.all([
+        api.get('/api/requests'),
+        api.get('/api/remote-requests')
+      ]);
+      setAllRequests(reqs);
+      setAllRemoteRequests(remotes);
+    } catch (e) {
+      console.error("Error fetching all requests for signatures:", e);
+    }
+  };
 
   useEffect(() => {
     if (viewingRequest && viewingRequest.rawData) {
@@ -529,6 +554,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
         if (activeTab === 'communication' || activeTab === 'returns') {
           await fetchArchives();
+          await fetchAllRequestsForSignatures();
         }
         
         if (activeTab === 'massInventory' || activeTab === 'elimination') {
@@ -1216,6 +1242,169 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
     return result.slice(0, 500);
   }, [searchTerm, filterStatus, requests, remoteRequests, archivedComms, activeTab, requestSubTab, communicationSubTab, cleanRequests, cleanRemoteRequests]);
+
+  const dossiersProcessList = React.useMemo(() => {
+    const allMovements: any[] = [];
+
+    const getStatusStr = (s: any) => String(s || '').trim().toLowerCase();
+
+    const isReturnedStatus = (status: string) => {
+      if (!status) return false;
+      const s = String(status).toLowerCase().trim();
+      return s === 'returned' || s === 'retourné' || s === 'rejoint' || s === 'cloturé' || s === 'clôturé';
+    };
+
+    const processItem = (r: any, source: string) => {
+      const statusStr = getStatusStr(r.status);
+      
+      const isMovement = 
+        r.dateCommunication || 
+        r.dateRetour || 
+        statusStr === 'signed' || 
+        statusStr === 'prêt / communiqué' || 
+        statusStr === 'retourné' || 
+        statusStr === 'returned';
+
+      if (!isMovement && source !== 'archived') return;
+
+      let refs: string[] = [];
+      if (Array.isArray(r.references) && r.references.length > 0) {
+        refs = r.references;
+      } else {
+        const intituleVal = r.referenceDemandee || r.reference || r.intitule || r.motif || '-';
+        const [refsPart] = String(intituleVal).split(' / ');
+        refs = refsPart.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+      }
+
+      if (refs.length === 0) {
+        refs = ['-'];
+      }
+
+      const dComm = toSafeDate(r.dateCommunication || r.createdAt) || new Date();
+      const isRet = isReturnedStatus(r.status) || !!r.dateRetour;
+      const dRet = isRet ? (toSafeDate(r.dateRetour || r.updatedAt) || dComm) : null;
+
+      const direction = r.direction || r.service || 'Autres';
+
+      let boite = r.boite || '';
+      if (!boite && r.intitule && String(r.intitule).includes(' / ')) {
+        const parts = String(r.intitule).split(' / ');
+        if (parts[1]) boite = parts[1].trim();
+      }
+
+      const borrower = r.nomDemandeur || r.nom || 'Emprunteur';
+
+      refs.forEach(ref => {
+        allMovements.push({
+          dossierRef: ref.trim(),
+          borrower,
+          dateComm: dComm,
+          dateRet: dRet,
+          direction,
+          boite,
+          status: r.status,
+          source
+        });
+      });
+    };
+
+    cleanRequests.forEach(r => processItem(r, 'direct'));
+    cleanRemoteRequests.forEach(r => processItem(r, 'remote'));
+    archivedComms.forEach(r => processItem(r, 'archived'));
+
+    const grouped: { [key: string]: any[] } = {};
+    allMovements.forEach(move => {
+      const key = move.dossierRef.toUpperCase();
+      if (!key || key === '-') return;
+      if (!grouped[key]) {
+        grouped[key] = [];
+      }
+      grouped[key].push(move);
+    });
+
+    const dossiers: any[] = [];
+    Object.keys(grouped).forEach(refKey => {
+      const moves = grouped[refKey];
+      moves.sort((a, b) => a.dateComm.getTime() - b.dateComm.getTime());
+
+      const lastMove = moves[moves.length - 1];
+      const boite = moves.find(m => !!m.boite)?.boite || lastMove.boite || '';
+      const direction = lastMove.direction || 'Autres';
+
+      const isCurrentlyOut = !lastMove.dateRet;
+
+      const processStringList: string[] = [];
+      moves.forEach(m => {
+        const commStr = `Communiqué à ${m.borrower || 'Emprunteur'} (${format(m.dateComm, 'dd/MM/yyyy')})`;
+        processStringList.push(commStr);
+        if (m.dateRet) {
+          const retStr = `Retour Archives (${format(m.dateRet, 'dd/MM/yyyy')})`;
+          processStringList.push(retStr);
+        }
+      });
+
+      const fullProcessText = processStringList.join(' → ');
+
+      dossiers.push({
+        ref: refKey,
+        boite,
+        direction,
+        movements: moves,
+        numComms: moves.length,
+        lastHolder: lastMove.borrower,
+        isCurrentlyOut,
+        lastActionDate: isCurrentlyOut ? lastMove.dateComm : (lastMove.dateRet || lastMove.dateComm),
+        lastAction: isCurrentlyOut 
+          ? `Communiqué à ${lastMove.borrower} le ${format(lastMove.dateComm, 'dd/MM/yyyy')}` 
+          : `Retourné en Archives le ${format(lastMove.dateRet || lastMove.dateComm, 'dd/MM/yyyy')}`,
+        fullProcessText,
+        allYears: moves.map(m => m.dateComm.getFullYear()),
+        allRequesters: moves.map(m => String(m.borrower).toLowerCase()),
+        allDatesFormatted: moves.flatMap(m => {
+          const dates = [format(m.dateComm, 'dd/MM/yyyy')];
+          if (m.dateRet) dates.push(format(m.dateRet, 'dd/MM/yyyy'));
+          return dates;
+        })
+      });
+    });
+
+    dossiers.sort((a, b) => b.lastActionDate.getTime() - a.lastActionDate.getTime());
+
+    return dossiers;
+  }, [cleanRequests, cleanRemoteRequests, archivedComms]);
+
+  const filteredDossiersProcessList = React.useMemo(() => {
+    let list = dossiersProcessList;
+
+    if (processSearchTerm) {
+      const term = processSearchTerm.toLowerCase();
+      list = list.filter(d => {
+        const matchesRef = d.ref.toLowerCase().includes(term);
+        const matchesRequester = d.allRequesters.some((r: string) => r.includes(term));
+        const matchesDate = d.allDatesFormatted.some((dt: string) => dt.includes(term));
+        return matchesRef || matchesRequester || matchesDate;
+      });
+    }
+
+    if (processFilterDirection && processFilterDirection !== 'all') {
+      list = list.filter(d => d.direction === processFilterDirection);
+    }
+
+    if (processFilterYear && processFilterYear !== 'all') {
+      const yearNum = Number(processFilterYear);
+      list = list.filter(d => d.allYears.includes(yearNum));
+    }
+
+    if (processFilterState && processFilterState !== 'all') {
+      if (processFilterState === 'returned') {
+        list = list.filter(d => !d.isCurrentlyOut);
+      } else if (processFilterState === 'pending') {
+        list = list.filter(d => d.isCurrentlyOut);
+      }
+    }
+
+    return list;
+  }, [dossiersProcessList, processSearchTerm, processFilterDirection, processFilterYear, processFilterState]);
 
   const stats = {
     total: requests.length,
@@ -2115,135 +2304,171 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           animate={{ opacity: 1, y: 0 }}
           className="space-y-6"
         >
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard 
-              label="Communications" 
-              value={fullStats?.totals?.communications || 0} 
-              icon={<Users size={24} className="text-brand-primary" />} 
-              subLabel="Dossiers signés"
-            />
-            <StatCard 
-              label="Transferts" 
-              value={fullStats?.totals?.transfers || 0} 
-              icon={<FileStack size={24} className="text-brand-accent" />} 
-              subLabel="Dossiers importés"
-            />
-            <StatCard 
-              label="Retours" 
-              value={fullStats?.totals?.returns || 0} 
-              icon={<RotateCcw size={24} className="text-brand-primary" />} 
-              subLabel="Dossiers réintégrés"
-            />
-            <StatCard 
-              label="Éliminations" 
-              value={fullStats?.totals?.eliminations || 0} 
-              icon={<Trash2 size={24} className="text-red-500" />} 
-              subLabel="Dossiers détruits"
-            />
+          {/* Menu des sous-onglets dans Statistiques */}
+          <div className="flex gap-2 p-1.5 bg-slate-100 rounded-2xl w-fit border border-slate-200/50 mb-4 select-none">
+            <button
+              onClick={() => setStatsSubTab('indicators')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all ${
+                statsSubTab === 'indicators'
+                  ? 'bg-white text-brand-primary shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <BarChart3 size={15} /> INDICATEURS & GRAPHES
+            </button>
+            <button
+              onClick={() => setStatsSubTab('guide')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all ${
+                statsSubTab === 'guide'
+                  ? 'bg-white text-brand-primary shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              <Sparkles size={15} /> CENTRE D'ASSISTANCE & GUIDES
+            </button>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-800">Volume d'Activité Mensuel</h3>
-                  <p className="text-sm text-slate-500">Communications signées vs Transferts</p>
-                </div>
-                <div className="p-2 bg-slate-50 rounded-lg">
-                  <BarChart3 className="text-slate-400" size={20} />
-                </div>
+          {statsSubTab === 'indicators' ? (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <StatCard 
+                  label="Communications" 
+                  value={fullStats?.totals?.communications || 0} 
+                  icon={<Users size={24} className="text-brand-primary" />} 
+                  subLabel="Dossiers signés"
+                />
+                <StatCard 
+                  label="Transferts" 
+                  value={fullStats?.totals?.transfers || 0} 
+                  icon={<FileStack size={24} className="text-brand-accent" />} 
+                  subLabel="Dossiers importés"
+                />
+                <StatCard 
+                  label="Retours" 
+                  value={fullStats?.totals?.returns || 0} 
+                  icon={<RotateCcw size={24} className="text-brand-primary" />} 
+                  subLabel="Dossiers réintégrés"
+                />
+                <StatCard 
+                  label="Éliminations" 
+                  value={fullStats?.totals?.eliminations || 0} 
+                  icon={<Trash2 size={24} className="text-red-500" />} 
+                  subLabel="Dossiers détruits"
+                />
               </div>
-              
-              <div className="h-80 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={fullStats?.monthly || []}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                      cursor={{ fill: '#f8fafc' }}
-                    />
-                    <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
-                    <Bar name="Communications" dataKey="communications" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={20} />
-                    <Bar name="Transferts" dataKey="transfers" fill="#f97316" radius={[4, 4, 0, 0]} barSize={20} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </Card>
 
-            <Card className="p-6">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-800">Flux de Vie des Archives</h3>
-                  <p className="text-sm text-slate-500">Retours et Éliminations mensuels</p>
-                </div>
-                <div className="p-2 bg-slate-50 rounded-lg">
-                  <TrendingUp className="text-slate-400" size={20} />
-                </div>
-              </div>
-              
-              <div className="h-80 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={fullStats?.monthly || []}>
-                    <defs>
-                      <linearGradient id="colorReturns" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#22c55e" stopOpacity={0.1}/>
-                        <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
-                      </linearGradient>
-                      <linearGradient id="colorElims" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.1}/>
-                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
-                    <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                    />
-                    <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
-                    <Area type="monotone" name="Retours" dataKey="returns" stroke="#22c55e" fillOpacity={1} fill="url(#colorReturns)" strokeWidth={3} />
-                    <Area type="monotone" name="Éliminations" dataKey="eliminations" stroke="#ef4444" fillOpacity={1} fill="url(#colorElims)" strokeWidth={3} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </Card>
-          </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-800">Volume d'Activité Mensuel</h3>
+                      <p className="text-sm text-slate-500">Communications signées vs Transferts</p>
+                    </div>
+                    <div className="p-2 bg-slate-50 rounded-lg">
+                      <BarChart3 className="text-slate-400" size={20} />
+                    </div>
+                  </div>
+                  
+                  <div className="h-80 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={fullStats?.monthly || []}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                          cursor={{ fill: '#f8fafc' }}
+                        />
+                        <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                        <Bar name="Communications" dataKey="communications" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={20} />
+                        <Bar name="Transferts" dataKey="transfers" fill="#f97316" radius={[4, 4, 0, 0]} barSize={20} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
 
-          <Card className="p-6 bg-slate-900 text-white border-none shadow-2xl flex flex-col justify-between overflow-hidden relative group">
-            <div className="relative z-10">
-              <h3 className="text-lg font-bold mb-2">Santé du Système</h3>
-              <div className="flex items-center gap-2 text-brand-primary text-sm font-bold bg-brand-primary/10 w-fit px-3 py-1 rounded-full border border-brand-primary/20 mb-6">
-                <div className="w-2 h-2 bg-brand-primary rounded-full animate-pulse" />
-                Tableau de bord synchronisé
+                <Card className="p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="text-lg font-bold text-slate-800">Flux de Vie des Archives</h3>
+                      <p className="text-sm text-slate-500">Retours et Éliminations mensuels</p>
+                    </div>
+                    <div className="p-2 bg-slate-50 rounded-lg">
+                      <TrendingUp className="text-slate-400" size={20} />
+                    </div>
+                  </div>
+                  
+                  <div className="h-80 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={fullStats?.monthly || []}>
+                        <defs>
+                          <linearGradient id="colorReturns" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#22c55e" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                          </linearGradient>
+                          <linearGradient id="colorElims" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#ef4444" stopOpacity={0.1}/>
+                            <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fontWeight: 600, fill: '#94a3b8' }} />
+                        <Tooltip 
+                          contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
+                        <Area type="monotone" name="Retours" dataKey="returns" stroke="#22c55e" fillOpacity={1} fill="url(#colorReturns)" strokeWidth={3} />
+                        <Area type="monotone" name="Éliminations" dataKey="eliminations" stroke="#ef4444" fillOpacity={1} fill="url(#colorElims)" strokeWidth={3} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </Card>
               </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-                <div>
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Moyenne signature</p>
-                  <p className="text-3xl font-black">{Math.round((fullStats?.totals?.communications / 12) || 0)} / mois</p>
+
+              <Card className="p-6 bg-slate-900 text-white border-none shadow-2xl flex flex-col justify-between overflow-hidden relative group">
+                <div className="relative z-10">
+                  <h3 className="text-lg font-bold mb-2">Santé du Système</h3>
+                  <div className="flex items-center gap-2 text-brand-primary text-sm font-bold bg-brand-primary/10 w-fit px-3 py-1 rounded-full border border-brand-primary/20 mb-6">
+                    <div className="w-2 h-2 bg-brand-primary rounded-full animate-pulse" />
+                    Tableau de bord synchronisé
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                    <div>
+                      <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Moyenne signature</p>
+                      <p className="text-3xl font-black">{Math.round((fullStats?.totals?.communications / 12) || 0)} / mois</p>
+                    </div>
+                    <div>
+                      <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Flux transferts</p>
+                      <p className="text-3xl font-black">{Math.round((fullStats?.totals?.transfers / 12) || 0)} / mois</p>
+                    </div>
+                    <div>
+                       <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Dernière mise à jour</p>
+                       <p className="text-3xl font-black">{format(new Date(), 'HH:mm')}</p>
+                    </div>
+                    <div className="flex items-end">
+                       <p className="text-slate-400 text-xs italic">
+                         Données consolidées basées sur les archives numériques et physiques.
+                       </p>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Flux transferts</p>
-                  <p className="text-3xl font-black">{Math.round((fullStats?.totals?.transfers / 12) || 0)} / mois</p>
+
+                <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:scale-110 transition-transform duration-500">
+                  <BarChart3 size={200} />
                 </div>
-                <div>
-                   <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Dernière mise à jour</p>
-                   <p className="text-3xl font-black">{format(new Date(), 'HH:mm')}</p>
-                </div>
-                <div className="flex items-end">
-                   <p className="text-slate-400 text-xs italic">
-                     Données consolidées basées sur les archives numériques et physiques.
-                   </p>
-                </div>
-              </div>
+              </Card>
             </div>
-
-            <div className="absolute -bottom-10 -right-10 opacity-10 group-hover:scale-110 transition-transform duration-500">
-              <BarChart3 size={200} />
-            </div>
-          </Card>
+          ) : (
+            <motion.div
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-4"
+            >
+              <TabHelpPrompts activeTab={activeTab} interactive={true} />
+            </motion.div>
+          )}
         </motion.div>
       )}
 
@@ -2649,12 +2874,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'search' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Search size={16} /> RECHERCHE
-            </button>
-            <button
-              onClick={() => setMassSubTab('import')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'import' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
-            >
-              <FileSpreadsheet size={16} /> IMPORTATION
             </button>
             <button
               onClick={() => setMassSubTab('history')}
@@ -5098,6 +5317,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 Suivi des communications
               </button>
               <button
+                onClick={() => setCommunicationSubTab('processus')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'processus' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                <Route size={16} /> Processus des dossiers
+              </button>
+              <button
                 onClick={() => setCommunicationSubTab('signed')}
                 className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'signed' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
@@ -5140,7 +5365,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             </div>
           )}
 
-          {!(activeTab === 'communication' && communicationSubTab === 'signed' && agentSessionSubTab !== 'history') && (
+          {!(activeTab === 'communication' && (communicationSubTab === 'signed' && agentSessionSubTab !== 'history' || communicationSubTab === 'processus')) && (
           <div className="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
             <div className="flex flex-wrap items-center gap-4 flex-1 w-full">
             {((activeTab === 'communication' && communicationSubTab === 'all') || activeTab === 'returns') ? (
@@ -5668,6 +5893,311 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                </table>
              </div>
           </Card>
+        ) : activeTab === 'communication' && communicationSubTab === 'processus' ? (
+          (() => {
+            const availableYears = (() => {
+              const years = new Set<number>();
+              dossiersProcessList.forEach(d => {
+                d.allYears.forEach((y: number) => years.add(y));
+              });
+              return Array.from(years).sort((a, b) => b - a);
+            })();
+
+            const availableDirections = (() => {
+              const dirs = new Set<string>();
+              dossiersProcessList.forEach(d => {
+                if (d.direction) dirs.add(d.direction);
+              });
+              return Array.from(dirs).sort();
+            })();
+
+            const exportProcessToExcel = () => {
+              const dataToExport = filteredDossiersProcessList.map(d => ({
+                'Numéro de Dossier': d.ref,
+                'Numéro de Boîte': d.boite || 'N/A',
+                'Direction / Service': d.direction,
+                'Nombre de Communications': d.numComms,
+                'Dernier détenteur': d.lastHolder || 'N/A',
+                'Dernière action (État)': d.lastAction,
+                'Statut': d.isCurrentlyOut ? 'En circulation' : 'Disponible aux Archives',
+                'Processus complet de circulation': d.fullProcessText
+              }));
+
+              const worksheet = XLSX.utils.json_to_sheet(dataToExport);
+              const workbook = XLSX.utils.book_new();
+              XLSX.utils.book_append_sheet(workbook, worksheet, "Processus dossiers");
+
+              const maxWidths = [
+                { wch: 20 },
+                { wch: 15 },
+                { wch: 25 },
+                { wch: 25 },
+                { wch: 25 },
+                { wch: 40 },
+                { wch: 20 },
+                { wch: 100 }
+              ];
+              worksheet['!cols'] = maxWidths;
+
+              XLSX.writeFile(workbook, `Processus_Dossier_Circulation_${format(new Date(), 'dd_MM_yyyy')}.xlsx`);
+            };
+
+            return (
+              <div className="space-y-6 text-left">
+                {/* Statistiques en tête */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <Card className="p-4 bg-white border border-slate-100 flex items-center gap-4 shadow-sm rounded-2xl">
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+                      <Layers size={20} />
+                    </div>
+                    <div>
+                      <h4 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">Total Dossiers</h4>
+                      <p className="text-2xl font-black text-slate-800 leading-snug">{dossiersProcessList.length}</p>
+                    </div>
+                  </Card>
+
+                  <Card className="p-4 bg-white border border-slate-105 flex items-center gap-4 shadow-sm rounded-2xl">
+                    <div className="p-3 bg-rose-50 text-rose-600 rounded-xl">
+                      <BadgeAlert size={20} className="animate-pulse" />
+                    </div>
+                    <div>
+                      <h4 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">En circulation</h4>
+                      <p className="text-2xl font-black text-rose-600 leading-snug">
+                        {dossiersProcessList.filter(d => d.isCurrentlyOut).length}
+                      </p>
+                    </div>
+                  </Card>
+
+                  <Card className="p-4 bg-white border border-slate-105 flex items-center gap-4 shadow-sm rounded-2xl">
+                    <div className="p-3 bg-emerald-50 text-emerald-650 rounded-xl">
+                      <CheckCircle size={20} />
+                    </div>
+                    <div>
+                      <h4 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">Aux Archives</h4>
+                      <p className="text-2xl font-black text-emerald-605 leading-snug">
+                        {dossiersProcessList.filter(d => !d.isCurrentlyOut).length}
+                      </p>
+                    </div>
+                  </Card>
+
+                  <Card className="p-4 bg-white border border-slate-105 flex items-center gap-4 shadow-sm rounded-2xl">
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                      <History size={20} />
+                    </div>
+                    <div>
+                      <h4 className="text-slate-400 text-[10px] font-bold uppercase tracking-wider block">Mouvements Totaux</h4>
+                      <p className="text-2xl font-black text-slate-800 font-mono leading-snug">
+                        {dossiersProcessList.reduce((sum, d) => sum + d.numComms, 0)}
+                      </p>
+                    </div>
+                  </Card>
+                </div>
+
+                {/* Moteurs de recherche et filtres de recherche spécifiques */}
+                <Card className="p-5 border border-slate-100 shadow-md rounded-2xl bg-white">
+                  <div className="flex flex-col xl:flex-row gap-4 items-center justify-between">
+                    <div className="flex flex-wrap items-center gap-3 flex-1 w-full flex-row">
+                      {/* Barre de recherche */}
+                      <div className="relative flex-1 min-w-[280px]">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <Input 
+                          placeholder="Nom demandeur, numéro dossier ou date de circulation..." 
+                          className="pl-12 border-slate-205 focus:ring-slate-400 rounded-2xl h-11 text-xs font-bold"
+                          value={processSearchTerm}
+                          onChange={(e) => setProcessSearchTerm(e.target.value)}
+                        />
+                      </div>
+
+                      {/* Filtre État */}
+                      <div className="w-full sm:w-[200px]">
+                        <select
+                          value={processFilterState}
+                          onChange={(e) => setProcessFilterState(e.target.value)}
+                          className="w-full bg-white border border-slate-202 text-slate-700 h-11 px-4 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        >
+                          <option value="all">État : Tous</option>
+                          <option value="returned">Disponible (Archives)</option>
+                          <option value="pending">En circulation (Sorti)</option>
+                        </select>
+                      </div>
+
+                      {/* Filtre Direction */}
+                      <div className="w-full sm:w-[200px]">
+                        <select
+                          value={processFilterDirection}
+                          onChange={(e) => setProcessFilterDirection(e.target.value)}
+                          className="w-full bg-white border border-slate-202 text-slate-705 h-11 px-4 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        >
+                          <option value="all">Direction : Toutes</option>
+                          {availableDirections.map(dir => (
+                            <option key={dir} value={dir}>{dir}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Filtre Année */}
+                      <div className="w-full sm:w-[150px]">
+                        <select
+                          value={processFilterYear}
+                          onChange={(e) => setProcessFilterYear(e.target.value)}
+                          className="w-full bg-white border border-slate-202 text-slate-705 h-11 px-4 rounded-2xl text-xs font-bold hover:bg-slate-50 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        >
+                          <option value="all">Année : Toutes</option>
+                          {availableYears.map(year => (
+                            <option key={year} value={String(year)}>{year}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 w-full xl:w-auto self-end xl:self-auto justify-end">
+                      {/* Export button */}
+                      <Button 
+                        onClick={exportProcessToExcel}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl h-11 px-6 flex items-center justify-center gap-2 font-bold text-xs uppercase cursor-pointer border-none shadow-md shadow-emerald-600/10 transition-colors"
+                      >
+                        <Download size={18} />
+                        <span>Exporter Excel</span>
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Liste des processus */}
+                <Card className="overflow-hidden p-0 border border-slate-100 shadow-xl rounded-2xl bg-white">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead className="bg-[#f8fafc] border-b border-slate-100">
+                        <tr>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest w-[160px]">Ref / Boîte</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest w-[140px]">Direction / Service</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest w-[85px] text-center">Comms</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest w-[180px]">Dernière Action</th>
+                          <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Processus (Historique complet)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-[11px] font-bold text-slate-600">
+                        {filteredDossiersProcessList.map(d => {
+                          return (
+                            <tr key={d.ref} className="hover:bg-slate-50/40 transition-all border-b border-slate-100">
+                              {/* Référence et Boite */}
+                              <td className="px-6 py-4 border-r border-slate-50 font-bold text-slate-800">
+                                {[d.ref, d.boite].filter(Boolean).join(' / ')}
+                              </td>
+
+                              {/* Direction */}
+                              <td className="px-6 py-4 border-r border-slate-50">
+                                <span className="text-[10px] font-extrabold uppercase tracking-tight text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-2.5 py-1.5 block max-w-[150px] truncate" title={d.direction}>
+                                  {d.direction}
+                                </span>
+                              </td>
+
+                              {/* Nombre de communications */}
+                              <td className="px-6 py-4 border-r border-slate-50 text-center">
+                                <span className="bg-indigo-500/10 text-indigo-600 text-xs font-black px-2.5 py-1 rounded-full border border-indigo-500/10 font-mono inline-block">
+                                  {d.numComms}
+                                </span>
+                              </td>
+
+                              {/* Dernière action et État */}
+                              <td className="px-6 py-4 border-r border-slate-50">
+                                <div className="flex flex-col gap-1.5 justify-start items-start">
+                                  {d.isCurrentlyOut ? (
+                                    <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 border border-rose-200 text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-tighter w-fit animate-pulse">
+                                      ● En circulation
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 bg-green-50 text-green-700 border border-green-200 text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-tighter w-fit">
+                                      ● En Archives
+                                    </span>
+                                  )}
+                                  <span className="text-[10px] font-bold text-slate-450 leading-tight block">
+                                    {d.lastAction}
+                                  </span>
+                                </div>
+                              </td>
+
+                              {/* Processus complet horizontale */}
+                              <td className="px-6 py-4">
+                                <div className="overflow-x-auto whitespace-nowrap pb-1.5 scrollbar-thin flex items-center gap-2 pt-0.5 max-w-[400px] lg:max-w-[480px] xl:max-w-xl">
+                                  {d.movements.map((m: any, idx: number) => {
+                                    const isLast = idx === d.movements.length - 1;
+                                    return (
+                                      <React.Fragment key={idx}>
+                                        {/* Étape Communication */}
+                                        <div className="inline-flex flex-col bg-slate-50/50 border border-slate-100 rounded-xl p-2.5 min-w-[200px] shadow-sm relative shrink-0">
+                                          <div className="text-[9px] text-slate-450 uppercase tracking-widest font-black block">
+                                            Communication
+                                          </div>
+                                          <div className="text-[11px] text-slate-800 font-extrabold truncate mt-0.5 block" title={m.borrower}>
+                                            {m.borrower}
+                                          </div>
+                                          <div className="text-[10px] text-indigo-550 font-semibold font-mono mt-0.5 block">
+                                            📅 {format(m.dateComm, 'dd/MM/yyyy')}
+                                          </div>
+                                        </div>
+
+                                        {/* Flèche intermédiaire */}
+                                        <ChevronRight size={14} className="text-slate-350 shrink-0" />
+
+                                        {/* Étape Retour ou En attente de retour */}
+                                        {m.dateRet ? (
+                                          <>
+                                            <div className="inline-flex flex-col bg-emerald-50/45 border border-emerald-100 text-emerald-800 rounded-xl p-2.5 min-w-[200px] shadow-sm shrink-0">
+                                              <div className="text-[9px] text-emerald-600 uppercase tracking-widest font-black block">
+                                                Retour Archives
+                                              </div>
+                                              <div className="text-[11px] text-emerald-900 font-extrabold truncate mt-0.5 block">
+                                                Dossier Classé
+                                              </div>
+                                              <div className="text-[10px] text-emerald-600 font-semibold font-mono mt-0.5 block">
+                                                📅 {format(m.dateRet, 'dd/MM/yyyy')}
+                                              </div>
+                                            </div>
+                                            {!isLast && (
+                                              <ChevronRight size={14} className="text-slate-350 shrink-0" />
+                                            )}
+                                          </>
+                                        ) : (
+                                          // EN ATTENTE DE RETOUR (PULSING RED AS REQUESTED)
+                                          <div className="inline-flex flex-col bg-rose-50 border border-rose-200 text-rose-800 rounded-xl p-2.5 min-w-[200px] shadow-sm shrink-0 animate-pulse">
+                                            <div className="text-[9px] text-rose-500 uppercase tracking-widest font-black block">
+                                              En attente retour
+                                            </div>
+                                            <div className="text-[11px] text-rose-900 font-extrabold truncate mt-0.5 block">
+                                              Non retourné
+                                            </div>
+                                            <div className="text-[10px] text-rose-500 font-semibold font-mono mt-0.5 block">
+                                              ⚠️ Toujours dehors
+                                            </div>
+                                          </div>
+                                        )}
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {filteredDossiersProcessList.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="py-24 text-center">
+                              <div className="mx-auto w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center text-slate-300 mb-4">
+                                <Route size={32} />
+                              </div>
+                              <p className="text-slate-400 font-extrabold block">Aucun processus trouvé</p>
+                              <p className="text-slate-300 text-xs font-semibold mt-1 block font-sans">Saisissez un autre critère pour actualiser le filtrage.</p>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              </div>
+            );
+          })()
         ) : (
           <Card className="overflow-hidden p-0 border-none shadow-xl">
         <div className="overflow-x-auto">
@@ -5767,6 +6297,52 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       </td>
                       <td className="px-6 py-3 text-right">
                         <div className="flex items-center justify-end gap-2">
+                          <button 
+                            onClick={async () => {
+                              let originalReq = [...allRequests, ...allRemoteRequests].find(r => r.id === req.requestId || r.id === req.id);
+                              if (!originalReq || (!originalReq.signatureURL && !originalReq.signatureUrl && !originalReq.signatureData)) {
+                                try {
+                                  const [reqs, remotes] = await Promise.all([
+                                    api.get('/api/requests'),
+                                    api.get('/api/remote-requests')
+                                  ]);
+                                  setAllRequests(reqs);
+                                  setAllRemoteRequests(remotes);
+                                  originalReq = [...reqs, ...remotes].find(r => r.id === req.requestId || r.id === req.id);
+                                } catch (e) {
+                                  console.error("Error fetching requests fallback:", e);
+                                }
+                              }
+                              setViewingSignedBordereauOnly(originalReq || req);
+                            }}
+                            className={cn("p-1.5 transition-colors", req.highlightColor ? "text-white/60 hover:text-white" : "text-slate-300 hover:text-[#3b82f6]")}
+                            title="Voir le Bordereau Signé"
+                          >
+                            <Eye size={16} />
+                          </button>
+                          <button 
+                            onClick={async () => {
+                              let originalReq = [...allRequests, ...allRemoteRequests].find(r => r.id === req.requestId || r.id === req.id);
+                              if (!originalReq) {
+                                try {
+                                  const [reqs, remotes] = await Promise.all([
+                                    api.get('/api/requests'),
+                                    api.get('/api/remote-requests')
+                                  ]);
+                                  setAllRequests(reqs);
+                                  setAllRemoteRequests(remotes);
+                                  originalReq = [...reqs, ...remotes].find(r => r.id === req.requestId || r.id === req.id);
+                                } catch (e) {
+                                  console.error("Error fetching requests fallback:", e);
+                                }
+                              }
+                              setViewingCirculationProcess(originalReq || req);
+                            }}
+                            className={cn("p-1.5 transition-colors", req.highlightColor ? "text-white/60 hover:text-white" : "text-slate-300 hover:text-[#9333ea]")}
+                            title="Processus de circulation"
+                          >
+                            <Route size={16} />
+                          </button>
                           <button 
                             onClick={() => {
                               // Find the inventory item for this reference to get localisation if possible
@@ -6537,6 +7113,807 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             </motion.div>
           </div>
         )}
+      </AnimatePresence>
+
+      {/* Visualiseur de Bordereau Signé Exclusif */}
+      <AnimatePresence>
+        {viewingSignedBordereauOnly && (
+          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex flex-col items-center justify-start overflow-y-auto p-4 md:p-8 font-sans">
+            <div className="w-full max-w-3xl flex justify-between items-center mb-4 text-white">
+              <div className="flex items-center gap-2">
+                <FileText className="text-brand-primary animate-pulse" size={24} />
+                <h3 className="font-extrabold text-sm uppercase tracking-wider">Aperçu du Bordereau Signé</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button 
+                  onClick={() => {
+                    const doc = new jsPDF();
+                    const greenColor: [number, number, number] = [76, 124, 56];
+                    const grayHeader: [number, number, number] = [180, 180, 180];
+                    
+                    doc.setFillColor(greenColor[0], greenColor[1], greenColor[2]);
+                    doc.rect(10, 10, 190, 20, 'F');
+                    doc.setTextColor(255, 255, 255);
+                    doc.setFontSize(14);
+                    doc.text("BORDEREAU DE COMMUNICATION ET DE PRET DE DOCUMENTS", 105, 22, { align: 'center' });
+
+                    const name = viewingSignedBordereauOnly.requesterName || viewingSignedBordereauOnly.nomDemandeur || viewingSignedBordereauOnly.nom || "-";
+                    const typeDoc = viewingSignedBordereauOnly.typeDocument || viewingSignedBordereauOnly.type || "-";
+                    const email = viewingSignedBordereauOnly.emailDemandeur || viewingSignedBordereauOnly.email || "-";
+                    const dateStr = toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt) 
+                      ? format(toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt)!, 'dd/MM/yyyy')
+                      : format(new Date(), 'dd/MM/yyyy');
+
+                    autoTable(doc, {
+                      startY: 55,
+                      head: [['DEMANDEUR', '', dateStr]],
+                      body: [
+                        ['Nom et Prénom', `: ${name}`, ''],
+                        ['Type de document', `: ${typeDoc}`, ''],
+                        ['Email', `: ${email}`, '']
+                      ],
+                      theme: 'grid',
+                      headStyles: { 
+                        fillColor: grayHeader, 
+                        textColor: [0, 0, 0], 
+                        fontStyle: 'bold',
+                        halign: 'left'
+                      },
+                      columnStyles: {
+                        0: { cellWidth: 40, fontStyle: 'bold' },
+                        1: { cellWidth: 110 },
+                        2: { cellWidth: 35, halign: 'right', fontStyle: 'bold' }
+                      },
+                      styles: { fontSize: 9, cellPadding: 2 }
+                    });
+
+                    const docsList = [];
+                    const refs = Array.isArray(viewingSignedBordereauOnly.references) 
+                      ? viewingSignedBordereauOnly.references 
+                      : [viewingSignedBordereauOnly.reference];
+                    
+                    refs.filter(Boolean).forEach((ref, index) => {
+                      docsList.push([
+                        index + 1,
+                        ref,
+                        typeDoc,
+                        dateStr,
+                        ''
+                      ]);
+                    });
+
+                    autoTable(doc, {
+                      startY: (doc as any).lastAutoTable.finalY + 15,
+                      head: [['No', 'Intitule', 'Type Document', 'Date com', 'Date retour']],
+                      body: docsList,
+                      theme: 'grid',
+                      headStyles: { 
+                        fillColor: grayHeader, 
+                        textColor: [0, 0, 0], 
+                        fontStyle: 'normal',
+                        halign: 'center'
+                      },
+                      columnStyles: {
+                        0: { halign: 'center', cellWidth: 15, fontStyle: 'bold' },
+                        1: { halign: 'center', cellWidth: 40 },
+                        2: { halign: 'center', cellWidth: 45 },
+                        3: { halign: 'center', cellWidth: 40, fontStyle: 'bold' },
+                        4: { halign: 'center', cellWidth: 40 }
+                      },
+                      styles: { fontSize: 9, cellPadding: 3 }
+                    });
+
+                    const finalY = (doc as any).lastAutoTable.finalY + 30;
+                    doc.setTextColor(0, 0, 0);
+                    doc.setFontSize(10);
+                    doc.setFont("helvetica", "bold");
+                    doc.text("Signature - Relais d'archives de l'unité", 20, finalY);
+                    doc.text("émettrice", 20, finalY + 5);
+
+                    const sig = viewingSignedBordereauOnly.signatureURL || viewingSignedBordereauOnly.signatureUrl || viewingSignedBordereauOnly.signatureData;
+                    if (sig) {
+                      try {
+                        const formatImg = sig.includes('jpeg') || sig.includes('jpg') ? 'JPEG' : 'PNG';
+                        doc.addImage(sig, formatImg, 20, finalY + 10, 50, 25);
+                      } catch (e) {
+                        console.error("Signature image error:", e);
+                      }
+                    }
+
+                    doc.save(`Bordereau_${viewingSignedBordereauOnly.id.slice(0, 8)}.pdf`);
+                  }}
+                  className="flex items-center gap-1.5 bg-green-600 hover:bg-green-700 font-extrabold text-xs px-4 py-2.5 rounded-xl text-white shadow"
+                >
+                  <Download size={14} /> TÉLÉCHARGER PDF
+                </Button>
+                <button 
+                  onClick={() => setViewingSignedBordereauOnly(null)}
+                  className="p-2 text-white/85 hover:text-white hover:bg-white/10 rounded-full transition-all"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+            </div>
+
+            {/* Virtual A4 Sheet container */}
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 15 }}
+              className="bg-white rounded-[2rem] shadow-2xl w-full max-w-3xl overflow-hidden p-8 md:p-12 border border-slate-100 relative min-h-[850px] flex flex-col justify-between"
+            >
+              <div className="space-y-8">
+                {/* Official stylized header reminiscent of MAE / flowix */}
+                <div className="bg-[#4C7C38] text-white p-6 rounded-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
+                  <div className="space-y-1">
+                    <h2 className="text-sm font-black tracking-widest uppercase text-white/85">RÉPUBLIQUE TUNISIENNE</h2>
+                    <h1 className="text-xl md:text-2xl font-black tracking-tight leading-none">BORDEREAU DE PRÊT ET DE COMMUNICATION</h1>
+                  </div>
+                  <div className="text-right flex flex-col items-start md:items-end">
+                    <span className="bg-white/10 text-white border border-white/20 px-3 py-1 rounded-xl text-[10px] font-black uppercase tracking-wider">
+                      RELAIS D'ARCHIVES
+                    </span>
+                    <span className="text-white/60 text-[10px] font-bold mt-1">
+                      ID: #{viewingSignedBordereauOnly.id?.slice(0, 10).toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Sender/Recipient Metadata */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+                  <div className="p-5 bg-slate-50 border border-slate-150 rounded-2xl space-y-3">
+                    <p className="text-[10px] uppercase font-black tracking-wider text-slate-400">DÉPT. DEMANDEUR / BÉNÉFICIAIRE</p>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs border-b border-slate-100 pb-1.5">
+                        <span className="text-slate-400 font-bold">Nom Complet :</span>
+                        <span className="text-slate-800 font-extrabold">{viewingSignedBordereauOnly.requesterName || viewingSignedBordereauOnly.nom || "-"}</span>
+                      </div>
+                      <div className="flex justify-between text-xs border-b border-slate-100 pb-1.5">
+                        <span className="text-slate-400 font-bold">Direction :</span>
+                        <span className="text-slate-800 font-extrabold uppercase">{viewingSignedBordereauOnly.direction || "Inconnue"}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-400 font-bold">Email :</span>
+                        <span className="text-slate-800 font-extrabold">{viewingSignedBordereauOnly.requesterEmail || viewingSignedBordereauOnly.email || "-"}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-5 bg-slate-50 border border-slate-150 rounded-2xl space-y-3">
+                    <p className="text-[10px] uppercase font-black tracking-wider text-slate-400">TRAÇABILITÉ DU FLUX</p>
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs border-b border-slate-100 pb-1.5">
+                        <span className="text-slate-400 font-bold">Date de signature :</span>
+                        <span className="text-blue-600 font-black">
+                          {toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt) 
+                            ? format(toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt)!, 'dd/MM/yyyy à HH:mm') 
+                            : '...'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs border-b border-slate-100 pb-1.5">
+                        <span className="text-slate-400 font-bold">Mécanisme :</span>
+                        <span className="text-slate-800 font-extrabold uppercase text-[9px] bg-slate-200 px-2 py-0.5 rounded-md">Décharge Tactile Sécurisée</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-400 font-bold">Statut légal :</span>
+                        <span className="text-green-600 font-black uppercase text-[10px]">Approbation Archiviste validée</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Table of requested Items */}
+                <div className="space-y-2">
+                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">
+                    LISTE DES PIÈCES EN PRÊT
+                  </p>
+                  <div className="border border-slate-150 rounded-2xl overflow-hidden shadow-xs bg-slate-50/20">
+                    <table className="w-full text-left border-collapse text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black text-slate-400 uppercase">
+                          <th className="px-4 py-3 text-center w-12">N°</th>
+                          <th className="px-4 py-3">RÉFÉRENCE PIÈCE</th>
+                          <th className="px-4 py-3">CORRESPONDANCE DANS L'INVENTAIRE</th>
+                          <th className="px-4 py-3 text-center">STATUT DE PRÊT</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-bold text-slate-700">
+                        {(() => {
+                          const refs = Array.isArray(viewingSignedBordereauOnly.references) 
+                            ? viewingSignedBordereauOnly.references 
+                            : [viewingSignedBordereauOnly.reference];
+                          return refs.filter(Boolean).map((ref: string, idx: number) => (
+                            <tr key={idx} className="hover:bg-slate-50/50">
+                              <td className="px-4 py-3.5 text-center text-slate-400">{idx + 1}</td>
+                              <td className="px-4 py-3.5 font-extrabold text-[#4C7C38] tracking-tight">{ref}</td>
+                              <td className="px-4 py-3.5 text-slate-500">
+                                {viewingSignedBordereauOnly.title || viewingSignedBordereauOnly.intitule || "Consultation standard archives"}
+                              </td>
+                              <td className="px-4 py-3.5 text-center">
+                                <span className="px-2 py-0.5 bg-green-50 text-green-700 rounded-lg text-[9px] font-black border border-green-150 uppercase">
+                                  Prêté &amp; Signé
+                                </span>
+                              </td>
+                            </tr>
+                          ));
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              {/* Signature section exactly on the bottom */}
+              <div className="mt-16 pt-8 border-t border-dashed border-slate-200 grid grid-cols-1 md:grid-cols-2 gap-8 items-end">
+                <div className="space-y-1">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-[#4C7C38]">Cachet de l'entité émettrice</p>
+                  <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">
+                    Ce bordereau certifie de manière souveraine l'accord d'accès et de de décharge pour les documents listés ci-dessus.
+                  </p>
+                  <p className="text-[9px] text-[#4C7C38] font-semibold mt-2">
+                    Validé numériquement par l'archiviste d'unité
+                  </p>
+                </div>
+
+                <div className="flex flex-col items-center md:items-end space-y-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mr-2">
+                    SIGNATURE DU BÉNÉFICIAIRE
+                  </p>
+                  <div className="border border-slate-200 rounded-2xl bg-slate-50/50 p-4 w-64 h-32 flex items-center justify-center relative overflow-hidden group hover:border-[#4C7C38] transition-colors shadow-inner">
+                    {(viewingSignedBordereauOnly.signatureURL || viewingSignedBordereauOnly.signatureUrl || viewingSignedBordereauOnly.signatureData) ? (
+                      <img 
+                        src={viewingSignedBordereauOnly.signatureURL || viewingSignedBordereauOnly.signatureUrl || viewingSignedBordereauOnly.signatureData} 
+                        alt="Signature électronique" 
+                        className="max-w-full max-h-24 object-contain mix-blend-multiply" 
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="text-slate-300 flex flex-col items-center gap-2">
+                         <PencilLine size={32} />
+                         <p className="text-[10px] font-black uppercase tracking-tighter">Pas de signature tactile</p>
+                      </div>
+                    )}
+                    <div className="absolute bottom-1 right-2 text-[7px] text-slate-400 font-black tracking-widest uppercase">
+                      FLOWIX SECURE
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-400 pr-2 font-black uppercase tracking-tighter">
+                    Signé le {toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt) ? format(toSafeDate(viewingSignedBordereauOnly.updatedAt || viewingSignedBordereauOnly.createdAt)!, 'dd/MM/yyyy HH:mm') : '-'}
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Historique du Processus de Circulation */}
+      <AnimatePresence>
+        {viewingCirculationProcess && (() => {
+          const item = viewingCirculationProcess;
+          
+          // Référence principale du dossier (ex: "11111111")
+          const currentRef = String(item.intitule || item.motif || item.referenceDemandee || '').split(' / ')[0].trim();
+          
+          // Numéro de dossier complet sans coupure pour l'affichage
+          const displayRef = String(item.reference || item.referenceDemandee || item.intitule || item.motif || currentRef).trim();
+          
+          // Recherche de l'élément dans l'inventaire
+          const invItem = returnInventory?.find(i => {
+            const rawI = String(i.reference || '').trim().toLowerCase();
+            return rawI === currentRef.toLowerCase();
+          });
+
+          // Helper to check returned status
+          const isReturnedStatus = (status: string) => {
+            if (!status) return false;
+            const s = String(status).toLowerCase().trim();
+            return s === 'returned' || s === 'retourné' || s === 'rejoint' || s === 'cloturé' || s === 'clôturé';
+          };
+
+          // Récupération de tous les mouvements (communications / retours) correspondants à cette référence
+          const matches: any[] = [];
+          const matchesRef = (testStr: string) => {
+            if (!testStr) return false;
+            const cleaned = String(testStr).split(' / ')[0].trim().toLowerCase();
+            return cleaned === currentRef.toLowerCase();
+          };
+
+          // 1. Recherche dans les demandes ordinaires
+          requests.forEach((r: any) => {
+            const isMatch = matchesRef(r.intitule) || matchesRef(r.referenceDemandee) || matchesRef(r.reference) || matchesRef(r.motif);
+            if (isMatch) {
+              const isRet = isReturnedStatus(r.status) || !!r.dateRetour;
+              const dComm = toSafeDate(r.dateCommunication || r.createdAt);
+              const dRet = isRet ? (toSafeDate(r.dateRetour || r.updatedAt) || dComm || new Date()) : null;
+              matches.push({
+                id: r.id,
+                borrower: r.nomDemandeur || r.nom || 'Demandeur',
+                dateComm: dComm,
+                dateRet: dRet,
+                status: r.status,
+                type: 'direct'
+              });
+            }
+          });
+
+          // 2. Recherche dans les demandes de consultation distantes
+          remoteRequests.forEach((r: any) => {
+            const isMatch = matchesRef(r.intitule) || matchesRef(r.referenceDemandee) || matchesRef(r.reference) || matchesRef(r.motif);
+            if (isMatch) {
+              const isRet = isReturnedStatus(r.status) || !!r.dateRetour;
+              const dComm = toSafeDate(r.dateCommunication || r.createdAt);
+              const dRet = isRet ? (toSafeDate(r.dateRetour || r.updatedAt) || dComm || new Date()) : null;
+              matches.push({
+                id: r.id,
+                borrower: r.nomDemandeur || r.nom || 'Demandeur',
+                dateComm: dComm,
+                dateRet: dRet,
+                status: r.status,
+                type: 'remote'
+              });
+            }
+          });
+
+          // 3. Recherche dans les communications archivées
+          archivedComms.forEach((a: any) => {
+            const isMatch = matchesRef(a.intitule) || matchesRef(a.referenceDemandee) || matchesRef(a.reference) || matchesRef(a.motif);
+            if (isMatch) {
+              const isRet = isReturnedStatus(a.status) || !!a.dateRetour;
+              const dComm = toSafeDate(a.dateCommunication || a.createdAt);
+              const dRet = isRet ? (toSafeDate(a.dateRetour || a.updatedAt) || dComm || new Date()) : null;
+              matches.push({
+                id: a.id,
+                borrower: a.nomDemandeur || a.nom || 'Demandeur',
+                dateComm: dComm,
+                dateRet: dRet,
+                status: a.status,
+                type: 'archived'
+              });
+            }
+          });
+
+          // Dédoublonner par nom d'emprunteur et date de communication
+          const dedupMap = new Map<string, any>();
+          matches.forEach((m: any) => {
+            const tComm = m.dateComm ? m.dateComm.getTime() : 0;
+            const key = `${m.borrower}_${tComm}`;
+            if (!dedupMap.has(key)) {
+              dedupMap.set(key, m);
+            } else {
+              const existing = dedupMap.get(key);
+              if (!existing.dateRet && m.dateRet) {
+                dedupMap.set(key, m);
+              }
+            }
+          });
+
+          const sortedSessions = Array.from(dedupMap.values());
+          sortedSessions.sort((a, b) => {
+            const tA = a.dateComm ? a.dateComm.getTime() : 0;
+            const tB = b.dateComm ? b.dateComm.getTime() : 0;
+            return tA - tB;
+          });
+
+          // Fallback si aucune session n'est détectée
+          if (sortedSessions.length === 0) {
+            const isRet = isReturnedStatus(item.status) || !!item.dateRetour;
+            const dComm = toSafeDate(item.dateCommunication || item.createdAt) || new Date();
+            const dRet = isRet ? (toSafeDate(item.dateRetour || item.updatedAt) || dComm) : null;
+            sortedSessions.push({
+              id: item.id || 'current',
+              borrower: item.nomDemandeur || item.nom || 'Emprunteur',
+              dateComm: dComm,
+              dateRet: dRet,
+              status: item.status,
+              type: 'fallback'
+            });
+          }
+
+          // Métriques de gestion
+          const numComms = sortedSessions.length;
+          const numRetours = sortedSessions.filter(s => !!s.dateRet).length;
+          const lastComm = numComms > 0 ? sortedSessions[numComms - 1].dateComm : null;
+          const lastRetour = sortedSessions.filter(s => !!s.dateRet).pop()?.dateRet || null;
+
+          const isCurrentlyOut = sortedSessions.length > 0 && !sortedSessions[sortedSessions.length - 1].dateRet;
+          const currentBorrower = isCurrentlyOut ? sortedSessions[sortedSessions.length - 1].borrower : null;
+
+          const currentStatusLabel = isCurrentlyOut 
+            ? "En circulation" 
+            : "Disponible aux Archives";
+            
+          const currentStatusColorClass = isCurrentlyOut
+            ? "text-rose-400 bg-rose-950/40 border-rose-900/60"
+            : "text-emerald-400 bg-emerald-950/40 border-emerald-900/60";
+
+          // Calculate Dynamic Duration of total circulation
+          const firstCommDate = sortedSessions[0]?.dateComm || null;
+          const lastCommDate = lastComm;
+          
+          const getDurationString = (start: Date | null, end: Date | null) => {
+            if (!start) return "N/A";
+            const finalEnd = end || new Date();
+            const diffTime = Math.abs(finalEnd.getTime() - start.getTime());
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (diffDays < 30) return `${diffDays} jour${diffDays > 1 ? 's' : ''}`;
+            
+            const months = Math.floor(diffDays / 30.4);
+            const remainingDays = Math.round(diffDays % 30.4);
+            if (months < 12) {
+              return `${months} mois et ${remainingDays} jour${remainingDays > 1 ? 's' : ''}`;
+            }
+            const years = Math.floor(months / 12);
+            const remainingMonths = months % 12;
+            
+            const yearStr = `${years} an${years > 1 ? 's' : ''}`;
+            const monthStr = remainingMonths > 0 ? `, ${remainingMonths} mois` : "";
+            const dayStr = remainingDays > 0 ? ` et ${remainingDays} jour${remainingDays > 1 ? 's' : ''}` : "";
+            return `${yearStr}${monthStr}${dayStr}`;
+          };
+
+          const totalCirculationDuration = getDurationString(firstCommDate, lastRetour || (isCurrentlyOut ? new Date() : null));
+
+          const formatToCustomString = (dateObj: Date | null | undefined) => {
+            if (!dateObj || isNaN(dateObj.getTime())) return 'N/A';
+            return format(dateObj, 'dd/MM/yyyy') + ' à ' + format(dateObj, 'HH:mm');
+          };
+
+          const formatToSimpleDate = (dateObj: Date | null | undefined) => {
+            if (!dateObj || isNaN(dateObj.getTime())) return 'N/A';
+            return format(dateObj, 'dd/MM/yyyy');
+          };
+
+          // Define step elements matching the image precisely
+          const stepsList: any[] = [];
+
+          // Step 1: AUX ARCHIVES
+          const folderCreationDate = invItem?.createdAt 
+            ? toSafeDate(invItem.createdAt) 
+            : (firstCommDate ? new Date(firstCommDate.getTime() - 45 * 24 * 60 * 60 * 1000) : new Date("2023-01-01T08:00:00Z"));
+
+          stepsList.push({
+            type: 'archives',
+            title: "AUX ARCHIVES",
+            badge: "Création du dossier",
+            date: folderCreationDate,
+            userLabel: "Admin Archives",
+            dateHeader: formatToSimpleDate(folderCreationDate),
+            iconType: 'box'
+          });
+
+          // Iteratively add communication and return steps for each session
+          sortedSessions.forEach((sess) => {
+            // Communication step
+            stepsList.push({
+              type: 'comm',
+              title: `COMMUNICATION À ${sess.borrower.toUpperCase()}`,
+              badge: "Motif : Consultation du dossier",
+              date: sess.dateComm,
+              userLabel: "Communiqué par : Admin Archives",
+              dateHeader: formatToCustomString(sess.dateComm),
+              iconType: 'user'
+            });
+
+            // Return step (if completed)
+            if (sess.dateRet) {
+              stepsList.push({
+                type: 'ret',
+                title: "RETOUR AUX ARCHIVES",
+                badge: "Observations : RAS",
+                date: sess.dateRet,
+                userLabel: `Retourné par : ${sess.borrower}`,
+                dateHeader: formatToCustomString(sess.dateRet),
+                iconType: 'rotate'
+              });
+            } else if (isCurrentlyOut && sess.borrower === currentBorrower) {
+              // Active ongoing communication node without return yet
+              stepsList.push({
+                type: 'pending_ret',
+                title: "EN ATTENTE DE RETOUR",
+                badge: "Observations : En cours de consultation",
+                date: null,
+                userLabel: `Détenu par : ${sess.borrower}`,
+                dateHeader: "En cours...",
+                iconType: 'clock'
+              });
+            }
+          });
+
+          // Get first borrower and last returner safely for Summary
+          const firstBorrower = sortedSessions[0]?.borrower || 'N/A';
+          const lastReturner = sortedSessions.filter(s => !!s.dateRet).pop()?.borrower || 'N/A';
+
+          return (
+            <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[100] flex items-center justify-center p-4 md:p-6 font-sans">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.96, y: 12 }}
+                className="bg-[#0b0f19] rounded-3xl shadow-2xl w-full max-w-6xl max-h-[94vh] overflow-hidden flex flex-col border border-slate-800 text-slate-100"
+              >
+                {/* Header */}
+                <div className="p-5 bg-[#0e1424] border-b border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
+                      <ArrowRightLeft size={20} className="stroke-[2.5]" />
+                    </div>
+                    <div className="text-left flex flex-col sm:flex-row sm:items-center gap-2">
+                      <h3 className="font-bold text-[#fafafa] text-base leading-snug font-sans">
+                        Processus de circulation du dossier
+                      </h3>
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <span className="text-xs bg-indigo-500/10 text-indigo-400 font-mono px-2.5 py-1 rounded-lg border border-indigo-500/20 max-w-xs sm:max-w-md truncate" title={displayRef}>
+                          N° {displayRef}
+                        </span>
+                        <span className="text-xs bg-amber-500/10 text-amber-400 font-mono px-2.5 py-1 rounded-lg border border-amber-500/20 font-bold">
+                          📦 Boîte : {item.boite || invItem?.numBoite || 'N/A'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <button
+                    onClick={() => setViewingCirculationProcess(null)}
+                    className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-200 cursor-pointer"
+                  >
+                    <X size={20} className="stroke-[2.5]" />
+                  </button>
+                </div>
+
+                {/* Main Content Area (Scrollable) */}
+                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                  
+                  {/* Pictured Stats Row Card */}
+                  <div className="bg-[#12192a] border border-[#1d273f] rounded-2xl grid grid-cols-2 md:grid-cols-7 divide-y md:divide-y-0 md:divide-x divide-slate-800/80 overflow-hidden text-left shadow-md">
+                    
+                    {/* Item 1: Folder icon & Dossier No */}
+                    <div className="p-4 flex items-center gap-3">
+                      <div className="w-12 h-12 bg-blue-500/10 text-blue-400 rounded-full flex items-center justify-center border border-blue-500/20 shrink-0">
+                        <Layers size={22} />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Dossier N°</span>
+                        <span className="text-lg font-black text-slate-100 block truncate mt-0.5" title={displayRef}>{displayRef}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 2: Communications */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Nombre de communications</span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Send size={15} className="text-emerald-400 transform rotate-[-30deg]" />
+                        <span className="text-xl font-extrabold text-emerald-400">{numComms}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 3: Retours */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Nombre de retours</span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <RotateCcw size={15} className="text-amber-400" />
+                        <span className="text-xl font-extrabold text-amber-400">{numRetours}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 4: Statut Actuel */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Statut actuel</span>
+                      <div className="flex items-center gap-2 mt-1.5 font-bold text-xs">
+                        <span className={cn("w-2 h-2 rounded-full", isCurrentlyOut ? "bg-rose-500 animate-pulse" : "bg-emerald-500")} />
+                        <span className={isCurrentlyOut ? "text-rose-400" : "text-emerald-400"}>{currentStatusLabel}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 5: Premiere Comm */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Première communication</span>
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-200 font-extrabold">
+                        <Calendar size={13} className="text-slate-500" />
+                        <span>{firstCommDate ? formatToSimpleDate(firstCommDate) : 'N/A'}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 6: Dernière Comm */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Dernière communication</span>
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-200 font-extrabold">
+                        <Calendar size={13} className="text-slate-500" />
+                        <span>{lastCommDate ? formatToSimpleDate(lastCommDate) : 'N/A'}</span>
+                      </div>
+                    </div>
+
+                    {/* Item 7: Dernier Retour */}
+                    <div className="p-4 flex flex-col justify-center">
+                      <span className="text-[10px] text-slate-400 font-bold block uppercase tracking-tight">Dernier retour</span>
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-200 font-extrabold">
+                        <Calendar size={13} className="text-slate-500" />
+                        <span>{lastRetour ? formatToSimpleDate(lastRetour) : 'N/A'}</span>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Section: Historique de circulation Title with Clock Icon */}
+                  <div className="flex items-center gap-2 text-left pt-2">
+                    <History size={16} className="text-indigo-400" />
+                    <span className="font-extrabold text-slate-200 text-sm tracking-wide">
+                      Historique de circulation
+                    </span>
+                  </div>
+
+                  {/* Horizontal visual connected timeline workflow matching the image */}
+                  <div className="w-full overflow-x-auto pb-4 pt-2 -mx-2 px-2 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+                    <div className="flex items-start gap-0 min-w-max py-4">
+                      {stepsList.map((step, idx) => {
+                        const isLast = idx === stepsList.length - 1;
+                        
+                        // Alternate theme colors matching the image perfectly in deep dark tones
+                        let ringColor, badgePillStyle, cardStyle, iconCircleStyle;
+                        if (step.type === 'archives') {
+                          // Blue theme Node
+                          ringColor = "border-blue-500 text-blue-400";
+                          badgePillStyle = "bg-blue-950/60 text-blue-300 border-blue-900/60";
+                          cardStyle = "bg-[#0b1424] border-blue-900/50 hover:border-blue-800/80 shadow-blue-950/20";
+                          iconCircleStyle = "bg-blue-500/10 border border-blue-500/20 text-blue-400";
+                        } else if (step.type === 'comm') {
+                          // Green theme Node
+                          ringColor = "border-emerald-500 text-emerald-400";
+                          badgePillStyle = "bg-emerald-950/60 text-emerald-300 border-emerald-900/60";
+                          cardStyle = "bg-[#091817] border-emerald-900/50 hover:border-emerald-800/80 shadow-emerald-950/20";
+                          iconCircleStyle = "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400";
+                        } else if (step.type === 'pending_ret') {
+                          // Red/Rose theme Node for folder pending return
+                          ringColor = "border-rose-500 text-rose-400 animate-pulse";
+                          badgePillStyle = "bg-rose-950/60 text-rose-300 border-rose-900/60";
+                          cardStyle = "bg-[#1c0d12] border-rose-900/50 hover:border-rose-800/80 shadow-rose-950/20";
+                          iconCircleStyle = "bg-rose-500/10 border border-rose-500/20 text-rose-400 animate-pulse";
+                        } else {
+                          // Orange/Amber theme Node for return completed is preserved
+                          ringColor = "border-amber-500 text-amber-400";
+                          badgePillStyle = "bg-amber-950/60 text-amber-300 border-amber-900/60";
+                          cardStyle = "bg-[#18110b] border-amber-900/50 hover:border-amber-800/80 shadow-amber-950/20";
+                          iconCircleStyle = "bg-amber-500/10 border border-amber-500/20 text-amber-400";
+                        }
+
+                        return (
+                          <React.Fragment key={idx}>
+                            {/* Visual Timeline Column node */}
+                            <div className="flex flex-col items-center select-none w-64 shrink-0">
+                              
+                              {/* Step Index Circle above */}
+                              <div className={cn("w-7 h-7 rounded-full border-2 bg-[#0b0e1a] flex items-center justify-center text-xs font-bold leading-none shrink-0", ringColor)}>
+                                {idx + 1}
+                              </div>
+
+                              {/* Dashed vertical lines joining details */}
+                              <div className="h-6 w-0 border-l border-dashed border-slate-700/80 my-1" />
+
+                              {/* Card Content container */}
+                              <div className={cn("w-full border rounded-2xl p-5 text-center flex flex-col items-center transition-all duration-300 shadow-lg text-left", cardStyle)}>
+                                
+                                {/* Centered stylized icon circle */}
+                                <div className={cn("w-12 h-12 rounded-full flex items-center justify-center shrink-0 mb-3", iconCircleStyle)}>
+                                  {step.iconType === 'box' && <Inbox size={20} />}
+                                  {step.iconType === 'user' && <User size={20} />}
+                                  {step.iconType === 'rotate' && <RotateCcw size={20} />}
+                                  {step.iconType === 'clock' && <Clock size={20} />}
+                                </div>
+
+                                {/* Node Title */}
+                                <span className="font-extrabold text-xs tracking-wide leading-snug line-clamp-2 h-7 flex items-center text-center px-1">
+                                  {step.title}
+                                </span>
+
+                                {/* Badge subfield */}
+                                <div className={cn("px-2.5 py-1 text-[9px] font-black tracking-wide rounded-lg border my-3 uppercase text-center truncate max-w-full", badgePillStyle)}>
+                                  {step.badge}
+                                </div>
+
+                                {/* Details container (Dates & Actors) aligned identically */}
+                                <div className="space-y-1.5 w-full pt-1.5 border-t border-slate-800/60 text-left">
+                                  <div className="flex items-center gap-1.5 text-slate-300 text-[10px] font-semibold">
+                                    <Calendar size={12} className="text-slate-500 shrink-0" />
+                                    <span className="truncate">{step.dateHeader}</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 text-slate-300 text-[10px] font-semibold">
+                                    <User size={12} className="text-slate-500 shrink-0" />
+                                    <span className="truncate">{step.userLabel}</span>
+                                  </div>
+                                </div>
+
+                              </div>
+
+                            </div>
+
+                            {/* Directing connecting arrow in between nodes (hide for last node) */}
+                            {!isLast && (
+                              <div className="flex items-center justify-center shrink-0 self-center h-full pt-10 text-slate-600 px-1">
+                                <ChevronRight size={22} className="stroke-[2.5]" />
+                              </div>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* bottom Summary block panel: Résumé du dossier */}
+                  <div className="bg-[#12192a] border border-slate-800 rounded-2xl p-5 text-left relative overflow-hidden shadow-sm">
+                    
+                    {/* Top title of Summary */}
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="w-5 h-5 bg-blue-500 text-white rounded-full flex items-center justify-center font-serif text-xs font-bold shrink-0 shadow-xs">
+                        i
+                      </div>
+                      <span className="font-extrabold text-sm text-slate-200">
+                        Résumé du dossier
+                      </span>
+                    </div>
+
+                    {/* Three Columns list matching the list output */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs text-slate-300">
+                      
+                      {/* Column 1 */}
+                      <ul className="space-y-2.5 list-none font-bold">
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <span>Nombre total de communications : {numComms}</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <span>Nombre total de retours : {numRetours}</span>
+                        </li>
+                      </ul>
+
+                      {/* Column 2 */}
+                      <ul className="space-y-2.5 list-none font-bold">
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <span>Première communication : {firstCommDate ? formatToSimpleDate(firstCommDate) : 'N/A'} à {firstBorrower}</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <span>Dernier retour : {lastRetour ? formatToSimpleDate(lastRetour) : 'N/A'}{lastReturner !== 'N/A' ? ` par ${lastReturner}` : ''}</span>
+                        </li>
+                      </ul>
+
+                      {/* Column 3 */}
+                      <ul className="space-y-2.5 list-none font-bold">
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <span>Durée totale de circulation : {totalCirculationDuration}</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <span className="text-indigo-400 mt-1">●</span>
+                          <div className="inline-flex items-center gap-1.5">
+                            <span>Statut actuel :</span>
+                            <span className={cn("px-2 py-0.5 rounded-md text-[10px] uppercase font-black tracking-wide border", currentStatusColorClass)}>
+                              {currentStatusLabel}
+                            </span>
+                          </div>
+                        </li>
+                      </ul>
+
+                    </div>
+
+                  </div>
+
+                </div>
+
+                {/* Footer with actions */}
+                <div className="p-4 bg-[#0e1424] border-t border-slate-800 flex justify-end">
+                  <Button
+                    onClick={() => setViewingCirculationProcess(null)}
+                    className="bg-slate-800 hover:bg-slate-700 text-white border-none rounded-xl px-5 py-2.5 font-bold text-xs uppercase cursor-pointer transition-colors"
+                  >
+                    Fermer la Traçabilité
+                  </Button>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Rule Editing Modal */}

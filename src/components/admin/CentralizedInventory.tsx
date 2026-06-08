@@ -399,6 +399,7 @@ export const CentralizedInventory = () => {
               boxes={boxes}
               setBoxes={setBoxes} 
               archivalRules={archivalRules}
+              setActiveTab={setActiveTab}
             />
           )}
         </AnimatePresence>
@@ -410,7 +411,7 @@ export const CentralizedInventory = () => {
         <NavBtn active={activeTab === 'boites'} icon={<Package size={22} />} label="Boîtes" onClick={() => setActiveTab('boites')} />
         <NavBtn active={activeTab === 'localisation'} icon={<MapPin size={22} />} label="Localisation" onClick={() => setActiveTab('localisation')} />
         <NavBtn active={activeTab === 'inventaire'} icon={<List size={22} />} label="Inventaire" onClick={() => setActiveTab('inventaire')} />
-        <NavBtn active={activeTab === 'import'} icon={<Upload size={22} />} label="Import" onClick={() => setActiveTab('import')} />
+        <NavBtn active={activeTab === 'import'} icon={<Upload size={22} />} label="Import (Pointage)" onClick={() => setActiveTab('import')} />
       </nav>
     </div>
   );
@@ -2745,22 +2746,28 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
     if (window.confirm(`Voulez-vous valider et stocker définitivement ces ${pointedFolders.length} dossiers pointés dans la base de l'application ?`)) {
       try {
         const updatedTime = new Date().toISOString();
+        const initialTempPendingCount = folders.filter((f: any) => f.isTemp && f.status === 'pending').length;
+        
         const updatedFolders = folders.map((f: any) => {
           if (f.status === 'pointed') {
             return {
               ...f,
               status: 'verified' as const,
-              verifiedAt: updatedTime
+              verifiedAt: updatedTime,
+              isTemp: undefined
             };
           }
           return f;
+        }).filter((f: any) => {
+          // Automatic cleanup of temporary unpointed dossiers
+          return !(f.isTemp && f.status === 'pending');
         });
 
         await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
         setFolders(updatedFolders);
         await set('ci_folders_v2', updatedFolders);
         setToast({ 
-          message: `${pointedFolders.length} dossiers validés et stockés définitivement sur le serveur !`, 
+          message: `${pointedFolders.length} dossiers validés et enregistrés définitivement ! ${initialTempPendingCount > 0 ? `${initialTempPendingCount} dossiers temporaires non pointés ont été supprimés.` : ''}`, 
           type: 'success' 
         });
       } catch (err: any) {
@@ -3584,7 +3591,7 @@ const InventaireModule = ({ folders, boxes, setFolders, archivalRules = [], onRe
   );
 };
 
-const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules }: any) => {
+const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules, setActiveTab }: any) => {
   const [resetModal, setResetModal] = useState(false);
   const [importQueue, setImportQueue] = useState<{
     id: string;
@@ -3863,7 +3870,8 @@ const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules
               boxNumber: finalBoxNumber,
               status: finalBoxNumber ? 'pointed' : 'pending',
               expiryDate,
-              archivalStatus
+              archivalStatus,
+              isTemp: true
             };
           } else {
             return {
@@ -3873,7 +3881,8 @@ const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules
               category: 'Inconnue',
               boxNumber: finalBoxNumber,
               status: finalBoxNumber ? 'pointed' : 'pending',
-              archivalStatus: 'Active'
+              archivalStatus: 'Active',
+              isTemp: true
             };
           }
         });
@@ -4364,7 +4373,29 @@ const ImportModule = ({ folders, setFolders, boxes = [], setBoxes, archivalRules
           )}
 
           {/* Quick Actions Panel */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="p-6 bg-amber-500/10 border border-amber-500/20 rounded-[2rem] flex flex-col justify-between shadow-sm">
+              <div>
+                <h3 className="text-sm font-black text-amber-700 uppercase tracking-wider mb-1 flex items-center gap-2">
+                  <CheckCircle2 className="text-amber-600" size={16} /> Extraction Pointés
+                </h3>
+                <p className="text-slate-500 text-xs font-medium mb-4">Extraire et afficher les dossiers pointés dans l'inventaire pour validation définitive.</p>
+              </div>
+              <button 
+                onClick={() => {
+                  const pointedTemp = folders.filter((f: any) => f.status === 'pointed');
+                  if (pointedTemp.length === 0) {
+                    alert("Aucun dossier n'est au statut 'Pointé'. Effectuez d'abord le pointage dans l'onglet 'Pointage'.");
+                    return;
+                  }
+                  setActiveTab('inventaire');
+                }}
+                className="w-full py-3.5 bg-amber-600 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-lg shadow-amber-600/10 hover:bg-amber-700 transition-all cursor-pointer"
+              >
+                Extraire les dossiers pointés ({folders.filter((f: any) => f.status === 'pointed').length})
+              </button>
+            </div>
+
             <div className="p-6 bg-white border border-slate-200 rounded-[2rem] shadow-sm flex flex-col justify-between">
               <div>
                 <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider mb-1 flex items-center gap-2">

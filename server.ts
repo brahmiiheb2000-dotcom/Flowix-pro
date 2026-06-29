@@ -10,7 +10,11 @@ import crypto from "node:crypto";
 
 // SQLite Large Data Storage
 console.log("SERVER: Starting initialization...");
-const DB_PATH = path.resolve(process.cwd(), 'data', 'mass_inventory.db');
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+const DB_PATH = path.resolve(DATA_DIR, 'mass_inventory.db');
 console.log("SERVER: Opening database at", DB_PATH);
 const db = new Database(DB_PATH);
 console.log("SERVER: Database opened.");
@@ -299,11 +303,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 // Local JSON Database Helper
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR);
-}
-
 const getFilePath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
 
 const readData = (collection: string) => {
@@ -584,7 +583,7 @@ async function startServer() {
 
   app.get("/api/responsable/stats-directions", authenticate, (req, res) => {
     try {
-      const organigrammeRows = db.prepare("SELECT name FROM organigramme").all() as any[];
+      const organigrammeRows = db.prepare("SELECT name FROM departments").all() as any[];
       const massDirectionsRows = db.prepare("SELECT DISTINCT direction FROM mass_inventory WHERE direction IS NOT NULL AND direction != ''").all() as any[];
       const centralDirectionsRows = db.prepare("SELECT DISTINCT direction FROM centralized_inventory WHERE direction IS NOT NULL AND direction != ''").all() as any[];
 
@@ -1288,7 +1287,7 @@ async function startServer() {
   app.get("/api/elimination/pending-pv", authenticate, (req: any, res) => {
     try {
       const results = db.prepare(`
-        SELECT er.id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        SELECT er.id as id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
         FROM elimination_requests er
         JOIN mass_inventory mi ON er.inventoryId = mi.id
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
@@ -1296,7 +1295,7 @@ async function startServer() {
 
         UNION ALL
 
-        SELECT er.id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        SELECT er.id as id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
         FROM elimination_requests er
         JOIN centralized_inventory ci ON er.inventoryId = ci.reference
         LEFT JOIN archival_directory ad ON ci.ruleId = ad.id
@@ -1319,14 +1318,14 @@ async function startServer() {
   app.get("/api/elimination/requests", authenticate, (req: any, res) => {
     try {
       const results = db.prepare(`
-        SELECT er.id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        SELECT er.id as id, er.id as requestId, mi.reference, mi.intitule, mi.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
         FROM elimination_requests er
         JOIN mass_inventory mi ON er.inventoryId = mi.id
         LEFT JOIN archival_directory ad ON mi.ruleId = ad.id
 
         UNION ALL
 
-        SELECT er.id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
+        SELECT er.id as id, er.id as requestId, ci.reference, ci.intitule, ci.direction, ad.finalDisposition, er.requestedBy as submittedBy, er.status, er.createdAt
         FROM elimination_requests er
         JOIN centralized_inventory ci ON er.inventoryId = ci.reference
         LEFT JOIN archival_directory ad ON ci.ruleId = ad.id

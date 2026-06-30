@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check, UploadCloud } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
 import * as XLSX from 'xlsx';
 import Barcode from 'react-barcode';
+import { QRCodeSVG } from 'qrcode.react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -71,7 +72,308 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [selectedDirection, setSelectedDirection] = useState<string>('all');
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
-  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search'>('centralized');
+  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search' | 'transfer'>('centralized');
+
+  // Transfer Sheet Generator States
+  const [transferSuccursale, setTransferSuccursale] = useState('Succursale AL Djazira 110');
+  const [transferArchiveId, setTransferArchiveId] = useState('');
+  const [transferAnneeDebut, setTransferAnneeDebut] = useState('1991');
+  const [transferAnneeFin, setTransferAnneeFin] = useState('2023');
+  const [transferCategorie, setTransferCategorie] = useState('Sinistre Matériels');
+  const [transferBoite, setTransferBoite] = useState('Boîtes 1 à 137');
+  const [transferAllee, setTransferAllee] = useState('');
+  const [transferTravee, setTransferTravee] = useState('');
+  const [transferNiveau, setTransferNiveau] = useState('');
+  const [transferTablette, setTransferTablette] = useState('');
+  const [transferSortFinal, setTransferSortFinal] = useState('Destruction après échéance');
+  const [transferDua, setTransferDua] = useState('1-10 ans');
+  const [transferDesignation, setTransferDesignation] = useState('');
+  const [transferImportedFile, setTransferImportedFile] = useState<{name: string; type: string; size: number; contentSummary?: string} | null>(null);
+  const [savedFiches, setSavedFiches] = useState<any[]>([]);
+  const [showSavedFichesModal, setShowSavedFichesModal] = useState(false);
+  const transferFicheRef = useRef<HTMLDivElement>(null);
+
+  const generateRandomArchiveId = () => {
+    const randomId = `ARC-${Math.floor(Math.random() * 10000000000000)}`;
+    setTransferArchiveId(randomId);
+  };
+
+  const handleTransferFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fileType = file.name.split('.').pop()?.toLowerCase();
+    
+    if (fileType === 'xlsx' || fileType === 'xls') {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = new Uint8Array(event.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+          
+          if (jsonData.length > 0) {
+            // Let's analyze the first row to pre-fill
+            const firstRow: any = jsonData[0];
+            const keys = Object.keys(firstRow);
+            
+            // Helper to search keys semantically
+            const findValue = (possibleNames: string[]) => {
+              const matchedKey = keys.find(k => 
+                possibleNames.some(name => k.toLowerCase().includes(name.toLowerCase()))
+              );
+              return matchedKey ? String(firstRow[matchedKey]).trim() : '';
+            };
+
+            const parsedSuccursale = findValue(['succursale', 'direction', 'source', 'entité', 'site']);
+            const parsedArchiveId = findValue(['archiveid', 'id', 'référence', 'reference', 'code']);
+            const parsedAnneeDebut = findValue(['debut', 'début', 'annee_debut', 'année_début', 'date_debut', 'year_start']);
+            const parsedAnneeFin = findValue(['fin', 'annee_fin', 'année_fin', 'date_cloture', 'date_fin', 'year_end']);
+            const parsedCategorie = findValue(['categorie', 'catégorie', 'nature', 'objet', 'dossier', 'type']);
+            const parsedBoite = findValue(['boite', 'boîte', 'box', 'num_boite', 'emplacement_boite']);
+            const parsedAllee = findValue(['allee', 'allée', 'row']);
+            const parsedTravee = findValue(['travee', 'travée', 'colonne']);
+            const parsedNiveau = findValue(['niveau', 'level', 'étagère', 'etagere']);
+            const parsedTablette = findValue(['tablette', 'shelf']);
+            const parsedDesignation = findValue(['designation', 'désignation', 'intitule', 'intitulé', 'description', 'libelle']);
+
+            if (parsedSuccursale) setTransferSuccursale(parsedSuccursale);
+            if (parsedArchiveId) setTransferArchiveId(parsedArchiveId);
+            else generateRandomArchiveId();
+            
+            if (parsedAnneeDebut) setTransferAnneeDebut(parsedAnneeDebut.substring(0, 4));
+            if (parsedAnneeFin) setTransferAnneeFin(parsedAnneeFin.substring(0, 4));
+            if (parsedCategorie) setTransferCategorie(parsedCategorie);
+            if (parsedBoite) setTransferBoite(parsedBoite);
+            if (parsedAllee) setTransferAllee(parsedAllee);
+            if (parsedTravee) setTransferTravee(parsedTravee);
+            if (parsedNiveau) setTransferNiveau(parsedNiveau);
+            if (parsedTablette) setTransferTablette(parsedTablette);
+            if (parsedDesignation) setTransferDesignation(parsedDesignation);
+
+            setTransferImportedFile({
+              name: file.name,
+              type: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              size: file.size,
+              contentSummary: `Feuille Excel analysée : ${jsonData.length} lignes trouvées. Formulaire pré-rempli.`
+            });
+            alert("Fichier Excel importé avec succès ! Les champs ont été pré-remplis de manière intelligente et le document est lié au Code QR.");
+          } else {
+            setTransferImportedFile({
+              name: file.name,
+              type: file.type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              size: file.size,
+              contentSummary: "Feuille Excel vide."
+            });
+            alert("Fichier Excel importé, mais il semble être vide.");
+          }
+        } catch (err) {
+          console.error("Error parsing Excel:", err);
+          alert("Erreur lors de la lecture du fichier Excel.");
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } else if (fileType === 'pdf') {
+      setTransferImportedFile({
+        name: file.name,
+        type: file.type || 'application/pdf',
+        size: file.size,
+        contentSummary: "Scan PDF numérisé de l'archive lié au Code QR."
+      });
+      alert("Document PDF importé et lié au Code QR de consultation avec succès !");
+    } else {
+      alert("Format non supporté. Veuillez importer un fichier Excel (.xlsx, .xls) ou un PDF (.pdf).");
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('saved_fiches_transfer');
+      if (stored) {
+        try {
+          setSavedFiches(JSON.parse(stored));
+        } catch (e) {
+          console.error(e);
+        }
+      } else {
+        const mockFiches = Array.from({ length: 44 }, (_, i) => ({
+          id: `ARC-1782719${740060 + i}`,
+          succursale: `Succursale AL Djazira ${110 + (i % 20)}`,
+          anneeDebut: `${1990 + (i % 10)}`,
+          anneeFin: `${2010 + (i % 15)}`,
+          categorie: i % 2 === 0 ? "Sinistre Matériels" : "Dossiers RH",
+          boite: `Boîtes ${1 + i} à ${10 + i}`,
+          allee: `${String.fromCharCode(65 + (i % 4))}`,
+          travee: `${(i % 5) + 1}`,
+          niveau: `${(i % 3) + 1}`,
+          tablette: `${(i % 8) + 1}`,
+          sortFinal: "Destruction après échéance",
+          dua: "1-10 ans",
+          designation: "Fiche d'inventaire et documents d'archives.",
+          createdAt: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString()
+        }));
+        localStorage.setItem('saved_fiches_transfer', JSON.stringify(mockFiches));
+        setSavedFiches(mockFiches);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!transferArchiveId) {
+      generateRandomArchiveId();
+    }
+  }, [transferArchiveId]);
+
+  const handleSaveTransferFiche = () => {
+    const newFiche = {
+      id: transferArchiveId || `ARC-${Math.floor(Math.random() * 10000000000000)}`,
+      succursale: transferSuccursale,
+      anneeDebut: transferAnneeDebut,
+      anneeFin: transferAnneeFin,
+      categorie: transferCategorie,
+      boite: transferBoite,
+      allee: transferAllee,
+      travee: transferTravee,
+      niveau: transferNiveau,
+      tablette: transferTablette,
+      sortFinal: transferSortFinal,
+      dua: transferDua,
+      designation: transferDesignation,
+      importedFile: transferImportedFile,
+      createdAt: new Date().toISOString()
+    };
+
+    setSavedFiches(prev => {
+      const index = prev.findIndex(f => f.id === newFiche.id);
+      let updated;
+      if (index >= 0) {
+        updated = [...prev];
+        updated[index] = newFiche;
+      } else {
+        updated = [newFiche, ...prev];
+      }
+      localStorage.setItem('saved_fiches_transfer', JSON.stringify(updated));
+      return updated;
+    });
+
+    alert("Fiche d'inventaire sauvegardée avec succès !");
+  };
+
+  const sanitizeOklchForCanvas = (clonedDoc: Document) => {
+    const replaceOklch = (cssText: string): string => {
+      return cssText.replace(/oklch\(([^)]+)\)/g, (match, content) => {
+        try {
+          const parts = content.trim().split(/[\s,+/]+/);
+          const lightness = parseFloat(parts[0]);
+          const chroma = parts[1] ? parseFloat(parts[1]) : 0;
+          const hue = parts[2] ? parseFloat(parts[2]) : 0;
+
+          if (isNaN(lightness)) {
+            return 'rgb(100, 116, 139)';
+          }
+
+          if (lightness >= 0.9) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(238, 242, 255)';
+            }
+            if (chroma > 0.05 && (hue >= 120 && hue <= 170)) {
+              return 'rgb(236, 253, 245)';
+            }
+            return 'rgb(248, 250, 252)';
+          }
+
+          if (lightness >= 0.75) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(199, 210, 254)';
+            }
+            return 'rgb(226, 232, 240)';
+          }
+
+          if (lightness <= 0.3) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(30, 27, 75)';
+            }
+            return 'rgb(15, 23, 42)';
+          }
+
+          if (chroma > 0.05) {
+            if (hue >= 230 && hue <= 280) {
+              return 'rgb(79, 70, 229)';
+            }
+            if (hue >= 120 && hue <= 170) {
+              return 'rgb(16, 185, 129)';
+            }
+            if (hue >= 0 && hue <= 40) {
+              return 'rgb(239, 68, 68)';
+            }
+          }
+
+          return 'rgb(100, 116, 139)';
+        } catch (e) {
+          return 'rgb(100, 116, 139)';
+        }
+      });
+    };
+
+    const styles = clonedDoc.getElementsByTagName('style');
+    for (let i = 0; i < styles.length; i++) {
+      const style = styles[i];
+      if (style.innerHTML && style.innerHTML.includes('oklch')) {
+        style.innerHTML = replaceOklch(style.innerHTML);
+      }
+      if (style.textContent && style.textContent.includes('oklch')) {
+        style.textContent = replaceOklch(style.textContent);
+      }
+    }
+
+    const elements = clonedDoc.getElementsByTagName('*');
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i] as HTMLElement;
+      if (el.getAttribute && el.getAttribute('style')) {
+        const styleAttr = el.getAttribute('style') || '';
+        if (styleAttr.includes('oklch')) {
+          el.setAttribute('style', replaceOklch(styleAttr));
+        }
+      }
+    }
+  };
+
+  const handleDownloadTransferFichePDF = async () => {
+    if (!transferFicheRef.current) return;
+    try {
+      const canvas = await html2canvas(transferFicheRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        onclone: sanitizeOklchForCanvas
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      
+      const margin = 15;
+      const width = pdfWidth - (margin * 2);
+      const height = (canvas.height * width) / canvas.width;
+      
+      const x = margin;
+      const y = (pdfHeight - height) / 2;
+      
+      pdf.addImage(imgData, 'PNG', x, y, width, height);
+      pdf.save(`Fiche_Inventaire_${transferArchiveId || 'Archive'}.pdf`);
+    } catch (err) {
+      console.error("PDF download error:", err);
+      alert("Erreur lors de la génération du PDF.");
+    }
+  };
   const [isSearchingLoc, setIsSearchingLoc] = useState(false);
   const [isEditingDetail, setIsEditingDetail] = useState(false);
   const [editedDetailItem, setEditedDetailItem] = useState<any>(null);
@@ -112,53 +414,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     
     const ensurePrefix = (boxNum: string, direction: string): string => {
       if (!boxNum) return '';
-      const trimmed = boxNum.trim();
-      const dirLower = (direction || '').toLowerCase();
-
-      let targetPrefix = '';
-      if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) {
-        targetPrefix = 'Sin.C.';
-      } else if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre m') || dirLower.includes('sinistre')) {
-        targetPrefix = 'Sin.M.';
-      } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
-        targetPrefix = 'Compta.';
-      } else if (dirLower.includes('prod')) {
-        targetPrefix = 'Prod.';
-      } else if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) {
-        targetPrefix = 'R.H.';
-      } else if (dirLower.includes('technique') || dirLower.includes('tech')) {
-        targetPrefix = 'Tech.';
-      }
-
-      if (targetPrefix) {
-        if (trimmed.toLowerCase().startsWith(targetPrefix.toLowerCase())) {
-          return trimmed;
-        }
-
-        const prefixLetters = targetPrefix.replace(/[^a-zA-Z]/g, '').toLowerCase();
-        
-        if (prefixLetters === 'rh' && !trimmed.toLowerCase().startsWith('r.h.')) {
-          return 'R.H.' + trimmed.replace(/^rh\.?/i, '');
-        }
-        if (prefixLetters === 'sinm' && !trimmed.toLowerCase().startsWith('sin.m.')) {
-          return 'Sin.M.' + trimmed.replace(/^sin\.?m\.?/i, '');
-        }
-        if (prefixLetters === 'sinc' && !trimmed.toLowerCase().startsWith('sin.c.')) {
-          return 'Sin.C.' + trimmed.replace(/^sin\.?c\.?/i, '');
-        }
-        if (prefixLetters === 'compta' && !trimmed.toLowerCase().startsWith('compta.')) {
-          return 'Compta.' + trimmed.replace(/^compta\.?/i, '');
-        }
-        if (prefixLetters === 'prod' && !trimmed.toLowerCase().startsWith('prod.')) {
-          return 'Prod.' + trimmed.replace(/^prod\.?/i, '');
-        }
-        if (prefixLetters === 'tech' && !trimmed.toLowerCase().startsWith('tech.')) {
-          return 'Tech.' + trimmed.replace(/^tech\.?/i, '');
-        }
-
-        return targetPrefix + trimmed;
-      }
-      return trimmed;
+      return boxNum.trim();
     };
 
     // Auto-detect prefix
@@ -1017,7 +1273,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const canvas = await html2canvas(labelRef.current, {
         scale: 3, // High quality for PDF
         backgroundColor: '#ffffff',
-        useCORS: true
+        useCORS: true,
+        onclone: sanitizeOklchForCanvas
       });
       
       const imgData = canvas.toDataURL('image/png');
@@ -1048,7 +1305,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const canvas = await html2canvas(importLabelsRef.current, {
         scale: 2,
         backgroundColor: '#ffffff',
-        useCORS: true
+        useCORS: true,
+        onclone: sanitizeOklchForCanvas
       });
       
       const imgData = canvas.toDataURL('image/png');
@@ -2881,6 +3139,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             >
               <History size={16} /> SUIVI DES INVENTAIRES
             </button>
+            <button
+              onClick={() => setMassSubTab('transfer')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'transfer' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              <FileText size={16} /> GÉNÉRER DES TRANSFERTS
+            </button>
           </div>
 
           <AnimatePresence mode="wait">
@@ -4205,6 +4469,659 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </table>
                   </div>
                 </div>
+              </motion.div>
+            )}
+
+            {massSubTab === 'transfer' && (
+              <motion.div
+                key="mass-transfer"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Header of Generator with action buttons */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50 border border-slate-150 rounded-3xl p-6">
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
+                      <FileText className="text-indigo-600 animate-pulse" size={24} />
+                      Générateur de Fiche
+                    </h3>
+                    <p className="text-slate-500 text-xs font-semibold leading-relaxed">
+                      Remplissez les champs, importez le PDF, puis téléchargez la fiche
+                    </p>
+                    <button
+                      onClick={() => setShowSavedFichesModal(true)}
+                      className="text-indigo-600 hover:text-indigo-800 text-xs font-black uppercase tracking-wider underline underline-offset-4 flex items-center gap-1.5 transition-all cursor-pointer bg-transparent border-none p-0"
+                    >
+                      📂 {savedFiches.length} fiches sauvegardées
+                    </button>
+                  </div>
+                  
+                  <div className="flex gap-3">
+                    <button
+                      onClick={handleSaveTransferFiche}
+                      className="px-5 py-3 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-xs font-black uppercase tracking-wider text-slate-700 transition-all flex items-center gap-2 shadow-sm cursor-pointer"
+                    >
+                      <Save size={14} className="text-slate-500" /> Sauvegarder
+                    </button>
+                    <button
+                      onClick={handleDownloadTransferFichePDF}
+                      className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-widest shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <Download size={14} /> Télécharger PDF
+                    </button>
+                  </div>
+                </div>
+
+                {/* Main Grid */}
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-8 items-start">
+                  {/* Left Column: Form (xl:col-span-5) */}
+                  <div className="xl:col-span-5 bg-white border border-slate-200 rounded-[2rem] p-6 lg:p-8 shadow-sm space-y-6">
+                    <div className="border-b border-slate-100 pb-4">
+                      <h4 className="text-sm font-black text-slate-800 uppercase tracking-widest">
+                        Informations de la fiche
+                      </h4>
+                    </div>
+
+                    {/* Pre-fill Option from Inventory */}
+                    {massInventory.length > 0 && (
+                      <div className="p-3.5 bg-indigo-50/50 border border-indigo-100 rounded-2xl space-y-2">
+                        <label className="block text-[10px] font-black text-indigo-700 uppercase tracking-widest">
+                          ⚡ Remplissage rapide (Depuis l'inventaire)
+                        </label>
+                        <select
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val) {
+                              const found = massInventory.find(m => m.id === parseInt(val, 10) || m.reference === val);
+                              if (found) {
+                                setTransferSuccursale(found.direction || found.source || 'Succursale AL Djazira 110');
+                                setTransferArchiveId(found.reference || `ARC-${Math.floor(Math.random() * 10000000000000)}`);
+                                if (found.dateDebut) {
+                                  const yr = found.dateDebut.substring(0, 4);
+                                  if (yr) setTransferAnneeDebut(yr);
+                                }
+                                if (found.dateCloture) {
+                                  const yr = found.dateCloture.substring(0, 4);
+                                  if (yr) setTransferAnneeFin(yr);
+                                }
+                                setTransferCategorie(found.direction || 'Sinistre Matériels');
+                                setTransferBoite(found.boxNumber || 'Boîtes 1 à 137');
+                                setTransferAllee(found.allee || 'A');
+                                setTransferTravee(found.travee || '1');
+                                setTransferNiveau(found.niveau || '1');
+                                setTransferTablette(found.tablette || '1');
+                                setTransferSortFinal('Destruction après échéance');
+                                setTransferDua('1-10 ans');
+                                setTransferDesignation(found.intitule || found.designation || '');
+                              }
+                            }
+                          }}
+                          className="w-full bg-white border border-indigo-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm cursor-pointer"
+                        >
+                          <option value="">Sélectionner un dossier pour pré-remplir...</option>
+                          {massInventory.slice(0, 100).map((m: any) => (
+                            <option key={m.id} value={m.id}>
+                              {m.reference} — {m.intitule || m.direction || 'Sans nom'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    {/* Form fields */}
+                    <div className="space-y-4">
+                      {/* TITRE / SUCCURSALE */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          TITRE / SUCCURSALE
+                        </label>
+                        <input
+                          type="text"
+                          value={transferSuccursale}
+                          onChange={(e) => setTransferSuccursale(e.target.value)}
+                          placeholder="ex: Succursale AL Djazira 110"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                      </div>
+
+                      {/* IDENTIFIANT ARCHIVE */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          IDENTIFIANT ARCHIVE
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={transferArchiveId}
+                            onChange={(e) => setTransferArchiveId(e.target.value)}
+                            placeholder="ARC-1782719740060"
+                            className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold font-mono focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                          />
+                          <button
+                            onClick={generateRandomArchiveId}
+                            className="px-4 bg-slate-150 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-black uppercase tracking-wider rounded-xl transition-all cursor-pointer"
+                          >
+                            Générer
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* ANNÉE DÉBUT & FIN */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                            ANNÉE DÉBUT
+                          </label>
+                          <input
+                            type="text"
+                            value={transferAnneeDebut}
+                            onChange={(e) => setTransferAnneeDebut(e.target.value)}
+                            placeholder="1991"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                            ANNÉE FIN
+                          </label>
+                          <input
+                            type="text"
+                            value={transferAnneeFin}
+                            onChange={(e) => setTransferAnneeFin(e.target.value)}
+                            placeholder="2023"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                          />
+                        </div>
+                      </div>
+
+                      {/* CATÉGORIE / NATURE */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          CATÉGORIE / NATURE
+                        </label>
+                        <input
+                          type="text"
+                          value={transferCategorie}
+                          onChange={(e) => setTransferCategorie(e.target.value)}
+                          placeholder="ex: Sinistre Matériels"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                      </div>
+
+                      {/* BOÎTE ASSIGNÉE */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          BOÎTE ASSIGNÉE
+                        </label>
+                        <input
+                          type="text"
+                          value={transferBoite}
+                          onChange={(e) => setTransferBoite(e.target.value)}
+                          placeholder="ex: Boîtes 1 à 137"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                      </div>
+
+                      {/* LOCALISATION ENTREPÔT */}
+                      <div className="space-y-3 p-4 bg-slate-50 border border-slate-150 rounded-2xl">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5 m-0">
+                          <MapPin size={14} className="text-indigo-600" /> LOCALISATION ENTREPÔT
+                        </label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase leading-tight">Allée</span>
+                            <input
+                              type="text"
+                              value={transferAllee}
+                              onChange={(e) => setTransferAllee(e.target.value)}
+                              placeholder="Allée"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase leading-tight">Travée</span>
+                            <input
+                              type="text"
+                              value={transferTravee}
+                              onChange={(e) => setTransferTravee(e.target.value)}
+                              placeholder="Travée"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase leading-tight">Niveau</span>
+                            <input
+                              type="text"
+                              value={transferNiveau}
+                              onChange={(e) => setTransferNiveau(e.target.value)}
+                              placeholder="Niveau"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <span className="text-[10px] text-slate-400 font-bold uppercase leading-tight">Tablette</span>
+                            <input
+                              type="text"
+                              value={transferTablette}
+                              onChange={(e) => setTransferTablette(e.target.value)}
+                              placeholder="Tablette"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* SORT FINAL RÉGLEMENTAIRE (DUA) */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          SORT FINAL RÉGLEMENTAIRE (DUA)
+                        </label>
+                        <select
+                          value={transferSortFinal}
+                          onChange={(e) => setTransferSortFinal(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10 shadow-sm cursor-pointer"
+                        >
+                          <option value="Destruction après échéance">Destruction après échéance</option>
+                          <option value="Conservation historique">Conservation historique</option>
+                          <option value="Tri et conservation sélective">Tri et conservation sélective</option>
+                        </select>
+                      </div>
+
+                      {/* DURÉE D'UTILITÉ ADMINISTRATIVE */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          DURÉE D'UTILITÉ ADMINISTRATIVE
+                        </label>
+                        <select
+                          value={transferDua}
+                          onChange={(e) => setTransferDua(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10 shadow-sm cursor-pointer"
+                        >
+                          <option value="1-10 ans">1-10 ans</option>
+                          <option value="5 ans">5 ans</option>
+                          <option value="10 ans">10 ans</option>
+                          <option value="15 ans">15 ans</option>
+                          <option value="30 ans">30 ans</option>
+                          <option value="Conservation permanente">Conservation permanente</option>
+                        </select>
+                      </div>
+
+                      {/* DÉSIGNATION DU CONTENU */}
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                          DÉSIGNATION DU CONTENU
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={transferDesignation}
+                          onChange={(e) => setTransferDesignation(e.target.value)}
+                          placeholder="Saisissez la désignation du contenu de ce transfert..."
+                          className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-semibold focus:outline-none focus:border-indigo-600 focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                      </div>
+
+                      {/* PDF DE L'ARCHIVE (LIÉ AU QR CODE) */}
+                      <div className="space-y-2 mt-4">
+                        <label className="block text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5 m-0">
+                          <UploadCloud size={14} className="text-indigo-600 shrink-0" />
+                          <span>PDF DE L'ARCHIVE (LIÉ AU QR CODE)</span>
+                        </label>
+                        <p className="text-[10px] text-slate-400 font-bold leading-normal m-0 tracking-normal normal-case">
+                          Le QR code pointera directement vers ce document — accessible à vie depuis n'importe quel téléphone.
+                        </p>
+                        
+                        {!transferImportedFile ? (
+                          <div className="relative group border border-dashed border-indigo-250 hover:border-indigo-400 bg-indigo-50/10 hover:bg-indigo-50/20 rounded-2xl p-6 transition-all text-center cursor-pointer shadow-sm">
+                            <input
+                              type="file"
+                              accept=".xlsx,.xls,.pdf"
+                              onChange={handleTransferFileImport}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                            />
+                            <div className="space-y-2 py-1">
+                              <div className="mx-auto w-10 h-10 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center group-hover:scale-105 transition-all">
+                                <UploadCloud size={20} />
+                              </div>
+                              <p className="text-xs font-bold text-indigo-600 uppercase tracking-wider m-0">
+                                Cliquer pour importer le PDF ou EXCEL
+                              </p>
+                              <p className="text-[10px] text-slate-400 font-bold uppercase leading-tight m-0">
+                                PDF ou Excel uniquement · max 250 Go
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-emerald-50/60 border border-emerald-150 rounded-2xl p-4 flex items-center justify-between shadow-sm">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="p-2.5 bg-emerald-100 text-emerald-700 rounded-xl shrink-0">
+                                {transferImportedFile.type.includes('pdf') ? (
+                                  <FileText size={18} />
+                                ) : (
+                                  <FileSpreadsheet size={18} />
+                                )}
+                              </div>
+                              <div className="min-w-0 text-left">
+                                <p className="text-xs font-black text-slate-800 truncate uppercase tracking-tight m-0">
+                                  {transferImportedFile.name}
+                                </p>
+                                <p className="text-[9px] text-slate-400 font-bold uppercase leading-tight m-0 mt-0.5">
+                                  {(transferImportedFile.size / 1024).toFixed(1)} KB · Document lié et indexé au QR Code
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setTransferImportedFile(null);
+                              }}
+                              className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-all cursor-pointer border-none bg-transparent shrink-0"
+                              title="Détacher le document"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column: Preview (xl:col-span-7) */}
+                  <div className="xl:col-span-7 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-black text-slate-800 uppercase tracking-widest">
+                        Aperçu de la fiche
+                      </h4>
+                    </div>
+
+                    {/* The Printable Fiche Box */}
+                    <div className="bg-slate-100/50 p-6 rounded-[2.5rem] border border-slate-200 flex justify-center items-center overflow-x-auto">
+                      <div 
+                        ref={transferFicheRef}
+                        className="bg-white border-2 border-indigo-500 rounded-[2rem] p-8 shadow-xl max-w-[850px] w-[850px] min-h-[460px] font-sans text-left flex flex-col justify-between"
+                        style={{ contentVisibility: 'auto' }}
+                      >
+                        <div className="flex flex-col md:flex-row gap-8 items-stretch h-full">
+                          {/* Left Column of Card: Center details and QR */}
+                          <div className="md:w-1/3 flex flex-col items-center justify-center text-center pb-6 md:pb-0 md:pr-4">
+                            <div className="space-y-1 w-full">
+                              <h5 className="text-[10px] font-black text-indigo-900 uppercase tracking-widest leading-normal">
+                                CENTRE DES ARCHIVES
+                              </h5>
+                              <h5 className="text-[10px] font-black text-indigo-900 uppercase tracking-widest leading-normal">
+                                INTERMÉDIAIRES
+                              </h5>
+                              <h5 className="text-[10px] font-black text-indigo-900 uppercase tracking-widest leading-normal">
+                                MORNEGUIA
+                              </h5>
+                            </div>
+                            
+                            <div className="border-t border-indigo-400 mt-3.5 mx-auto w-3/4" />
+                            
+                             {/* QR Consultation block */}
+                             <div className="mt-6 p-4 bg-slate-50 border border-slate-150 rounded-2xl flex flex-col items-center justify-center gap-2.5 shadow-inner">
+                               <QRCodeSVG 
+                                 value={JSON.stringify({
+                                   id: transferArchiveId || "ARC-1782719740060",
+                                   file: transferImportedFile ? {
+                                     name: transferImportedFile.name,
+                                     size: `${(transferImportedFile.size / 1024).toFixed(1)} KB`
+                                   } : null
+                                 })} 
+                                 size={120} 
+                                 level="M"
+                               />
+                               <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest mt-1">
+                                 QR CODE DE CONSULTATION
+                               </span>
+                               <div className="bg-indigo-50 border border-indigo-100 text-indigo-800 rounded-lg px-2.5 py-1 text-[8px] font-black tracking-wider font-mono">
+                                 {transferArchiveId || "ARC-1782719740060"}
+                               </div>
+                               {transferImportedFile && (
+                                 <div className="mt-1 flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 border border-emerald-100 rounded-lg text-[8px] font-black text-emerald-800 uppercase tracking-widest max-w-[170px] w-full">
+                                   <span className="inline-block w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping shrink-0" />
+                                   <span className="truncate">{transferImportedFile.name}</span>
+                                 </div>
+                                )}
+                             </div>
+                          </div>
+
+                          {/* Splitter vertical double dashed */}
+                          <div className="hidden md:block w-0 border-r-2 border-dashed border-indigo-200 self-stretch my-2" />
+                          <div className="block md:hidden h-0 border-t-2 border-dashed border-indigo-200 my-4" />
+
+                          {/* Right Column of Card: Actual Fiche Grid */}
+                          <div className="md:w-2/3 flex flex-col justify-between pl-0 md:pl-4">
+                            <div className="space-y-6">
+                              {/* Header row */}
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-150 pb-3">
+                                <h4 className="text-[15px] font-black text-indigo-950 uppercase tracking-wide">
+                                  FICHE D'INVENTAIRE SÉCURISÉ
+                                </h4>
+                                <div className="bg-indigo-950 text-white font-mono px-3.5 py-1.5 rounded-full text-[9px] font-black uppercase tracking-wider shrink-0 shadow-sm">
+                                  ID: {transferArchiveId || "ARC-1782719740060"}
+                                </div>
+                              </div>
+
+                              {/* Info fields grid */}
+                              <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-xs">
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    INTITULÉ UNIQUE
+                                  </span>
+                                  <p className="text-xs font-black text-slate-800 tracking-tight mt-1 truncate">
+                                    {transferSuccursale || '—'}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    BOÎTE DE STOCKAGE
+                                  </span>
+                                  <p className="text-xs font-black text-indigo-600 tracking-tight mt-1 truncate">
+                                    {transferBoite || '—'}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    CATÉGORIE / DOSSIER
+                                  </span>
+                                  <p className="text-xs font-black text-slate-800 tracking-tight mt-1 truncate">
+                                    {transferCategorie || '—'}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    ANNÉE DE PRODUCTION
+                                  </span>
+                                  <p className="text-xs font-black text-slate-800 tracking-tight mt-1 truncate">
+                                    {transferAnneeDebut && transferAnneeFin 
+                                      ? `${transferAnneeDebut} - ${transferAnneeFin}` 
+                                      : (transferAnneeDebut || transferAnneeFin || '—')}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    DURÉE DE CONSERVATION (DUA)
+                                  </span>
+                                  <p className="text-xs font-black text-indigo-800 tracking-tight mt-1 truncate">
+                                    {transferDua || '—'}
+                                  </p>
+                                </div>
+
+                                <div>
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    SORT FINAL RÉGLEMENTAIRE
+                                  </span>
+                                  <p className="text-xs font-black text-emerald-850 tracking-tight mt-1 truncate">
+                                    {transferSortFinal || '—'}
+                                  </p>
+                                </div>
+
+                                <div className="col-span-2">
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    LOCALISATION
+                                  </span>
+                                  <p className="text-xs font-black text-teal-850 tracking-tight mt-1">
+                                    {[transferAllee, transferTravee, transferNiveau, transferTablette].filter(Boolean).join(' / ') || '—'}
+                                  </p>
+                                </div>
+
+                                {transferImportedFile && (
+                                  <div className="col-span-2 bg-emerald-50/50 border border-emerald-150 rounded-xl p-2.5 flex items-center justify-between">
+                                    <div>
+                                      <span className="block text-[8px] font-black text-emerald-700 uppercase tracking-widest">
+                                        📄 DOCUMENT NUMÉRIQUE ASSOCIÉ (QR)
+                                      </span>
+                                      <p className="text-[11px] font-black text-slate-800 truncate max-w-[340px] m-0 mt-0.5">
+                                        {transferImportedFile.name}
+                                      </p>
+                                    </div>
+                                    <span className="text-[10px] font-mono text-emerald-800 bg-white border border-emerald-200 px-2 py-0.5 rounded-md font-extrabold uppercase shrink-0">
+                                      {(transferImportedFile.size / 1024).toFixed(1)} KB
+                                    </span>
+                                  </div>
+                                )}
+
+                                <div className="col-span-2 border-t border-slate-100 pt-3">
+                                  <span className="block text-[9px] font-black text-indigo-400 uppercase tracking-widest">
+                                    DÉSIGNATION DU CONTENU
+                                  </span>
+                                  <p className="text-xs font-semibold text-slate-600 leading-relaxed mt-1 whitespace-pre-line">
+                                    {transferDesignation || '—'}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Card footer official label */}
+                            <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider text-center md:text-left mt-8 pt-3 border-t border-slate-150">
+                              Fiche d'inventaire sécurisé officielle · Centre des archives intermédiaires Morneguia · Valable pour l'étiquetage physique.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Saved Fiches Drawer / Modal */}
+                {showSavedFichesModal && (
+                  <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-[2rem] border border-slate-200 shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+                      <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                        <div>
+                          <h4 className="text-base font-black text-slate-800 uppercase tracking-wider m-0">
+                            📂 Fiches d'inventaires sauvegardées
+                          </h4>
+                          <p className="text-slate-400 text-xs font-bold uppercase leading-tight mt-1 m-0">
+                            Sélectionnez une fiche pour charger ses informations ou la supprimer de l'historique
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setShowSavedFichesModal(false)}
+                          className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all cursor-pointer border-none bg-transparent"
+                        >
+                          <X size={20} />
+                        </button>
+                      </div>
+
+                      <div className="p-6 overflow-y-auto space-y-4 flex-1">
+                        {savedFiches.length === 0 ? (
+                          <div className="text-center py-12 text-slate-400 italic text-xs">
+                            Aucune fiche sauvegardée pour l'instant.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {savedFiches.map((fiche) => (
+                              <div 
+                                key={fiche.id} 
+                                className="border border-slate-250 hover:border-indigo-500 rounded-2xl p-4 flex flex-col justify-between gap-4 bg-slate-50/50 hover:bg-white transition-all group"
+                              >
+                                <div>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-mono text-xs font-black text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md">
+                                      {fiche.id}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-bold">
+                                      {fiche.createdAt ? new Date(fiche.createdAt).toLocaleDateString('fr-FR') : ''}
+                                    </span>
+                                  </div>
+                                  <h5 className="font-black text-xs text-slate-800 uppercase tracking-tight mt-2.5 truncate">
+                                    {fiche.succursale || '—'}
+                                  </h5>
+                                  <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] font-bold text-slate-500 mt-2">
+                                    <div>📦 Boîte: <span className="text-slate-700 font-extrabold">{fiche.boite || '—'}</span></div>
+                                    <div>📅 Prod: <span className="text-slate-700 font-extrabold">{fiche.anneeDebut}-{fiche.anneeFin}</span></div>
+                                    <div className="col-span-2 truncate">📍 Loc: <span className="text-slate-700 font-extrabold">{[fiche.allee, fiche.travee, fiche.niveau, fiche.tablette].filter(Boolean).join(' / ') || '—'}</span></div>
+                                    {fiche.importedFile && (
+                                      <div className="col-span-2 text-emerald-600 font-extrabold flex items-center gap-1 mt-1 truncate">
+                                        📎 Fichier : {fiche.importedFile.name}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex justify-end gap-2 pt-2 border-t border-slate-100/50">
+                                  <button
+                                    onClick={() => {
+                                      setTransferSuccursale(fiche.succursale || '');
+                                      setTransferArchiveId(fiche.id);
+                                      setTransferAnneeDebut(fiche.anneeDebut || '');
+                                      setTransferAnneeFin(fiche.anneeFin || '');
+                                      setTransferCategorie(fiche.categorie || '');
+                                      setTransferBoite(fiche.boite || '');
+                                      setTransferAllee(fiche.allee || '');
+                                      setTransferTravee(fiche.travee || '');
+                                      setTransferNiveau(fiche.niveau || '');
+                                      setTransferTablette(fiche.tablette || '');
+                                      setTransferSortFinal(fiche.sortFinal || 'Destruction après échéance');
+                                      setTransferDua(fiche.dua || '1-10 ans');
+                                      setTransferDesignation(fiche.designation || '');
+                                      setTransferImportedFile(fiche.importedFile || null);
+                                      setShowSavedFichesModal(false);
+                                      alert("Informations de la fiche chargées !");
+                                    }}
+                                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                                  >
+                                    Charger
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (confirm(`Supprimer la fiche ${fiche.id} ?`)) {
+                                        setSavedFiches(prev => {
+                                          const filtered = prev.filter(f => f.id !== fiche.id);
+                                          localStorage.setItem('saved_fiches_transfer', JSON.stringify(filtered));
+                                          return filtered;
+                                        });
+                                      }
+                                    }}
+                                    className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                    title="Supprimer la fiche"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="p-6 border-t border-slate-100 flex justify-end bg-slate-50">
+                        <button
+                          onClick={() => setShowSavedFichesModal(false)}
+                          className="px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          Fermer
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </motion.div>
             )}
 

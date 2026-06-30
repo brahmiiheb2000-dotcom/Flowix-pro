@@ -54,63 +54,45 @@ const TABLETTES = Array.from({ length: 300 }, (_, i) => String(i + 1));
 // --- UTILS ---
 const generateId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
+const formatDateValue = (val: any): string => {
+  if (val === undefined || val === null) return '';
+  const str = String(val).trim();
+  if (!str) return '';
+  
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) {
+    return str;
+  }
+  
+  // Check if it's a numeric Excel serial
+  if (/^\d+(\.\d+)?$/.test(str)) {
+    const num = Math.floor(parseFloat(str));
+    if (num > 30000 && num < 60000) {
+      try {
+        const dateObj = new Date((num - 25569) * 86400 * 1000);
+        if (!isNaN(dateObj.getTime())) {
+          const d = String(dateObj.getDate()).padStart(2, '0');
+          const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+          const y = dateObj.getFullYear();
+          return `${d}/${m}/${y}`;
+        }
+      } catch (e) {}
+    }
+  }
+
+  // Handle YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    try {
+      const parts = str.split('T')[0].split('-');
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    } catch (e) {}
+  }
+  
+  return str;
+};
+
 const ensurePrefix = (boxNum: string, direction: string): string => {
   if (!boxNum) return '';
-  const trimmed = boxNum.trim();
-  const dirLower = (direction || '').toLowerCase();
-
-  let targetPrefix = '';
-  if (dirLower.includes('corporel') || dirLower.includes('sinistre c')) {
-    targetPrefix = 'Sin.C.';
-  } else if (dirLower.includes('matériel') || dirLower.includes('materiel') || dirLower.includes('sinistre m') || dirLower.includes('sinistre')) {
-    targetPrefix = 'Sin.M.';
-  } else if (dirLower.includes('compta') || dirLower.includes('finance')) {
-    targetPrefix = 'Compta.';
-  } else if (dirLower.includes('prod')) {
-    targetPrefix = 'Prod.';
-  } else if (dirLower.includes('rh') || dirLower.includes('ressources') || dirLower.includes('humaines') || dirLower.includes('humaine')) {
-    targetPrefix = 'R.H.';
-  } else if (dirLower.includes('technique') || dirLower.includes('tech')) {
-    targetPrefix = 'Tech.';
-  } else if (direction.trim() && direction !== 'auto' && direction !== 'Indéfinie') {
-    const clean = direction.trim().toUpperCase().replace(/[^A-Z\s]/g, '');
-    const words = clean.split(/\s+/).filter(Boolean);
-    if (words.length === 1) {
-      targetPrefix = words[0].substring(0, 6) + '.';
-    } else if (words.length > 1) {
-      targetPrefix = words.map(w => w[0]).join('') + '.';
-    }
-  }
-
-  if (targetPrefix) {
-    if (trimmed.toLowerCase().startsWith(targetPrefix.toLowerCase())) {
-      return trimmed;
-    }
-
-    const prefixLetters = targetPrefix.replace(/[^a-zA-Z]/g, '').toLowerCase();
-    
-    if (prefixLetters === 'rh' && !trimmed.toLowerCase().startsWith('r.h.')) {
-      return 'R.H.' + trimmed.replace(/^rh\.?/i, '');
-    }
-    if (prefixLetters === 'sinm' && !trimmed.toLowerCase().startsWith('sin.m.')) {
-      return 'Sin.M.' + trimmed.replace(/^sin\.?m\.?/i, '');
-    }
-    if (prefixLetters === 'sinc' && !trimmed.toLowerCase().startsWith('sin.c.')) {
-      return 'Sin.C.' + trimmed.replace(/^sin\.?c\.?/i, '');
-    }
-    if (prefixLetters === 'compta' && !trimmed.toLowerCase().startsWith('compta.')) {
-      return 'Compta.' + trimmed.replace(/^compta\.?/i, '');
-    }
-    if (prefixLetters === 'prod' && !trimmed.toLowerCase().startsWith('prod.')) {
-      return 'Prod.' + trimmed.replace(/^prod\.?/i, '');
-    }
-    if (prefixLetters === 'tech' && !trimmed.toLowerCase().startsWith('tech.')) {
-      return 'Tech.' + trimmed.replace(/^tech\.?/i, '');
-    }
-
-    return targetPrefix + trimmed;
-  }
-  return trimmed;
+  return boxNum.trim();
 };
 
 export const CentralizedInventory = () => {
@@ -5316,25 +5298,7 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
   };
 
   const getPrefixedBoxName = (direction: string, rawBoxNum: string) => {
-    const dir = (direction || '').toLowerCase().trim();
-    const num = (rawBoxNum || '').trim();
-    if (!num) return '';
-    
-    let pref = '';
-    if (dir.includes('matériel') || dir.includes('materiel') || dir.includes('sinistre matériel') || dir.includes('sinistre m')) {
-      pref = 'Sin.M';
-    } else if (dir.includes('corporel') || dir.includes('sinistre corporel') || dir.includes('sinistre c')) {
-      pref = 'Sin.C';
-    } else if (dir.includes('compta') || dir.includes('finance') || dir.includes('comptabilité')) {
-      pref = 'COMPTA';
-    } else if (dir.includes('prod') || dir.includes('production')) {
-      pref = 'PROD';
-    } else if (dir.includes('rh') || dir.includes('ressources humaines') || dir.includes('ressources-humaines') || dir.includes('humaines')) {
-      pref = 'RH';
-    } else {
-      pref = direction.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 6) || 'ARC';
-    }
-    return `${pref}-${num}`;
+    return (rawBoxNum || '').trim();
   };
 
   // Validate absolute draft row
@@ -5528,14 +5492,8 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
         if (cell instanceof Date) {
           return cell.toLocaleDateString('fr-FR');
         }
-        // Parse serial dates from Excel if needed
-        if (isDate && typeof cell === 'number' && cell > 30000 && cell < 60000) {
-          try {
-            const dateObj = new Date((cell - 25569) * 86400 * 1000);
-            if (!isNaN(dateObj.getTime())) {
-              return dateObj.toLocaleDateString('fr-FR');
-            }
-          } catch (e) {}
+        if (isDate) {
+          return formatDateValue(cell) || fallbackDefault;
         }
         return String(cell).trim();
       };
@@ -5886,14 +5844,38 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
   const allConsolidatedItems = useMemo(() => {
     const dbItemsMapped = (folders || []).map((f: any) => ({
       ...f,
+      dateDebut: formatDateValue(f.dateDebut),
+      dateCloture: formatDateValue(f.dateCloture),
       isSaved: true
     }));
     const draftItemsMapped = draftFolders.map((f: any) => ({
       ...f,
+      dateDebut: formatDateValue(f.dateDebut),
+      dateCloture: formatDateValue(f.dateCloture),
       isSaved: false
     }));
     return [...draftItemsMapped, ...dbItemsMapped];
   }, [folders, draftFolders]);
+
+  const uniqueDirections = useMemo(() => {
+    const dirs = new Set<string>();
+    const defaultDirs = [
+      "Sinistre Matériel",
+      "Sinistre Corporel",
+      "Comptabilité",
+      "Production",
+      "Ressources Humaines",
+      "Technique"
+    ];
+    defaultDirs.forEach(d => dirs.add(d));
+    
+    allConsolidatedItems.forEach((item: any) => {
+      if (item.direction) {
+        dirs.add(item.direction.trim());
+      }
+    });
+    return Array.from(dirs).filter(Boolean).sort();
+  }, [allConsolidatedItems]);
 
   const searchedItems = useMemo(() => {
     return allConsolidatedItems.filter((item: any) => {
@@ -7264,13 +7246,16 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
               </div>
               <div className="space-y-1">
                 <span className="text-[8px] font-black uppercase text-slate-400 font-bold block">Direction / Sce</span>
-                <input
-                  type="text"
+                <select
                   value={searchCriteria.direction}
                   onChange={e => { setSearchCriteria(prev => ({ ...prev, direction: e.target.value })); setSearchPage(1); }}
-                  placeholder="Ex: Sinistres..."
-                  className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs"
-                />
+                  className="w-full bg-slate-50 border rounded-xl px-3 py-2 text-xs text-slate-700 font-semibold"
+                >
+                  <option value="">Toutes les directions</option>
+                  {uniqueDirections.map(dir => (
+                    <option key={dir} value={dir}>{dir}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1">
                 <span className="text-[8px] font-black uppercase text-slate-400 font-bold block">Code Calendrier (DUA)</span>
@@ -7394,6 +7379,7 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                             {item.direction || 'Indéfinie'}
                           </td>
                           <td className="px-6 py-4 text-xs font-sans text-slate-500 space-y-0.5">
+                            <div>Début : <span className="font-bold text-slate-700">{item.dateDebut || '-'}</span></div>
                             <div>Clôture : <span className="font-bold text-slate-700">{item.dateCloture || '-'}</span></div>
                             {matchedRule && item.dateCloture && (
                               <div className="text-[10px] text-emerald-600 font-bold uppercase mt-0.5">
@@ -7402,7 +7388,58 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                             )}
                           </td>
                           <td className="px-6 py-4">
-                            <span className="text-xs font-black font-mono text-slate-600 inline-block font-bold">{item.codeDua || '-'}</span>
+                            <select
+                               value={item.codeDua || ''}
+                               onChange={async (e) => {
+                                 const selectedRef = e.target.value;
+                                 const rule = (archivalRules || []).find((r: any) => r.reference?.toUpperCase() === selectedRef?.toUpperCase());
+                                 const updatedCodeDua = selectedRef;
+                                 const updatedCategory = rule?.category || rule?.docType || 'Autre';
+                                 const ruleId = rule?.id;
+
+                                 if (item.isSaved) {
+                                   const updatedFolders = folders.map((f: any) => {
+                                     if (f.id === item.id) {
+                                       return {
+                                         ...f,
+                                         codeDua: updatedCodeDua,
+                                         category: updatedCategory,
+                                         ruleId: ruleId
+                                       };
+                                     }
+                                     return f;
+                                   });
+                                   setFolders(updatedFolders);
+                                   try {
+                                     await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
+                                     await set('ci_folders_v2', updatedFolders);
+                                   } catch (err) {
+                                     console.error("Sync error:", err);
+                                   }
+                                 } else {
+                                   const updatedDrafts = draftFolders.map((f: any) => {
+                                     if (f.id === item.id) {
+                                       return {
+                                         ...f,
+                                         codeDua: updatedCodeDua,
+                                         category: updatedCategory,
+                                         ruleId: ruleId
+                                       };
+                                     }
+                                     return f;
+                                   });
+                                   setDraftFolders(updatedDrafts);
+                                 }
+                               }}
+                               className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand-primary"
+                             >
+                               <option value="">-- Choisir --</option>
+                               {(archivalRules || []).map((rule: any) => (
+                                 <option key={rule.id} value={rule.reference}>
+                                   {rule.reference} : {rule.title} ({rule.activeYears} ans)
+                                 </option>
+                               ))}
+                             </select>
                             {matchedRule && (
                               <span className="block text-[9px] text-slate-405 uppercase font-sans font-medium truncate max-w-[150px]">{matchedRule.title}</span>
                             )}

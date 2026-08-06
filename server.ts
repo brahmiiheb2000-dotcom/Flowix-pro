@@ -852,6 +852,343 @@ async function startServer() {
     }
   });
 
+  // Helper to extract text from a PDF file using simple stream analysis
+  function extractTextFromPdf(filePath: string): string {
+    try {
+      const buffer = fs.readFileSync(filePath);
+      const text = buffer.toString('binary');
+      
+      // Extract parenthesized ASCII string blocks (Tj commands in PDFs)
+      const matches = text.match(/\(([^)]*)\)/g) || [];
+      const plainText = matches.map(m => {
+        // Strip out parenthesized markers
+        let inner = m.slice(1, -1);
+        // Replace octal escapes or backslashed chars if needed, but simple string match is enough
+        return inner.replace(/\\/g, '');
+      }).join(' ');
+      
+      // Decode hexadecimal string blocks <...>
+      const hexMatches = text.match(/<([a-fA-F0-9]{4,})>/g) || [];
+      const hexDecoded = hexMatches.map(m => {
+        try {
+          return Buffer.from(m.slice(1, -1), 'hex').toString('utf-8');
+        } catch (e) {
+          return '';
+        }
+      }).join(' ');
+
+      return plainText + ' ' + hexDecoded + ' ' + text;
+    } catch (e) {
+      console.error("Error reading PDF text:", e);
+      return "";
+    }
+  }
+
+  // Bulk PDF Import with automatic reference parsing and association
+  app.post("/api/inventory/import-pdfs", authenticate, uploadScan.array('files'), (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit. Action réservée aux administrateurs, agents ou archivistes." });
+    }
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: "Aucun fichier fourni" });
+    }
+
+    try {
+      // 1. Fetch all unique references from mass_inventory and centralized_inventory
+      const massRefs = db.prepare("SELECT DISTINCT reference FROM mass_inventory WHERE reference IS NOT NULL AND reference != ''").all() as any[];
+      const centralRefs = db.prepare("SELECT DISTINCT reference FROM centralized_inventory WHERE reference IS NOT NULL AND reference != ''").all() as any[];
+      
+      const allRefsSet = new Set<string>();
+      massRefs.forEach(r => allRefsSet.add(r.reference));
+      centralRefs.forEach(r => allRefsSet.add(r.reference));
+      const allReferences = Array.from(allRefsSet);
+
+      const uploadResults: any[] = [];
+
+      // 2. Process each uploaded PDF
+      for (const file of req.files) {
+        const matchedReferences: string[] = [];
+        const cleanFilename = file.originalname.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        // Extract PDF text for content matching
+        const pdfText = extractTextFromPdf(file.path).toLowerCase();
+        const cleanPdfText = pdfText.replace(/[^a-z0-9]/g, '');
+
+        for (const ref of allReferences) {
+          const cleanRef = ref.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (cleanRef.length < 3) continue; // Skip extremely short references to avoid false positives
+
+          // A: Match on original filename
+          const isNameMatch = file.originalname.toLowerCase().includes(ref.toLowerCase()) || 
+                             cleanFilename.includes(cleanRef);
+
+          // B: Match on PDF content
+          const isContentMatch = pdfText.includes(ref.toLowerCase()) || 
+                                cleanPdfText.includes(cleanRef);
+
+          if (isNameMatch || isContentMatch) {
+            matchedReferences.push(ref);
+          }
+        }
+
+        // 3. If matches found, associate with all matched dossiers
+        if (matchedReferences.length > 0) {
+          for (const ref of matchedReferences) {
+            // Update in centralized_inventory
+            const centralRow = db.prepare("SELECT scanFile FROM centralized_inventory WHERE reference = ?").get(ref) as any;
+            if (centralRow) {
+              let centralScanFiles: string[] = [];
+              if (centralRow.scanFile) {
+                try {
+                  centralScanFiles = JSON.parse(centralRow.scanFile);
+                  if (!Array.isArray(centralScanFiles)) {
+                    centralScanFiles = [centralRow.scanFile];
+                  }
+                } catch (e) {
+                  centralScanFiles = [centralRow.scanFile];
+                }
+              }
+              if (!centralScanFiles.includes(file.filename)) {
+                centralScanFiles.push(file.filename);
+              }
+              db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?")
+                .run(JSON.stringify(centralScanFiles), ref);
+            }
+
+            // Update in mass_inventory
+            const massRows = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE reference = ?").all(ref) as any[];
+            for (const mRow of massRows) {
+              let massScanFiles: string[] = [];
+              if (mRow.scanFile) {
+                try {
+                  massScanFiles = JSON.parse(mRow.scanFile);
+                  if (!Array.isArray(massScanFiles)) {
+                    massScanFiles = [mRow.scanFile];
+                  }
+                } catch (e) {
+                  massScanFiles = [mRow.scanFile];
+                }
+              }
+              if (!massScanFiles.includes(file.filename)) {
+                massScanFiles.push(file.filename);
+              }
+              db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?")
+                .run(JSON.stringify(massScanFiles), mRow.id);
+            }
+          }
+        }
+
+        uploadResults.push({
+          filename: file.filename,
+          originalName: file.originalname,
+          size: file.size,
+          matches: matchedReferences,
+          status: matchedReferences.length > 0 ? 'associated' : 'unassociated'
+        });
+      }
+
+      res.json({ success: true, results: uploadResults });
+    } catch (err: any) {
+      console.error("Bulk PDF Import Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get list of unassociated PDF scans
+  app.get("/api/inventory/unassociated-pdfs", authenticate, (req: any, res) => {
+    try {
+      const uploadDir = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans');
+      if (!fs.existsSync(uploadDir)) {
+        return res.json([]);
+      }
+      const files = fs.readdirSync(uploadDir).filter(f => f.toLowerCase().endsWith('.pdf'));
+
+      const massRows = db.prepare("SELECT scanFile FROM mass_inventory WHERE scanFile IS NOT NULL").all() as any[];
+      const centralRows = db.prepare("SELECT scanFile FROM centralized_inventory WHERE scanFile IS NOT NULL").all() as any[];
+      
+      const associatedFiles = new Set<string>();
+      const addAssociated = (val: string) => {
+        if (!val) return;
+        try {
+          if (val.trim().startsWith('[') && val.trim().endsWith(']')) {
+            const parsed = JSON.parse(val);
+            if (Array.isArray(parsed)) {
+              parsed.forEach(f => associatedFiles.add(f));
+              return;
+            }
+          }
+        } catch (e) {}
+        associatedFiles.add(val);
+      };
+
+      massRows.forEach(row => addAssociated(row.scanFile));
+      centralRows.forEach(row => addAssociated(row.scanFile));
+
+      const unassociatedList = files
+        .filter(f => !associatedFiles.has(f))
+        .map(filename => {
+          const filePath = path.join(uploadDir, filename);
+          const stats = fs.statSync(filePath);
+          const parts = filename.split('_');
+          const originalName = parts.length > 1 ? parts.slice(1).join('_') : filename;
+          return {
+            filename,
+            originalName,
+            size: stats.size,
+            createdAt: stats.birthtime.toISOString()
+          };
+        });
+
+      res.json(unassociatedList);
+    } catch (err: any) {
+      console.error("Unassociated PDFs Fetch Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manually associate a PDF file with a dossier reference
+  app.post("/api/inventory/associate-pdf", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    const { filename, reference } = req.body;
+    if (!filename || !reference) {
+      return res.status(400).json({ error: "Nom de fichier et référence requis" });
+    }
+    try {
+      let updatedCount = 0;
+
+      // Update in centralized_inventory
+      const centralRow = db.prepare("SELECT scanFile FROM centralized_inventory WHERE reference = ?").get(reference) as any;
+      if (centralRow) {
+        let centralScanFiles: string[] = [];
+        if (centralRow.scanFile) {
+          try {
+            centralScanFiles = JSON.parse(centralRow.scanFile);
+            if (!Array.isArray(centralScanFiles)) {
+              centralScanFiles = [centralRow.scanFile];
+            }
+          } catch (e) {
+            centralScanFiles = [centralRow.scanFile];
+          }
+        }
+        if (!centralScanFiles.includes(filename)) {
+          centralScanFiles.push(filename);
+        }
+        db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?")
+          .run(JSON.stringify(centralScanFiles), reference);
+        updatedCount++;
+      }
+
+      // Update in mass_inventory
+      const massRows = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE reference = ?").all(reference) as any[];
+      for (const mRow of massRows) {
+        let massScanFiles: string[] = [];
+        if (mRow.scanFile) {
+          try {
+            massScanFiles = JSON.parse(mRow.scanFile);
+            if (!Array.isArray(massScanFiles)) {
+              massScanFiles = [mRow.scanFile];
+            }
+          } catch (e) {
+            massScanFiles = [mRow.scanFile];
+          }
+        }
+        if (!massScanFiles.includes(filename)) {
+          massScanFiles.push(filename);
+        }
+        db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?")
+          .run(JSON.stringify(massScanFiles), mRow.id);
+        updatedCount++;
+      }
+
+      if (updatedCount === 0) {
+        return res.status(404).json({ error: `Dossier avec la référence ${reference} introuvable` });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Manual Association Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Dissociate a PDF from a dossier reference
+  app.post("/api/inventory/dissociate-pdf", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    const { filename, reference } = req.body;
+    if (!filename || !reference) {
+      return res.status(400).json({ error: "Nom de fichier et référence requis" });
+    }
+    try {
+      // Centralized
+      const centralRow = db.prepare("SELECT scanFile FROM centralized_inventory WHERE reference = ?").get(reference) as any;
+      if (centralRow && centralRow.scanFile) {
+        let centralScanFiles: string[] = [];
+        try {
+          centralScanFiles = JSON.parse(centralRow.scanFile);
+          if (!Array.isArray(centralScanFiles)) {
+            centralScanFiles = [centralRow.scanFile];
+          }
+        } catch (e) {
+          centralScanFiles = [centralRow.scanFile];
+        }
+        const updated = centralScanFiles.filter(f => f !== filename);
+        const newVal = updated.length > 0 ? JSON.stringify(updated) : null;
+        db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(newVal, reference);
+      }
+
+      // Mass
+      const massRows = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE reference = ?").all(reference) as any[];
+      for (const mRow of massRows) {
+        if (mRow.scanFile) {
+          let massScanFiles: string[] = [];
+          try {
+            massScanFiles = JSON.parse(mRow.scanFile);
+            if (!Array.isArray(massScanFiles)) {
+              massScanFiles = [mRow.scanFile];
+            }
+          } catch (e) {
+            massScanFiles = [mRow.scanFile];
+          }
+          const updated = massScanFiles.filter(f => f !== filename);
+          const newVal = updated.length > 0 ? JSON.stringify(updated) : null;
+          db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(newVal, mRow.id);
+        }
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("PDF Dissociation Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete an unassociated PDF from the server entirely
+  app.delete("/api/inventory/unassociated-pdfs/:filename", authenticate, (req: any, res) => {
+    const userRole = req.user.role;
+    if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    const filename = req.params.filename;
+    try {
+      const safeFilename = path.basename(filename);
+      const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', safeFilename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Unassociated PDF Deletion Error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/scans/:filename", authenticate, (req: any, res) => {
     try {
       const filename = req.params.filename;
@@ -970,6 +1307,112 @@ async function startServer() {
       const history = db.prepare("SELECT * FROM import_history ORDER BY createdAt DESC").all();
       res.json(history);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post("/api/mass-inventory/bulk-lookup", authenticate, (req: any, res) => {
+    try {
+      const { references } = req.body;
+      if (!Array.isArray(references)) {
+        return res.status(400).json({ error: "Le paramètre references doit être un tableau." });
+      }
+
+      const results = [];
+
+      const selectVerifiedStmt = db.prepare(`
+        SELECT ci.*, 
+               (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, '')) AS location 
+        FROM centralized_inventory ci
+        LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
+        WHERE LOWER(TRIM(ci.reference)) = ? AND ci.status = 'verified'
+        LIMIT 1
+      `);
+
+      const selectGeneralStmt = db.prepare(`
+        SELECT ci.*, 
+               (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, '')) AS location 
+        FROM centralized_inventory ci
+        LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
+        WHERE LOWER(TRIM(ci.reference)) = ?
+        LIMIT 1
+      `);
+
+      const selectMassStmt = db.prepare(`
+        SELECT * FROM mass_inventory WHERE LOWER(TRIM(reference)) = ? LIMIT 1
+      `);
+
+      for (const rawRef of references) {
+        const ref = String(rawRef).trim();
+        if (!ref) continue;
+        const refLower = ref.toLowerCase();
+
+        let foundItem: any = null;
+
+        // 1. Search in validated database (centralized_inventory with status = 'verified')
+        const verifiedRow = selectVerifiedStmt.get(refLower) as any;
+        if (verifiedRow) {
+          foundItem = {
+            reference: verifiedRow.reference,
+            intitule: verifiedRow.intitule || '',
+            numBoite: verifiedRow.boxNumber || '',
+            localisation: verifiedRow.location || '',
+            direction: verifiedRow.direction || '',
+            status: "Validé par responsable",
+            found: true
+          };
+        }
+
+        // 2. Fallback to general centralized_inventory (including non-verified)
+        if (!foundItem) {
+          const generalRow = selectGeneralStmt.get(refLower) as any;
+          if (generalRow) {
+            foundItem = {
+              reference: generalRow.reference,
+              intitule: generalRow.intitule || '',
+              numBoite: generalRow.boxNumber || '',
+              localisation: generalRow.location || '',
+              direction: generalRow.direction || '',
+              status: generalRow.status === 'pointed' ? "Pointé (en attente)" : "En attente",
+              found: true
+            };
+          }
+        }
+
+        // 3. Fallback to mass_inventory
+        if (!foundItem) {
+          const massRow = selectMassStmt.get(refLower) as any;
+          if (massRow) {
+            foundItem = {
+              reference: massRow.reference,
+              intitule: massRow.intitule || '',
+              numBoite: massRow.numBoite || '',
+              localisation: massRow.localisation || '',
+              direction: massRow.direction || '',
+              status: "Inventaire de masse",
+              found: true
+            };
+          }
+        }
+
+        if (foundItem) {
+          results.push(foundItem);
+        } else {
+          results.push({
+            reference: ref,
+            intitule: '',
+            numBoite: '',
+            localisation: '',
+            direction: '',
+            status: "Non trouvé",
+            found: false
+          });
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("Bulk lookup error:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.patch("/api/mass-inventory/:id/location", authenticate, (req: any, res) => {
@@ -1566,6 +2009,182 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.post("/api/returns/bulk-lookup", authenticate, (req: any, res) => {
+    try {
+      const { references } = req.body;
+      if (!Array.isArray(references)) {
+        return res.status(400).json({ error: "Le paramètre references doit être un tableau." });
+      }
+
+      const returnsInv = readData('returns_inventory') || [];
+      const results = [];
+
+      for (const rawRef of references) {
+        const ref = String(rawRef).trim();
+        if (!ref) continue;
+        const refLower = ref.toLowerCase();
+
+        let foundItem: any = null;
+
+        // 1. Check returns_inventory
+        const fromReturnInv = returnsInv.find((i: any) => i.reference && String(i.reference).trim().toLowerCase() === refLower);
+        if (fromReturnInv) {
+          foundItem = {
+            reference: fromReturnInv.reference,
+            numBoite: fromReturnInv.numBoite || '',
+            localisation: fromReturnInv.localisation || '',
+            intitule: fromReturnInv.intitule || '',
+            source: "Importation Réintégration"
+          };
+        }
+
+        // 2. Check mass_inventory
+        if (!foundItem) {
+          const fromMass = db.prepare("SELECT * FROM mass_inventory WHERE LOWER(TRIM(reference)) = ? LIMIT 1").get(refLower) as any;
+          if (fromMass) {
+            foundItem = {
+              reference: fromMass.reference,
+              numBoite: fromMass.numBoite || '',
+              localisation: fromMass.localisation || '',
+              intitule: fromMass.intitule || '',
+              source: "Inventaire de Masse"
+            };
+          }
+        }
+
+        // 3. Check centralized_inventory
+        if (!foundItem) {
+          const fromCentral = db.prepare(`
+            SELECT ci.*, (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, '')) AS location 
+            FROM centralized_inventory ci
+            LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
+            WHERE LOWER(TRIM(ci.reference)) = ? LIMIT 1
+          `).get(refLower) as any;
+          if (fromCentral) {
+            foundItem = {
+              reference: fromCentral.reference,
+              numBoite: fromCentral.boxNumber || '',
+              localisation: fromCentral.location || '',
+              intitule: fromCentral.intitule || '',
+              source: "Inventaire Centralisé"
+            };
+          }
+        }
+
+        if (foundItem) {
+          results.push({
+            ...foundItem,
+            found: true
+          });
+        } else {
+          results.push({
+            reference: ref,
+            numBoite: "Non trouvé",
+            localisation: "Non trouvé",
+            intitule: "",
+            found: false,
+            source: "Inconnu"
+          });
+        }
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/returns/bulk-validate", authenticate, (req: any, res) => {
+    try {
+      const { items } = req.body; // array of { reference, numBoite, localisation }
+      if (!Array.isArray(items)) {
+        return res.status(400).json({ error: "items doit être un tableau." });
+      }
+
+      const today = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const todayTime = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) + ' ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+      // 1. Record in History
+      const histData = readData('returns_history') || [];
+      const newEntries = items.map((item: any) => ({
+        id: crypto.randomUUID(),
+        reference: item.reference,
+        numBoite: item.numBoite,
+        localisation: item.localisation,
+        dateRetour: todayTime,
+        barcodeData: `${item.numBoite}-${item.localisation}`,
+        returnedAt: new Date().toISOString()
+      }));
+      
+      const updatedHist = [...histData, ...newEntries];
+      writeData('returns_history', updatedHist);
+
+      // 2. Synchronize with requests (Agent Requests)
+      const requestsData = readData('requests') || [];
+      let requestsChanged = false;
+      
+      // 3. Synchronize with remote_requests
+      const remoteRequestsData = readData('remote_requests') || [];
+      let remoteRequestsChanged = false;
+
+      // 4. Synchronize with archives
+      const archivesData = readData('archives') || [];
+      let archivesChanged = false;
+
+      for (const item of items) {
+        const refToMatch = String(item.reference).trim().toLowerCase();
+
+        // Update Agent Requests
+        requestsData.forEach((r: any) => {
+          if (r.status === 'signed') {
+            const hasRef = Array.isArray(r.references) 
+              ? r.references.some((ref: any) => String(ref).trim().toLowerCase() === refToMatch) 
+              : String(r.intitule).trim().toLowerCase() === refToMatch;
+            if (hasRef) {
+              r.status = 'returned';
+              r.updatedAt = new Date().toISOString();
+              requestsChanged = true;
+            }
+          }
+        });
+
+        // Update Remote Requests
+        remoteRequestsData.forEach((r: any) => {
+          if (r.status === 'Prêt / Communiqué') {
+            const hasRef = Array.isArray(r.references) 
+              ? r.references.some((ref: any) => String(ref).trim().toLowerCase() === refToMatch) 
+              : String(r.intitule || r.motif).trim().toLowerCase() === refToMatch;
+            if (hasRef) {
+              r.status = 'Retourné';
+              r.updatedAt = new Date().toISOString();
+              remoteRequestsChanged = true;
+            }
+          }
+        });
+
+        // Update Archives
+        archivesData.forEach((a: any) => {
+          if (!a.dateRetour && a.status !== 'Retourné') {
+            const val = String(a.intitule || '').toLowerCase();
+            if (val.includes(refToMatch)) {
+              a.dateRetour = today;
+              a.status = 'Retourné';
+              archivesChanged = true;
+            }
+          }
+        });
+      }
+
+      if (requestsChanged) writeData('requests', requestsData);
+      if (remoteRequestsChanged) writeData('remote_requests', remoteRequestsData);
+      if (archivesChanged) writeData('archives', archivesData);
+
+      res.json({ success: true, count: newEntries.length, entries: newEntries });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // --- Centralized Inventory Routes ---
   app.get("/api/centralized-inventory", authenticate, (req, res) => {
     try {
@@ -1970,7 +2589,7 @@ async function startServer() {
       };
       data.push(newTransfer);
       writeData('transfer_requests', data);
-      res.json({ id: newTransfer.id });
+      res.json({ id: newTransfer.id, transfer: newTransfer });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1990,15 +2609,14 @@ async function startServer() {
 
   app.patch("/api/transfer-requests/:id", authenticate, (req: any, res) => {
     const { id } = req.params;
-    const { status } = req.body;
     try {
       const data = readData('transfer_requests');
       const idx = data.findIndex((r: any) => r.id === id);
       if (idx === -1) return res.status(404).json({ error: "Non trouvé" });
       
-      data[idx] = { ...data[idx], status, updatedAt: new Date().toISOString() };
+      data[idx] = { ...data[idx], ...req.body, updatedAt: new Date().toISOString() };
       writeData('transfer_requests', data);
-      res.json({ success: true });
+      res.json({ success: true, item: data[idx] });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

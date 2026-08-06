@@ -65,7 +65,7 @@ export const TabHelpPrompts: React.FC<TabHelpPromptsProps> = ({ activeTab, inter
         { text: "Signature Numérique", subText: "Faites signer l'emprunteur directement sur tablette ou écran tactile dans la zone dédiée." },
         { text: "Exporter le Bordereau PDF", subText: "Le document PDF officiel scellé avec la signature électronique est généré instantanément pour servir de preuve formelle." }
       ],
-      tip: "Tout dossier sous statut 'En communication' restera bloqué et tracé. Son emprunteur en est responsable jusqu'à son enregistrement dans l'onglet 'Réintégration'."
+      tip: "Tout dossier sous statut 'En communication' restera bloqué et tracé. Son emprunteur en est responsable jusqu'à son enregistrement dans le sous-onglet 'Réintégration'."
     },
     returns: {
       title: "Réintégration de Dossiers Empruntés",
@@ -126,6 +126,51 @@ export const TabHelpPrompts: React.FC<TabHelpPromptsProps> = ({ activeTab, inter
         { text: "Consommation par direction", subText: "Identifiez les directions les plus consommatrices d'espace pour ajuster vos facturations ou quotas internes." }
       ],
       tip: "Ces indicateurs sont mis à jour en temps réel à chaque validation d'entrée ou de sortie logique de notre centre d'archivage."
+    },
+    communication_suivi: {
+      title: "Suivi des Communications",
+      description: "Pilotez et contrôlez en temps réel l'ensemble des documents d'archives physiques actuellement sortis des rayons pour consultation ou prêt.",
+      icon: <FileSpreadsheet size={22} />,
+      borderColor: "border-purple-150 bg-purple-50/30",
+      badgeColor: "bg-purple-100 text-purple-800 border-purple-200",
+      iconColor: "text-purple-600",
+      quickPrompt: "Surveillez activement l'historique des prêts. Repérez immédiatement les dossiers hors rayon depuis trop longtemps grâce aux badges d'alerte, et relancez les emprunteurs d'un simple clic pour sécuriser vos fonds.",
+      steps: [
+        { text: "Identifier les Prêts Actifs", subText: "Parcourez la liste complète des communications physiques en cours de consultation." },
+        { text: "Détecter les Retards", subText: "Le système calcule automatiquement la durée écoulée pour signaler tout dépassement de délai légal." },
+        { text: "Relancer l'Emprunteur", subText: "Utilisez le bouton de relance rapide par email pré-rempli pour réclamer la réintégration en rayon." }
+      ],
+      tip: "Le suivi rigoureux réduit de 95% les pertes de dossiers d'archives au sein des administrations et grandes structures."
+    },
+    communication_processus: {
+      title: "Processus de Communication",
+      description: "Le circuit de validation officiel permettant d'autoriser et de tracer chaque mouvement de sortie d'un dossier physique.",
+      icon: <Sparkles size={22} />,
+      borderColor: "border-indigo-150 bg-indigo-50/30",
+      badgeColor: "bg-indigo-100 text-indigo-800 border-indigo-200",
+      iconColor: "text-indigo-600",
+      quickPrompt: "Gérez de bout en bout le flux d'approbation réglementaire : vérification des droits de l'emprunteur, prise de signature manuscrite dématérialisée, et génération automatique du bordereau PDF de décharge scellé.",
+      steps: [
+        { text: "Saisie de l'Emprunt", subText: "Enregistrez l'identité, la direction de rattachement et le motif réglementaire de la communication." },
+        { text: "Signature Numérique", subText: "Recueillez la signature électronique de décharge directement sur l'écran tactile lors du retrait physique." },
+        { text: "Génération du Bordereau", subText: "Téléchargez le Procès-Verbal de prêt au format PDF pour sceller juridiquement la responsabilité du demandeur." }
+      ],
+      tip: "La signature du bordereau de communication est une obligation légale transférant la garde juridique du document à l'emprunteur."
+    },
+    inventaire_centralise: {
+      title: "Inventaire Centralisé",
+      description: "La base de données unifiée hébergeant la totalité des références d'archives physiques et numériques de l'institution.",
+      icon: <Library size={22} />,
+      borderColor: "border-emerald-150 bg-emerald-50/30",
+      badgeColor: "bg-emerald-100 text-emerald-800 border-emerald-200",
+      iconColor: "text-emerald-600",
+      quickPrompt: "Administrez le référentiel complet de vos archives. Vous pouvez y exécuter des imports massifs Excel, configurer les délais de conservation et activer la numérisation par scans PDF associés.",
+      steps: [
+        { text: "Importation Initiale", subText: "Chargez vos fichiers Excel pour verser instantanément des milliers de fiches de dossiers." },
+        { text: "Scans PDF Intelligents", subText: "Associez vos documents numérisés d'un clic ou par détection automatique textuelle OCR." },
+        { text: "Classification & Boîtage", subText: "Regroupez logiquement les dossiers sous leur code DUA réglementaire et attribuez-leur un numéro de boîte." }
+      ],
+      tip: "Un inventaire centralisé propre et sans doublons garantit un taux de localisation de 100% lors des demandes urgentes."
     }
   };
 
@@ -142,8 +187,11 @@ export const TabHelpPrompts: React.FC<TabHelpPromptsProps> = ({ activeTab, inter
   const guideTabs = [
     { key: 'requests', label: 'Demandes Reçues', icon: <Inbox size={15} /> },
     { key: 'communication', label: 'Communications & Prêts', icon: <FileSpreadsheet size={15} /> },
+    { key: 'communication_suivi', label: 'Suivi des Comm.', icon: <FileSpreadsheet size={15} /> },
+    { key: 'communication_processus', label: 'Processus Comm.', icon: <Sparkles size={15} /> },
+    { key: 'inventaire_centralise', label: 'Inventaire Centralisé', icon: <Library size={15} /> },
+    { key: 'massInventory', label: 'Scans & Travaux', icon: <Library size={15} /> },
     { key: 'returns', label: 'Réintégrations', icon: <RotateCcw size={15} /> },
-    { key: 'massInventory', label: 'Inventaires & Scans', icon: <Library size={15} /> },
     { key: 'elimination', label: 'Éliminations', icon: <Trash2 size={15} /> },
     { key: 'stats', label: 'Statistiques & Rapports', icon: <BarChart3 size={15} /> },
   ];

@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Card, Button, Input } from '../UI';
-import { Send, List, Clock, CheckCircle2, AlertCircle, FileText, Plus, Upload, FileSpreadsheet, Hash } from 'lucide-react';
+import { Send, List, Clock, CheckCircle2, AlertCircle, FileText, Plus, Upload, FileSpreadsheet, Hash, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { RemoteRequestForm } from '../RemoteRequestForm';
 import { useAuth } from '../../App';
 import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { api } from '../../lib/api';
+import { BordereauPreliminaireModal, FicheAcceptationModal, TransferRequestItem } from '../transfer/TransferDocsModals';
 
 type View = 'history' | 'new' | 'transfer' | 'list' | 'bulk';
 
@@ -40,6 +41,10 @@ export const DemandeurDashboard = () => {
   const [importProgress, setImportProgress] = useState(0);
   const [bulkRefs, setBulkRefs] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Modals for transfer documents
+  const [viewingPreliminaire, setViewingPreliminaire] = useState<TransferRequestItem | null>(null);
+  const [viewingAcceptance, setViewingAcceptance] = useState<TransferRequestItem | null>(null);
 
   const handleBulkRefSubmit = async () => {
     if (!bulkRefs.trim()) return;
@@ -79,8 +84,7 @@ export const DemandeurDashboard = () => {
 
     setImporting(true);
     try {
-      // Mocking submission or actually sending it to an API
-      await api.post('/api/transfer-requests', {
+      const res = await api.post('/api/transfer-requests', {
         direction: transferData.direction,
         documentType: transferData.docType,
         boxes: transferData.boxCount,
@@ -88,11 +92,23 @@ export const DemandeurDashboard = () => {
         requester: transferData.requesterName || profile?.displayName || user?.displayName || 'Demandeur',
         email: user?.email,
         status: 'En attente',
-        createdAt: new Date(),
+        createdAt: new Date().toISOString(),
         hasInventory: !!transferData.inventoryFile
       });
 
-      alert("Demande de transfert envoyée avec succès !");
+      const createdTransfer: TransferRequestItem = res.transfer || {
+        id: res.id || crypto.randomUUID(),
+        direction: transferData.direction,
+        documentType: transferData.docType,
+        boxes: transferData.boxCount,
+        folders: transferData.folderCount,
+        requester: transferData.requesterName || profile?.displayName || user?.displayName || 'Demandeur',
+        email: user?.email,
+        status: 'En attente',
+        createdAt: new Date().toISOString(),
+        hasInventory: !!transferData.inventoryFile
+      };
+
       setTransferData({
         requesterName: profile?.displayName || user?.displayName || '',
         direction: '',
@@ -102,6 +118,7 @@ export const DemandeurDashboard = () => {
         inventoryFile: null
       });
       setActiveView('history');
+      setViewingPreliminaire(createdTransfer);
     } catch (err) {
       console.error("Transfer submission error:", err);
       alert("Erreur lors de l'envoi de la demande de transfert");
@@ -347,12 +364,35 @@ export const DemandeurDashboard = () => {
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       {req.status === 'Prêt' && (
-                        <div className="text-brand-primary flex items-center gap-1 text-sm font-bold animate-pulse">
+                        <div className="text-brand-primary flex items-center gap-1 text-sm font-bold animate-pulse mr-2">
                           <CheckCircle2 size={16} />
                           Dossier disponible
                         </div>
+                      )}
+                      {req.category === 'transfer' && (
+                        <>
+                          <button
+                            onClick={() => setViewingPreliminaire(req)}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 border border-slate-200"
+                            title="Voir le Bordereau d'envoi préliminaire"
+                          >
+                            <FileText size={14} className="text-brand-accent" />
+                            Bordereau Préliminaire
+                          </button>
+
+                          {(req.status === 'Validée' || req.status === 'Acceptée') && (
+                            <button
+                              onClick={() => setViewingAcceptance(req)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm shadow-emerald-600/20"
+                              title="Voir la Fiche d'Acceptation avec Observations"
+                            >
+                              <ShieldCheck size={14} />
+                              Fiche d'Acceptation
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -590,6 +630,22 @@ export const DemandeurDashboard = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Preliminary Dispatch Note Modal */}
+      {viewingPreliminaire && (
+        <BordereauPreliminaireModal
+          request={viewingPreliminaire}
+          onClose={() => setViewingPreliminaire(null)}
+        />
+      )}
+
+      {/* Official Acceptance Sheet Modal */}
+      {viewingAcceptance && (
+        <FicheAcceptationModal
+          request={viewingAcceptance}
+          onClose={() => setViewingAcceptance(null)}
+        />
+      )}
     </div>
   );
 };

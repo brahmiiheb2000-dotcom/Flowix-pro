@@ -25,9 +25,15 @@ import {
   BarChart3,
   FileText,
   TrendingUp,
-  ExternalLink
+  ExternalLink,
+  ArrowRightLeft,
+  ShieldCheck,
+  FileStack,
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem, BordereauFinalInventaireModal, BordereauFinalEliminationModal } from '../transfer/TransferDocsModals';
 
 // Simple Alert Toast in French
 interface AlertInfo {
@@ -36,7 +42,7 @@ interface AlertInfo {
 }
 
 export function ResponsableDashboard() {
-  const [activeTab, setActiveTab] = useState<'audit' | 'rules' | 'organigramme' | 'users' | 'barcodes' | 'backup' | 'search' | 'analytics'>('audit');
+  const [activeTab, setActiveTab] = useState<'audit' | 'transfers' | 'rules' | 'organigramme' | 'users' | 'barcodes' | 'backup' | 'search' | 'analytics'>('audit');
   const [toast, setToast] = useState<AlertInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
@@ -45,10 +51,18 @@ export function ResponsableDashboard() {
   // Lists state
   const [pendingInventories, setPendingInventories] = useState<any[]>([]);
   const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
+  const [transferRequests, setTransferRequests] = useState<any[]>([]);
   const [rules, setRules] = useState<any[]>([]);
   const [organigramme, setOrganigramme] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [barcodeSettings, setBarcodeSettings] = useState<any[]>([]);
+
+  // Modals state for transfer requests and final audit bordereaux
+  const [validatingTransfer, setValidatingTransfer] = useState<TransferRequestItem | null>(null);
+  const [viewingTransferPreliminaire, setViewingTransferPreliminaire] = useState<TransferRequestItem | null>(null);
+  const [viewingTransferAcceptance, setViewingTransferAcceptance] = useState<TransferRequestItem | null>(null);
+  const [viewingFinalInventoryBatch, setViewingFinalInventoryBatch] = useState<any[] | null>(null);
+  const [viewingFinalEliminationBatch, setViewingFinalEliminationBatch] = useState<any[] | null>(null);
 
   // Search/Filters state (For pending validation tab)
   const [searchQuery, setSearchQuery] = useState('');
@@ -179,10 +193,55 @@ export function ResponsableDashboard() {
         console.error("Failed to load barcode settings", e);
       }
 
+      // 7. Fetch transfer requests
+      try {
+        const transReqs = await api.get('/api/transfer-requests');
+        setTransferRequests(transReqs || []);
+      } catch (e) {
+        console.error("Failed to load transfer requests", e);
+      }
+
     } catch (err: any) {
       showToast("Certaines données n'ont pas pu être chargées", "error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleConfirmTransferValidation = async (observations: string) => {
+    if (!validatingTransfer) return;
+    try {
+      const patchData = {
+        status: 'Validée',
+        observations,
+        acceptedBy: 'Responsable des Archives',
+        acceptedAt: new Date().toISOString()
+      };
+
+      const res = await api.patch(`/api/transfer-requests/${validatingTransfer.id}`, patchData);
+
+      const updatedItem: TransferRequestItem = res.item || {
+        ...validatingTransfer,
+        ...patchData
+      };
+
+      setTransferRequests(prev => prev.map(r => r.id === validatingTransfer.id ? { ...r, ...updatedItem } : r));
+      setValidatingTransfer(null);
+      setViewingTransferAcceptance(updatedItem);
+      showToast("Demande de transfert acceptée et fiche d'acceptation générée !", "success");
+    } catch (err) {
+      console.error("Error validating transfer request:", err);
+      showToast("Erreur lors de la validation du transfert", "error");
+    }
+  };
+
+  const handleUpdateTransferStatus = async (reqId: string, newStatus: string) => {
+    try {
+      await api.patch(`/api/transfer-requests/${reqId}`, { status: newStatus });
+      setTransferRequests(prev => prev.map(r => r.id === reqId ? { ...r, status: newStatus } : r));
+      showToast(`Statut mis à jour: ${newStatus}`, "info");
+    } catch (err) {
+      showToast("Erreur lors de la mise à jour", "error");
     }
   };
 
@@ -392,8 +451,10 @@ export function ResponsableDashboard() {
       return;
     }
     try {
+      const itemsToFinalize = pendingInventories.filter(i => selectedInventories.includes(i.reference));
       await api.post('/api/audit/finalize-inventory', { references: selectedInventories });
-      showToast(`L'audit final de validation a été scellé pour ${selectedInventories.length} dossier(s) !`);
+      showToast(`L'audit final de validation a été scellé pour ${selectedInventories.length} dossier(s) ! Bordereau final généré.`, "success");
+      setViewingFinalInventoryBatch(itemsToFinalize.length > 0 ? itemsToFinalize : selectedInventories.map(ref => ({ reference: ref, intitule: 'Dossier Inventorié', direction: 'Service Versant' })));
       setSelectedInventories([]);
       loadAllData();
     } catch (err: any) {
@@ -407,8 +468,10 @@ export function ResponsableDashboard() {
       return;
     }
     try {
+      const elimsToFinalize = eliminationRequests.filter(er => selectedEliminations.includes(er.id));
       await api.post('/api/elimination/validate-pv', { requestIds: selectedEliminations });
-      showToast(`Élimination finale validée pour ${selectedEliminations.length} PV(s) !`);
+      showToast(`Élimination finale validée pour ${selectedEliminations.length} PV(s) ! Procès-verbal final généré.`, "success");
+      setViewingFinalEliminationBatch(elimsToFinalize.length > 0 ? elimsToFinalize : selectedEliminations.map(id => ({ id, pvNumber: `PV-${id}`, reference: 'REF-ELIM', intitule: 'Dossier à éliminer' })));
       setSelectedEliminations([]);
       loadAllData();
     } catch (err: any) {
@@ -585,6 +648,15 @@ export function ResponsableDashboard() {
         >
           <CheckSquare className="w-3.5 h-3.5" />
           <span>Audit & Validations</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('transfers')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'transfers' ? 'bg-slate-900 text-white shadow-md' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <ArrowRightLeft className="w-3.5 h-3.5" />
+          <span>Demandes de Transfert ({transferRequests.length})</span>
         </button>
         <button
           onClick={() => setActiveTab('search')}
@@ -892,6 +964,130 @@ export function ResponsableDashboard() {
               )}
             </div>
 
+          </div>
+        )}
+
+        {/* TAB: DEMANDES DE TRANSFERT */}
+        {activeTab === 'transfers' && (
+          <div className="space-y-6 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm" id="responsable-transfers-tab">
+            <div className="pb-4 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-brand-accent text-xs font-bold uppercase tracking-wider mb-1">
+                  <ArrowRightLeft className="w-4 h-4" />
+                  <span>Gestion des Bordereaux & Fiches d'Acceptation</span>
+                </div>
+                <h3 className="text-xl font-black text-slate-800">Suivi des Demandes de Transfert d'Archives</h3>
+                <p className="text-slate-500 text-xs">Examinez les bordereaux d'envoi préliminaires soumis par les demandeurs, puis validez avec vos observations pour émettre la fiche d'acceptation officielle.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-3 py-1 bg-amber-50 border border-amber-200 text-amber-700 font-bold rounded-lg text-xs">
+                  {transferRequests.filter(r => r.status === 'En attente').length} En attente
+                </span>
+                <span className="px-3 py-1 bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold rounded-lg text-xs">
+                  {transferRequests.filter(r => r.status === 'Validée' || r.status === 'Acceptée').length} Validées
+                </span>
+              </div>
+            </div>
+
+            {transferRequests.length === 0 ? (
+              <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                <ArrowRightLeft className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                <p className="text-slate-500 text-sm font-semibold">Aucune demande de transfert enregistrée.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-900 text-white font-bold">
+                      <th className="p-3">N° Demande</th>
+                      <th className="p-3">Direction / Service</th>
+                      <th className="p-3">Type de documents</th>
+                      <th className="p-3">Demandeur</th>
+                      <th className="p-3">Volume</th>
+                      <th className="p-3">Statut</th>
+                      <th className="p-3">Date</th>
+                      <th className="p-3 text-right">Documents & Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {transferRequests.map((req) => (
+                      <tr key={req.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="p-3 font-mono font-bold text-slate-800">
+                          {req.demandNumber || req.id.slice(0, 8)}
+                        </td>
+                        <td className="p-3 font-semibold text-slate-700">
+                          {req.direction || 'Direction non spécifiée'}
+                        </td>
+                        <td className="p-3 font-bold text-slate-900">
+                          {req.documentType || '-'}
+                        </td>
+                        <td className="p-3 text-slate-600">
+                          {req.requester || req.nom || '-'}
+                          {req.email && <div className="text-[10px] text-slate-400">{req.email}</div>}
+                        </td>
+                        <td className="p-3 text-slate-700 font-bold">
+                          {req.boxes || 0} boîtes / {req.folders || 0} dossiers
+                        </td>
+                        <td className="p-3">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                            req.status === 'Validée' || req.status === 'Acceptée' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            req.status === 'En attente' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                            'bg-rose-50 text-rose-700 border-rose-200'
+                          }`}>
+                            {req.status}
+                          </span>
+                        </td>
+                        <td className="p-3 text-slate-500 text-[11px]">
+                          {req.createdAt ? new Date(req.createdAt).toLocaleDateString('fr-FR') : '-'}
+                        </td>
+                        <td className="p-3 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => setViewingTransferPreliminaire(req)}
+                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold text-[11px] flex items-center gap-1 transition-all cursor-pointer"
+                              title="Voir le Bordereau d'envoi préliminaire"
+                            >
+                              <FileText size={14} className="text-brand-accent" />
+                              <span>Bordereau</span>
+                            </button>
+
+                            {(req.status === 'Validée' || req.status === 'Acceptée') && (
+                              <button
+                                onClick={() => setViewingTransferAcceptance(req)}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[11px] flex items-center gap-1 shadow-sm transition-all cursor-pointer"
+                                title="Voir la Fiche d'Acceptation"
+                              >
+                                <ShieldCheck size={14} />
+                                <span>Fiche Acceptation</span>
+                              </button>
+                            )}
+
+                            {req.status === 'En attente' && (
+                              <>
+                                <button
+                                  onClick={() => setValidatingTransfer(req)}
+                                  className="p-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg transition-all cursor-pointer"
+                                  title="Valider et saisir les observations"
+                                >
+                                  <CheckCircle size={16} />
+                                </button>
+                                <button
+                                  onClick={() => handleUpdateTransferStatus(req.id, 'Rejetée')}
+                                  className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg transition-all cursor-pointer"
+                                  title="Rejeter"
+                                >
+                                  <XCircle size={16} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
 
@@ -2047,6 +2243,51 @@ export function ResponsableDashboard() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Validation Modal for Responsable */}
+      {validatingTransfer && (
+        <ValidationTransfertModal
+          request={validatingTransfer}
+          onClose={() => setValidatingTransfer(null)}
+          onConfirm={handleConfirmTransferValidation}
+        />
+      )}
+
+      {/* Preliminary Dispatch Slip Modal */}
+      {viewingTransferPreliminaire && (
+        <BordereauPreliminaireModal
+          request={viewingTransferPreliminaire}
+          onClose={() => setViewingTransferPreliminaire(null)}
+        />
+      )}
+
+      {/* Official Acceptance Sheet Modal */}
+      {viewingTransferAcceptance && (
+        <FicheAcceptationModal
+          request={viewingTransferAcceptance}
+          onClose={() => setViewingTransferAcceptance(null)}
+        />
+      )}
+
+      {/* Final Transfer / Inventory Validation Bordereau Modal */}
+      {viewingFinalInventoryBatch && (
+        <BordereauFinalInventaireModal
+          items={viewingFinalInventoryBatch}
+          validatorName="Responsable d'Audit Archival"
+          validatedAt={new Date()}
+          onClose={() => setViewingFinalInventoryBatch(null)}
+        />
+      )}
+
+      {/* Final Elimination / PV Destruction Validation Modal */}
+      {viewingFinalEliminationBatch && (
+        <BordereauFinalEliminationModal
+          items={viewingFinalEliminationBatch}
+          validatorName="Responsable d'Audit & Conservation"
+          validatedAt={new Date()}
+          onClose={() => setViewingFinalEliminationBatch(null)}
+        />
+      )}
 
     </div>
   );

@@ -52,6 +52,198 @@ const EPIES = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
 const TABLETTES = Array.from({ length: 300 }, (_, i) => String(i + 1));
 
 // --- UTILS ---
+const safeHtml2Canvas = async (element: HTMLElement, options: any = {}) => {
+  const replaceColors = (cssText: string): string => {
+    let text = cssText;
+    
+    const replaceColorFunction = (funcName: string) => {
+      let index = text.indexOf(funcName + '(');
+      while (index !== -1) {
+        let parenCount = 1;
+        let i = index + funcName.length + 1;
+        for (; i < text.length; i++) {
+          if (text[i] === '(') {
+            parenCount++;
+          } else if (text[i] === ')') {
+            parenCount--;
+            if (parenCount === 0) {
+              break;
+            }
+          }
+        }
+        
+        if (parenCount === 0) {
+          const content = text.slice(index + funcName.length + 1, i);
+          let replacement = 'rgb(100, 116, 139)';
+          try {
+            const parts = content.trim().split(/[\s,+/]+/);
+            const firstPart = parts[0];
+            
+            if (firstPart === 'from') {
+              if (content.includes('bg') || content.includes('background') || content.includes('white') || content.includes('card')) {
+                replacement = 'rgb(255, 255, 255)';
+              } else {
+                replacement = 'rgb(100, 116, 139)';
+              }
+            } else {
+              const lightness = parseFloat(firstPart);
+              if (!isNaN(lightness)) {
+                if (lightness >= 0.9) {
+                  replacement = 'rgb(248, 250, 252)';
+                } else if (lightness >= 0.75) {
+                  replacement = 'rgb(226, 232, 240)';
+                } else if (lightness <= 0.3) {
+                  replacement = 'rgb(15, 23, 42)';
+                }
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+          
+          text = text.slice(0, index) + replacement + text.slice(i + 1);
+          index = text.indexOf(funcName + '(', index + replacement.length);
+        } else {
+          break;
+        }
+      }
+    };
+
+    replaceColorFunction('oklch');
+    replaceColorFunction('oklab');
+    return text;
+  };
+
+  // Back up original methods/descriptors
+  const originalGetComputedStyle = window.getComputedStyle;
+  const originalCssTextDescriptor = Object.getOwnPropertyDescriptor(CSSRule.prototype, 'cssText');
+  const originalStyleCssTextDescriptor = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'cssText');
+  const originalGetPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
+
+  // 1. Intercept window.getComputedStyle
+  window.getComputedStyle = function(el, pseudo) {
+    const style = originalGetComputedStyle.call(this, el, pseudo);
+    return new Proxy(style, {
+      get(target, prop, receiver) {
+        if (prop === 'getPropertyValue') {
+          return function(propertyName: string) {
+            const val = target.getPropertyValue(propertyName);
+            if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+              return replaceColors(val);
+            }
+            return val;
+          };
+        }
+        const val = Reflect.get(target, prop, receiver);
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      }
+    });
+  };
+
+  // 2. Intercept CSSRule.prototype.cssText
+  if (originalCssTextDescriptor) {
+    Object.defineProperty(CSSRule.prototype, 'cssText', {
+      get() {
+        const val = originalCssTextDescriptor.get ? originalCssTextDescriptor.get.call(this) : '';
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      },
+      set(val) {
+        if (originalCssTextDescriptor.set) {
+          originalCssTextDescriptor.set.call(this, val);
+        }
+      },
+      configurable: true
+    });
+  }
+
+  // 3. Intercept CSSStyleDeclaration.prototype.cssText
+  if (originalStyleCssTextDescriptor) {
+    Object.defineProperty(CSSStyleDeclaration.prototype, 'cssText', {
+      get() {
+        const val = originalStyleCssTextDescriptor.get ? originalStyleCssTextDescriptor.get.call(this) : '';
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      },
+      set(val) {
+        if (originalStyleCssTextDescriptor.set) {
+          originalStyleCssTextDescriptor.set.call(this, val);
+        }
+      },
+      configurable: true
+    });
+  }
+
+  // 4. Intercept CSSStyleDeclaration.prototype.getPropertyValue
+  CSSStyleDeclaration.prototype.getPropertyValue = function(property) {
+    const val = originalGetPropertyValue.call(this, property);
+    if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+      return replaceColors(val);
+    }
+    return val;
+  };
+
+  try {
+    const customOptions = {
+      ...options,
+      onclone: (clonedDoc: Document) => {
+        // Run general inline element style & tag cleanup on clone
+        const styles = clonedDoc.getElementsByTagName('style');
+        for (let i = 0; i < styles.length; i++) {
+          const style = styles[i];
+          if (style.innerHTML && (style.innerHTML.includes('oklch') || style.innerHTML.includes('oklab'))) {
+            style.innerHTML = replaceColors(style.innerHTML);
+          }
+          if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+            style.textContent = replaceColors(style.textContent);
+          }
+        }
+
+        const elements = clonedDoc.getElementsByTagName('*');
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i] as HTMLElement;
+          if (el.getAttribute && el.getAttribute('style')) {
+            const styleAttr = el.getAttribute('style') || '';
+            if (styleAttr.includes('oklch') || styleAttr.includes('oklab')) {
+              el.setAttribute('style', replaceColors(styleAttr));
+            }
+          }
+        }
+
+        if (options.onclone) {
+          options.onclone(clonedDoc);
+        }
+      }
+    };
+
+    return await html2canvas(element, customOptions);
+  } finally {
+    // Restore original globals & prototype behaviors
+    window.getComputedStyle = originalGetComputedStyle;
+
+    if (originalCssTextDescriptor) {
+      Object.defineProperty(CSSRule.prototype, 'cssText', originalCssTextDescriptor);
+    } else {
+      delete (CSSRule.prototype as any).cssText;
+    }
+
+    if (originalStyleCssTextDescriptor) {
+      Object.defineProperty(CSSStyleDeclaration.prototype, 'cssText', originalStyleCssTextDescriptor);
+    } else {
+      delete (CSSStyleDeclaration.prototype as any).cssText;
+    }
+
+    CSSStyleDeclaration.prototype.getPropertyValue = originalGetPropertyValue;
+  }
+};
+
 const generateId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
 const formatDateValue = (val: any): string => {
@@ -1300,16 +1492,156 @@ const BoitesModule = ({ boxes, setBoxes, folders, setFolders, archivalRules = []
     image.src = blobURL;
   };
 
+  const sanitizeOklchForCanvas = (clonedDoc: Document) => {
+    const replaceColors = (cssText: string): string => {
+      let text = cssText;
+      // Replace oklch(...)
+      text = text.replace(/oklch\(([^)]+)\)/g, (match, content) => {
+        try {
+          const parts = content.trim().split(/[\s,+/]+/);
+          const lightness = parseFloat(parts[0]);
+          const chroma = parts[1] ? parseFloat(parts[1]) : 0;
+          const hue = parts[2] ? parseFloat(parts[2]) : 0;
+
+          if (isNaN(lightness)) {
+            return 'rgb(100, 116, 139)';
+          }
+
+          if (lightness >= 0.9) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(238, 242, 255)';
+            }
+            if (chroma > 0.05 && (hue >= 120 && hue <= 170)) {
+              return 'rgb(236, 253, 245)';
+            }
+            return 'rgb(248, 250, 252)';
+          }
+
+          if (lightness >= 0.75) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(199, 210, 254)';
+            }
+            return 'rgb(226, 232, 240)';
+          }
+
+          if (lightness <= 0.3) {
+            if (chroma > 0.05 && (hue >= 230 && hue <= 280)) {
+              return 'rgb(30, 27, 75)';
+            }
+            return 'rgb(15, 23, 42)';
+          }
+
+          if (chroma > 0.05) {
+            if (hue >= 230 && hue <= 280) {
+              return 'rgb(79, 70, 229)';
+            }
+            if (hue >= 120 && hue <= 170) {
+              return 'rgb(16, 185, 129)';
+            }
+            if (hue >= 0 && hue <= 40) {
+              return 'rgb(239, 68, 68)';
+            }
+          }
+
+          return 'rgb(100, 116, 139)';
+        } catch (e) {
+          return 'rgb(100, 116, 139)';
+        }
+      });
+
+      // Replace oklab(...)
+      text = text.replace(/oklab\(([^)]+)\)/g, (match, content) => {
+        try {
+          const parts = content.trim().split(/[\s,+/]+/);
+          const lightness = parseFloat(parts[0]);
+          if (isNaN(lightness)) {
+            return 'rgb(100, 116, 139)';
+          }
+          if (lightness >= 0.9) return 'rgb(248, 250, 252)';
+          if (lightness >= 0.75) return 'rgb(226, 232, 240)';
+          if (lightness <= 0.3) return 'rgb(15, 23, 42)';
+          return 'rgb(100, 116, 139)';
+        } catch (e) {
+          return 'rgb(100, 116, 139)';
+        }
+      });
+
+      return text;
+    };
+
+    // Remove `<link rel="stylesheet">` elements to block html2canvas from parsing their raw oklch/oklab
+    try {
+      const links = Array.from(clonedDoc.getElementsByTagName('link'));
+      links.forEach(link => {
+        if (link.getAttribute('rel') === 'stylesheet') {
+          link.parentNode?.removeChild(link);
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to remove link tags:', e);
+    }
+
+    // Extract all styles from the active document, sanitize, and inject as inline <style>
+    let combinedCss = '';
+    try {
+      const sheets = Array.from(document.styleSheets);
+      sheets.forEach(sheet => {
+        try {
+          const rules = Array.from(sheet.cssRules || sheet.rules || []);
+          const sheetCss = rules.map(rule => rule.cssText).join('\n');
+          combinedCss += sheetCss + '\n';
+        } catch (e) {
+          // Fallback if sheet is cross-origin or unreadable
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to read styleSheets:', e);
+    }
+
+    if (combinedCss) {
+      try {
+        const styleEl = clonedDoc.createElement('style');
+        styleEl.textContent = replaceColors(combinedCss);
+        clonedDoc.head.appendChild(styleEl);
+      } catch (e) {
+        console.warn('Failed to inject style tag:', e);
+      }
+    }
+
+    const styles = clonedDoc.getElementsByTagName('style');
+    for (let i = 0; i < styles.length; i++) {
+      const style = styles[i];
+      if (style.innerHTML && (style.innerHTML.includes('oklch') || style.innerHTML.includes('oklab'))) {
+        style.innerHTML = replaceColors(style.innerHTML);
+      }
+      if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+        style.textContent = replaceColors(style.textContent);
+      }
+    }
+
+    const elements = clonedDoc.getElementsByTagName('*');
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i] as HTMLElement;
+      if (el.getAttribute && el.getAttribute('style')) {
+        const styleAttr = el.getAttribute('style') || '';
+        if (styleAttr.includes('oklch') || styleAttr.includes('oklab')) {
+          el.setAttribute('style', replaceColors(styleAttr));
+        }
+      }
+    }
+  };
+
   const handleDownloadLabelImage = async (box: Box) => {
     if (!stickerRef.current) {
       triggerToast("Aperçu de l'étiquette non disponible pour l'export.", 'error');
       return;
     }
     try {
-      const canvas = await html2canvas(stickerRef.current, {
+      const canvas = await safeHtml2Canvas(stickerRef.current, {
         scale: 3,
         useCORS: true,
-        backgroundColor: '#ffffff'
+        backgroundColor: '#ffffff',
+        onclone: sanitizeOklchForCanvas
       });
       const png = canvas.toDataURL('image/png');
       const downloadLink = document.createElement('a');
@@ -5208,6 +5540,155 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
   const [subTab, setSubTab] = useState<'import' | 'pointing' | 'regrouping' | 'rules' | 'search'>('import');
   const [selectedImportDirection, setSelectedImportDirection] = useState('Sinistre Matériel');
   
+  const [importMode, setImportMode] = useState<'excel' | 'pdf'>('excel');
+  const [unassociatedPdfs, setUnassociatedPdfs] = useState<any[]>([]);
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false);
+  const [manualAssocFilename, setManualAssocFilename] = useState<string | null>(null);
+  const [manualAssocRef, setManualAssocRef] = useState('');
+  const [searchManualFolder, setSearchManualFolder] = useState('');
+  const [searchPdfQuery, setSearchPdfQuery] = useState('');
+
+  const fetchUnassociatedPdfs = async () => {
+    try {
+      const data = await api.get('/api/inventory/unassociated-pdfs');
+      setUnassociatedPdfs(data || []);
+    } catch (err: any) {
+      console.error("Error fetching unassociated PDFs:", err);
+    }
+  };
+
+  useEffect(() => {
+    fetchUnassociatedPdfs();
+  }, [subTab, importMode]);
+
+  const handlePdfUpload = async (files: FileList | File[]) => {
+    if (!files || files.length === 0) return;
+    setIsUploadingPdf(true);
+    triggerLocalToast("Importation et lecture automatique des PDF en cours...", "success");
+
+    const formData = new FormData();
+    for (let i = 0; i < files.length; i++) {
+      formData.append('files', files[i]);
+    }
+
+    try {
+      const res = await fetch('/api/inventory/import-pdfs', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        throw new Error("Erreur de communication avec le serveur.");
+      }
+      const data = await res.json();
+      
+      if (data.success) {
+        const results = data.results || [];
+        const associatedCount = results.filter((r: any) => r.status === 'associated').length;
+        const unassociatedCount = results.filter((r: any) => r.status === 'unassociated').length;
+        
+        triggerLocalToast(`Importation terminée ! ${associatedCount} PDF associés automatiquement, ${unassociatedCount} non associés.`, "success");
+        fetchUnassociatedPdfs();
+
+        setFolders((prev: any[]) => prev.map((f: any) => {
+          let updatedScanFile = f.scanFile;
+          results.forEach((r: any) => {
+            if (r.status === 'associated' && r.matches.includes(f.reference)) {
+              let scans: string[] = [];
+              if (updatedScanFile) {
+                try {
+                  scans = JSON.parse(updatedScanFile);
+                  if (!Array.isArray(scans)) scans = [updatedScanFile];
+                } catch (e) {
+                  scans = [updatedScanFile];
+                }
+              }
+              if (!scans.includes(r.filename)) {
+                scans.push(r.filename);
+              }
+              updatedScanFile = JSON.stringify(scans);
+            }
+          });
+          return { ...f, scanFile: updatedScanFile };
+        }));
+      }
+    } catch (err: any) {
+      triggerLocalToast("Erreur lors de l'importation : " + err.message, "error");
+    } finally {
+      setIsUploadingPdf(false);
+    }
+  };
+
+  const handleManualAssociate = async (filename: string, reference: string) => {
+    if (!reference || !reference.trim()) {
+      triggerLocalToast("Veuillez sélectionner ou saisir une référence valide.", "error");
+      return;
+    }
+    try {
+      await api.post('/api/inventory/associate-pdf', { filename, reference });
+      triggerLocalToast("Dossier associé avec succès !", "success");
+      fetchUnassociatedPdfs();
+      
+      setFolders((prev: any[]) => prev.map((f: any) => {
+        if (f.reference.toUpperCase().trim() === reference.toUpperCase().trim()) {
+          let scanFiles: string[] = [];
+          try {
+            scanFiles = JSON.parse(f.scanFile || '[]');
+            if (!Array.isArray(scanFiles)) scanFiles = [f.scanFile];
+          } catch (e) {
+            scanFiles = f.scanFile ? [f.scanFile] : [];
+          }
+          if (!scanFiles.includes(filename)) {
+            scanFiles.push(filename);
+          }
+          return { ...f, scanFile: JSON.stringify(scanFiles) };
+        }
+        return f;
+      }));
+      setManualAssocFilename(null);
+      setManualAssocRef('');
+    } catch (err: any) {
+      triggerLocalToast("Erreur d'association : " + err.message, "error");
+    }
+  };
+
+  const handleManualDeletePdf = async (filename: string) => {
+    if (!window.confirm("Êtes-vous sûr de vouloir supprimer définitivement ce scan du serveur ?")) return;
+    try {
+      await api.delete(`/api/inventory/unassociated-pdfs/${encodeURIComponent(filename)}`);
+      triggerLocalToast("Fichier supprimé avec succès.", "success");
+      fetchUnassociatedPdfs();
+    } catch (err: any) {
+      triggerLocalToast("Erreur de suppression : " + err.message, "error");
+    }
+  };
+
+  const handleDissociatePdf = async (filename: string, reference: string) => {
+    if (!window.confirm(`Dissocier le document ${filename} de ce dossier ?`)) return;
+    try {
+      await api.post('/api/inventory/dissociate-pdf', { filename, reference });
+      triggerLocalToast("Document dissocié du dossier avec succès.", "success");
+      fetchUnassociatedPdfs();
+      
+      setFolders((prev: any[]) => prev.map((f: any) => {
+        if (f.reference.toUpperCase().trim() === reference.toUpperCase().trim()) {
+          let scanFiles: string[] = [];
+          try {
+            scanFiles = JSON.parse(f.scanFile || '[]');
+            if (!Array.isArray(scanFiles)) scanFiles = [f.scanFile];
+          } catch (e) {
+            scanFiles = f.scanFile ? [f.scanFile] : [];
+          }
+          scanFiles = scanFiles.filter(s => s !== filename);
+          return { ...f, scanFile: JSON.stringify(scanFiles) };
+        }
+        return f;
+      }));
+    } catch (err: any) {
+      triggerLocalToast("Erreur de dissociation : " + err.message, "error");
+    }
+  };
+
   const handleSubTabChange = (newTab: 'import' | 'pointing' | 'regrouping' | 'rules' | 'search') => {
     const errorCount = draftFolders.filter(f => f.errors && f.errors.length > 0).length;
     if (newTab !== 'import' && errorCount > 0) {
@@ -6118,8 +6599,34 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
       {/* Subtab Contents panels */}
       {subTab === 'import' && (
         <div className="space-y-6">
-          {/* DIRECTION CHOOSER SECTOR FOR IMPORT */}
-          <div className="bg-white border border-slate-200 p-6 rounded-[1.5rem] shadow-sm space-y-4">
+          {/* Tabs for choosing between Excel/CSV import and PDF scans import */}
+          <div className="flex border-b border-slate-100 mb-6 gap-6">
+            <button
+              onClick={() => setImportMode('excel')}
+              className={cn(
+                "pb-3.5 text-xs font-black uppercase tracking-widest transition-all relative cursor-pointer",
+                importMode === 'excel' ? "text-brand-primary font-black animate-pulse" : "text-slate-400 hover:text-slate-600"
+              )}
+            >
+              📥 Importation Excel / CSV
+              {importMode === 'excel' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary rounded-full" />}
+            </button>
+            <button
+              onClick={() => setImportMode('pdf')}
+              className={cn(
+                "pb-3.5 text-xs font-black uppercase tracking-widest transition-all relative cursor-pointer flex items-center gap-1.5",
+                importMode === 'pdf' ? "text-brand-primary font-black animate-pulse" : "text-slate-400 hover:text-slate-600"
+              )}
+            >
+              📄 Importer des PDF ({unassociatedPdfs.length} non associés)
+              {importMode === 'pdf' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-primary rounded-full" />}
+            </button>
+          </div>
+
+          {importMode === 'excel' && (
+            <div className="space-y-6">
+              {/* DIRECTION CHOOSER SECTOR FOR IMPORT */}
+              <div className="bg-white border border-slate-200 p-6 rounded-[1.5rem] shadow-sm space-y-4">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div className="space-y-1">
                 <span className="bg-indigo-50 text-indigo-700 px-3 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border border-indigo-100">SÉLECTION OBLIGATOIRE</span>
@@ -6718,6 +7225,175 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                   </div>
                 </div>
               )}
+            </div>
+          )}
+          </div>
+          )}
+
+          {importMode === 'pdf' && (
+            <div className="space-y-6">
+              {/* PDF upload container */}
+              <div 
+                className={cn(
+                   "border-2 border-dashed rounded-[2rem] p-10 lg:p-14 text-center transition-all relative bg-white border-slate-200 hover:border-slate-400 cursor-pointer",
+                   isUploadingPdf && "opacity-50 pointer-events-none"
+                )}
+              >
+                <input 
+                  type="file" 
+                  onChange={(e) => {
+                    if (e.target.files) handlePdfUpload(e.target.files);
+                  }} 
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" 
+                  id="pdf-scan-file-input"
+                  accept=".pdf"
+                  multiple
+                />
+                <div className="space-y-4 pointer-events-none">
+                  <div className="w-16 h-16 bg-brand-secondary text-brand-primary rounded-3xl flex items-center justify-center mx-auto shadow-sm">
+                    <Upload size={32} />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-slate-800 uppercase tracking-widest leading-normal">
+                      Glissez-déposez vos documents PDF ici ou cliquer pour charger
+                    </h4>
+                    <p className="text-[11px] text-slate-400 font-bold uppercase mt-1">
+                      Le système effectuera une lecture automatique pour associer automatiquement chaque PDF au bon dossier de l'inventaire
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Uploading indicator */}
+              {isUploadingPdf && (
+                <div className="p-6 bg-indigo-50 border border-indigo-100 rounded-2xl flex items-center justify-center gap-3">
+                  <RefreshCw className="animate-spin text-brand-primary" size={18} />
+                  <span className="text-xs font-black uppercase tracking-wider text-brand-primary font-sans">Analyse automatique du texte des PDF et association en cours...</span>
+                </div>
+              )}
+
+              {/* Unassociated Documents Panel */}
+              <div className="bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm animate-slide-up">
+                <div className="px-8 py-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
+                  <div>
+                    <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest m-0 leading-none font-sans">DOCUMENTS PDF NON ASSOCIÉS ({unassociatedPdfs.length})</h3>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase mt-1 block font-sans">Ces documents n'ont pas été associés automatiquement. Vous pouvez les lier manuellement à un dossier ou les supprimer.</span>
+                  </div>
+                  <div className="flex items-center gap-3 font-sans">
+                    <div className="relative">
+                      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
+                      <input
+                        type="text"
+                        value={searchPdfQuery}
+                        onChange={e => setSearchPdfQuery(e.target.value)}
+                        placeholder="Rechercher par nom de fichier..."
+                        className="bg-white border border-slate-200 rounded-xl pl-9 pr-4 py-2.5 text-xs text-slate-700 focus:outline-none focus:border-brand-primary w-64 font-bold"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-slate-100 max-h-[500px] overflow-y-auto custom-scrollbar font-sans">
+                  {unassociatedPdfs
+                    .filter(pdf => !searchPdfQuery || pdf.originalName.toLowerCase().includes(searchPdfQuery.toLowerCase()))
+                    .map((pdf, idx) => (
+                      <div key={idx} className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-50/50 transition-colors">
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center shrink-0">
+                            <FileText size={18} />
+                          </div>
+                          <div>
+                            <span className="block text-xs font-black text-slate-800 break-all">{pdf.originalName}</span>
+                            <span className="block text-[10px] font-black text-slate-400 uppercase tracking-wider font-mono mt-0.5">
+                              {(pdf.size / 1024 / 1024).toFixed(2)} MB • Ajouté le {new Date(pdf.createdAt).toLocaleDateString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => window.open(`/api/scans/${pdf.filename}`, '_blank')}
+                            className="p-2 text-slate-400 hover:text-brand-primary bg-slate-50 rounded-lg hover:bg-indigo-50 transition-all cursor-pointer shadow-sm border border-slate-100"
+                            title="Visualiser le PDF"
+                          >
+                            <Eye size={14} />
+                          </button>
+                          
+                          {manualAssocFilename === pdf.filename ? (
+                            <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-250 animate-slide-up">
+                              <select
+                                value={manualAssocRef}
+                                onChange={(e) => setManualAssocRef(e.target.value)}
+                                className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold text-slate-700 focus:outline-none focus:border-brand-primary"
+                              >
+                                <option value="">-- Choisir Dossier --</option>
+                                {folders
+                                  .filter((f: any) => !searchManualFolder || f.reference.toLowerCase().includes(searchManualFolder.toLowerCase()) || (f.intitule && f.intitule.toLowerCase().includes(searchManualFolder.toLowerCase())))
+                                  .map((f: any) => (
+                                    <option key={f.reference} value={f.reference}>
+                                      {f.reference} - {f.intitule || 'Sans titre'}
+                                    </option>
+                                  ))}
+                              </select>
+                              
+                              <input
+                                type="text"
+                                placeholder="Filtrer..."
+                                value={searchManualFolder}
+                                onChange={(e) => setSearchManualFolder(e.target.value)}
+                                className="w-20 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-bold text-slate-700 focus:outline-none focus:border-brand-primary"
+                              />
+
+                              <button
+                                onClick={() => handleManualAssociate(pdf.filename, manualAssocRef)}
+                                className="px-3.5 py-1.5 bg-brand-primary text-white text-[10px] font-black uppercase tracking-wider rounded-lg hover:opacity-90 transition-all cursor-pointer shadow-sm"
+                              >
+                                Lier
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setManualAssocFilename(null);
+                                  setManualAssocRef('');
+                                  setSearchManualFolder('');
+                                }}
+                                className="p-1 text-slate-400 hover:text-slate-600 rounded cursor-pointer"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => {
+                                  setManualAssocFilename(pdf.filename);
+                                  setManualAssocRef('');
+                                  setSearchManualFolder('');
+                              }}
+                              className="px-3.5 py-2 bg-indigo-50 hover:bg-brand-primary text-brand-primary hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer shadow-sm border border-brand-primary/10"
+                              title="Associer manuellement ce document à un dossier existant"
+                            >
+                              <Plus size={12} strokeWidth={2.5} /> Lier à un dossier
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => handleManualDeletePdf(pdf.filename)}
+                            className="p-2 text-slate-400 hover:text-red-500 bg-slate-50 rounded-lg hover:bg-red-50 transition-all cursor-pointer shadow-sm border border-slate-100"
+                            title="Supprimer définitivement le document"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+
+                  {unassociatedPdfs.filter(pdf => !searchPdfQuery || pdf.originalName.toLowerCase().includes(searchPdfQuery.toLowerCase())).length === 0 && (
+                    <div className="p-12 text-center text-slate-350">
+                      <FileText size={48} className="mx-auto mb-3 opacity-20 animate-pulse text-slate-400" />
+                      <span className="text-xs font-black uppercase tracking-widest font-sans">Aucun document non associé</span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -7369,6 +8045,47 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                           <td className="px-6 py-4">
                             <div className="font-sans font-black text-slate-800 text-xs leading-none">{item.reference}</div>
                             <span className="text-[9px] text-slate-400 font-bold block mt-1 uppercase max-w-[150px] truncate">{item.intitule || `Dossier ${item.reference}`}</span>
+                            
+                            {/* Render associated PDFs if present */}
+                            {(() => {
+                              let scans: string[] = [];
+                              if (item.scanFile) {
+                                try {
+                                  scans = JSON.parse(item.scanFile);
+                                  if (!Array.isArray(scans)) scans = [item.scanFile];
+                                } catch (e) {
+                                  scans = [item.scanFile];
+                                }
+                              }
+                              scans = scans.filter(s => typeof s === 'string' && s.trim().length > 0);
+                              if (scans.length === 0) return null;
+                              return (
+                                <div className="mt-2.5 space-y-1.5 font-sans">
+                                  <span className="text-[8px] font-black uppercase text-slate-400 tracking-wider block">📄 {scans.length} PDF Associé(s) :</span>
+                                  {scans.map((scan, sIdx) => (
+                                    <div key={sIdx} className="flex items-center gap-1.5 bg-slate-50 border border-slate-150 px-2 py-1 rounded-lg w-fit max-w-[200px]">
+                                      <a 
+                                        href={`/api/scans/${scan}`} 
+                                        target="_blank" 
+                                        rel="noopener noreferrer" 
+                                        className="text-[10px] font-bold text-brand-primary hover:underline flex items-center gap-1 min-w-0"
+                                        title={`Ouvrir le PDF: ${scan}`}
+                                      >
+                                        <FileText size={11} className="shrink-0 text-brand-primary" />
+                                        <span className="truncate block font-semibold">{scan.substring(scan.indexOf('_') + 1) || scan}</span>
+                                      </a>
+                                      <button
+                                        onClick={() => handleDissociatePdf(scan, item.reference)}
+                                        className="p-0.5 text-slate-400 hover:text-red-500 rounded hover:bg-red-50 cursor-pointer shrink-0"
+                                        title="Dissocier ce document"
+                                      >
+                                        <X size={10} strokeWidth={2.5} />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="px-6 py-4">
                             <span className="text-xs font-mono font-black text-brand-primary bg-brand-secondary px-2 py-0.5 rounded border border-brand-primary/10 font-bold">

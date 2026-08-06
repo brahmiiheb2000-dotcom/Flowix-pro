@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check, UploadCloud } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check, UploadCloud, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -22,6 +22,199 @@ import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../service
 
 import { CentralizedInventory } from './CentralizedInventory';
 import { TabHelpPrompts } from './TabHelpPrompts';
+import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem } from '../transfer/TransferDocsModals';
+
+const safeHtml2Canvas = async (element: HTMLElement, options: any = {}) => {
+  const replaceColors = (cssText: string): string => {
+    let text = cssText;
+    
+    const replaceColorFunction = (funcName: string) => {
+      let index = text.indexOf(funcName + '(');
+      while (index !== -1) {
+        let parenCount = 1;
+        let i = index + funcName.length + 1;
+        for (; i < text.length; i++) {
+          if (text[i] === '(') {
+            parenCount++;
+          } else if (text[i] === ')') {
+            parenCount--;
+            if (parenCount === 0) {
+              break;
+            }
+          }
+        }
+        
+        if (parenCount === 0) {
+          const content = text.slice(index + funcName.length + 1, i);
+          let replacement = 'rgb(100, 116, 139)';
+          try {
+            const parts = content.trim().split(/[\s,+/]+/);
+            const firstPart = parts[0];
+            
+            if (firstPart === 'from') {
+              if (content.includes('bg') || content.includes('background') || content.includes('white') || content.includes('card')) {
+                replacement = 'rgb(255, 255, 255)';
+              } else {
+                replacement = 'rgb(100, 116, 139)';
+              }
+            } else {
+              const lightness = parseFloat(firstPart);
+              if (!isNaN(lightness)) {
+                if (lightness >= 0.9) {
+                  replacement = 'rgb(248, 250, 252)';
+                } else if (lightness >= 0.75) {
+                  replacement = 'rgb(226, 232, 240)';
+                } else if (lightness <= 0.3) {
+                  replacement = 'rgb(15, 23, 42)';
+                }
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+          
+          text = text.slice(0, index) + replacement + text.slice(i + 1);
+          index = text.indexOf(funcName + '(', index + replacement.length);
+        } else {
+          break;
+        }
+      }
+    };
+
+    replaceColorFunction('oklch');
+    replaceColorFunction('oklab');
+    return text;
+  };
+
+  // Back up original methods/descriptors
+  const originalGetComputedStyle = window.getComputedStyle;
+  const originalCssTextDescriptor = Object.getOwnPropertyDescriptor(CSSRule.prototype, 'cssText');
+  const originalStyleCssTextDescriptor = Object.getOwnPropertyDescriptor(CSSStyleDeclaration.prototype, 'cssText');
+  const originalGetPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
+
+  // 1. Intercept window.getComputedStyle
+  window.getComputedStyle = function(el, pseudo) {
+    const style = originalGetComputedStyle.call(this, el, pseudo);
+    return new Proxy(style, {
+      get(target, prop, receiver) {
+        if (prop === 'getPropertyValue') {
+          return function(propertyName: string) {
+            const val = target.getPropertyValue(propertyName);
+            if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+              return replaceColors(val);
+            }
+            return val;
+          };
+        }
+        const val = Reflect.get(target, prop, receiver);
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      }
+    });
+  };
+
+  // 2. Intercept CSSRule.prototype.cssText
+  if (originalCssTextDescriptor) {
+    Object.defineProperty(CSSRule.prototype, 'cssText', {
+      get() {
+        const val = originalCssTextDescriptor.get ? originalCssTextDescriptor.get.call(this) : '';
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      },
+      set(val) {
+        if (originalCssTextDescriptor.set) {
+          originalCssTextDescriptor.set.call(this, val);
+        }
+      },
+      configurable: true
+    });
+  }
+
+  // 3. Intercept CSSStyleDeclaration.prototype.cssText
+  if (originalStyleCssTextDescriptor) {
+    Object.defineProperty(CSSStyleDeclaration.prototype, 'cssText', {
+      get() {
+        const val = originalStyleCssTextDescriptor.get ? originalStyleCssTextDescriptor.get.call(this) : '';
+        if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+          return replaceColors(val);
+        }
+        return val;
+      },
+      set(val) {
+        if (originalStyleCssTextDescriptor.set) {
+          originalStyleCssTextDescriptor.set.call(this, val);
+        }
+      },
+      configurable: true
+    });
+  }
+
+  // 4. Intercept CSSStyleDeclaration.prototype.getPropertyValue
+  CSSStyleDeclaration.prototype.getPropertyValue = function(property) {
+    const val = originalGetPropertyValue.call(this, property);
+    if (typeof val === 'string' && (val.includes('oklch') || val.includes('oklab'))) {
+      return replaceColors(val);
+    }
+    return val;
+  };
+
+  try {
+    const customOptions = {
+      ...options,
+      onclone: (clonedDoc: Document) => {
+        // Run general inline element style & tag cleanup on clone
+        const styles = clonedDoc.getElementsByTagName('style');
+        for (let i = 0; i < styles.length; i++) {
+          const style = styles[i];
+          if (style.innerHTML && (style.innerHTML.includes('oklch') || style.innerHTML.includes('oklab'))) {
+            style.innerHTML = replaceColors(style.innerHTML);
+          }
+          if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+            style.textContent = replaceColors(style.textContent);
+          }
+        }
+
+        const elements = clonedDoc.getElementsByTagName('*');
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i] as HTMLElement;
+          if (el.getAttribute && el.getAttribute('style')) {
+            const styleAttr = el.getAttribute('style') || '';
+            if (styleAttr.includes('oklch') || styleAttr.includes('oklab')) {
+              el.setAttribute('style', replaceColors(styleAttr));
+            }
+          }
+        }
+
+        if (options.onclone) {
+          options.onclone(clonedDoc);
+        }
+      }
+    };
+
+    return await html2canvas(element, customOptions);
+  } finally {
+    // Restore original globals & prototype behaviors
+    window.getComputedStyle = originalGetComputedStyle;
+
+    if (originalCssTextDescriptor) {
+      Object.defineProperty(CSSRule.prototype, 'cssText', originalCssTextDescriptor);
+    } else {
+      delete (CSSRule.prototype as any).cssText;
+    }
+
+    if (originalStyleCssTextDescriptor) {
+      Object.defineProperty(CSSStyleDeclaration.prototype, 'cssText', originalStyleCssTextDescriptor);
+    } else {
+      delete (CSSStyleDeclaration.prototype as any).cssText;
+    }
+
+    CSSStyleDeclaration.prototype.getPropertyValue = originalGetPropertyValue;
+  }
+};
 
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
   const { user, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
@@ -29,10 +222,15 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [requests, setRequests] = useState<any[]>([]);
   const [remoteRequests, setRemoteRequests] = useState<any[]>([]);
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination'>(initialTab === 'returns' ? 'communication' : initialTab);
   const [requestSubTab, setRequestSubTab] = useState<'all' | 'transfers'>('all');
-  const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed' | 'processus'>('all');
+  const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed' | 'processus' | 'returns'>(initialTab === 'returns' ? 'returns' : 'all');
   const [agentSessionSubTab, setAgentSessionSubTab] = useState<'history' | 'new' | 'remote'>('history');
+  
+  // Modals state for transfer requests
+  const [validatingTransfer, setValidatingTransfer] = useState<TransferRequestItem | null>(null);
+  const [viewingTransferPreliminaire, setViewingTransferPreliminaire] = useState<TransferRequestItem | null>(null);
+  const [viewingTransferAcceptance, setViewingTransferAcceptance] = useState<TransferRequestItem | null>(null);
   
   // Filtres et recherche pour le processus des dossiers
   const [processSearchTerm, setProcessSearchTerm] = useState('');
@@ -65,6 +263,14 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [returnSearchTerm, setReturnSearchTerm] = useState('');
   const [inventorySearchTerm, setInventorySearchTerm] = useState('');
   
+  // Bulk Return States
+  const [bulkReturnMode, setBulkReturnMode] = useState<boolean>(false);
+  const [bulkInputText, setBulkInputText] = useState<string>('');
+  const [bulkResults, setBulkResults] = useState<any[]>([]);
+  const [bulkIsSearching, setBulkIsSearching] = useState<boolean>(false);
+  const [bulkIsValidating, setBulkIsValidating] = useState<boolean>(false);
+  const [bulkValidationSuccess, setBulkValidationSuccess] = useState<boolean>(false);
+  
   // Mass Inventory States
   const [massInventory, setMassInventory] = useState<any[]>([]);
   const [massInventoryStats, setMassInventoryStats] = useState({ total: 0 });
@@ -73,6 +279,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
   const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search' | 'transfer'>('centralized');
+
+  // Bulk Inventory Search States
+  const [bulkInventorySearchMode, setBulkInventorySearchMode] = useState<boolean>(false);
+  const [bulkInventoryInputText, setBulkInventoryInputText] = useState<string>('');
+  const [bulkInventoryIsSearching, setBulkInventoryIsSearching] = useState<boolean>(false);
+  const [bulkInventoryResults, setBulkInventoryResults] = useState<any[]>([]);
 
   // Transfer Sheet Generator States
   const [transferSuccursale, setTransferSuccursale] = useState('Succursale AL Djazira 110');
@@ -262,8 +474,10 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   };
 
   const sanitizeOklchForCanvas = (clonedDoc: Document) => {
-    const replaceOklch = (cssText: string): string => {
-      return cssText.replace(/oklch\(([^)]+)\)/g, (match, content) => {
+    const replaceColors = (cssText: string): string => {
+      let text = cssText;
+      // Replace oklch(...)
+      text = text.replace(/oklch\(([^)]+)\)/g, (match, content) => {
         try {
           const parts = content.trim().split(/[\s,+/]+/);
           const lightness = parseFloat(parts[0]);
@@ -315,16 +529,74 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           return 'rgb(100, 116, 139)';
         }
       });
+
+      // Replace oklab(...)
+      text = text.replace(/oklab\(([^)]+)\)/g, (match, content) => {
+        try {
+          const parts = content.trim().split(/[\s,+/]+/);
+          const lightness = parseFloat(parts[0]);
+          if (isNaN(lightness)) {
+            return 'rgb(100, 116, 139)';
+          }
+          if (lightness >= 0.9) return 'rgb(248, 250, 252)';
+          if (lightness >= 0.75) return 'rgb(226, 232, 240)';
+          if (lightness <= 0.3) return 'rgb(15, 23, 42)';
+          return 'rgb(100, 116, 139)';
+        } catch (e) {
+          return 'rgb(100, 116, 139)';
+        }
+      });
+
+      return text;
     };
+
+    // Remove `<link rel="stylesheet">` elements to block html2canvas from parsing their raw oklch/oklab
+    try {
+      const links = Array.from(clonedDoc.getElementsByTagName('link'));
+      links.forEach(link => {
+        if (link.getAttribute('rel') === 'stylesheet') {
+          link.parentNode?.removeChild(link);
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to remove link tags:', e);
+    }
+
+    // Extract all styles from the active document, sanitize, and inject as inline <style>
+    let combinedCss = '';
+    try {
+      const sheets = Array.from(document.styleSheets);
+      sheets.forEach(sheet => {
+        try {
+          const rules = Array.from(sheet.cssRules || sheet.rules || []);
+          const sheetCss = rules.map(rule => rule.cssText).join('\n');
+          combinedCss += sheetCss + '\n';
+        } catch (e) {
+          // Fallback if sheet is cross-origin or unreadable
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to read styleSheets:', e);
+    }
+
+    if (combinedCss) {
+      try {
+        const styleEl = clonedDoc.createElement('style');
+        styleEl.textContent = replaceColors(combinedCss);
+        clonedDoc.head.appendChild(styleEl);
+      } catch (e) {
+        console.warn('Failed to inject style tag:', e);
+      }
+    }
 
     const styles = clonedDoc.getElementsByTagName('style');
     for (let i = 0; i < styles.length; i++) {
       const style = styles[i];
-      if (style.innerHTML && style.innerHTML.includes('oklch')) {
-        style.innerHTML = replaceOklch(style.innerHTML);
+      if (style.innerHTML && (style.innerHTML.includes('oklch') || style.innerHTML.includes('oklab'))) {
+        style.innerHTML = replaceColors(style.innerHTML);
       }
-      if (style.textContent && style.textContent.includes('oklch')) {
-        style.textContent = replaceOklch(style.textContent);
+      if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+        style.textContent = replaceColors(style.textContent);
       }
     }
 
@@ -333,8 +605,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       const el = elements[i] as HTMLElement;
       if (el.getAttribute && el.getAttribute('style')) {
         const styleAttr = el.getAttribute('style') || '';
-        if (styleAttr.includes('oklch')) {
-          el.setAttribute('style', replaceOklch(styleAttr));
+        if (styleAttr.includes('oklch') || styleAttr.includes('oklab')) {
+          el.setAttribute('style', replaceColors(styleAttr));
         }
       }
     }
@@ -343,7 +615,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const handleDownloadTransferFichePDF = async () => {
     if (!transferFicheRef.current) return;
     try {
-      const canvas = await html2canvas(transferFicheRef.current, {
+      const canvas = await safeHtml2Canvas(transferFicheRef.current, {
         scale: 2,
         backgroundColor: '#ffffff',
         useCORS: true,
@@ -637,9 +909,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [searchResult, setSearchResult] = useState<any | null>(null);
   const [validatedItemLabel, setValidatedItemLabel] = useState<any | null>(null);
   const [isExportingLabels, setIsExportingLabels] = useState(false);
+  const [isExportingInventoryLabels, setIsExportingInventoryLabels] = useState(false);
   const labelRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const importLabelsRef = React.useRef<HTMLDivElement>(null);
+  const bulkLabelsRef = React.useRef<HTMLDivElement>(null);
+  const bulkInventoryLabelsRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -1270,7 +1545,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const downloadLabel = async () => {
     if (!labelRef.current || !validatedItemLabel) return;
     try {
-      const canvas = await html2canvas(labelRef.current, {
+      const canvas = await safeHtml2Canvas(labelRef.current, {
         scale: 3, // High quality for PDF
         backgroundColor: '#ffffff',
         useCORS: true,
@@ -1302,7 +1577,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     if (!importLabelsRef.current) return;
     setIsExportingLabels(true);
     try {
-      const canvas = await html2canvas(importLabelsRef.current, {
+      const canvas = await safeHtml2Canvas(importLabelsRef.current, {
         scale: 2,
         backgroundColor: '#ffffff',
         useCORS: true,
@@ -1333,6 +1608,269 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       alert("Erreur lors du téléchargement du PDF des étiquettes.");
     } finally {
       setIsExportingLabels(false);
+    }
+  };
+
+  const handleBulkReturnLookup = async (references: string[]) => {
+    if (references.length === 0) return;
+    setBulkIsSearching(true);
+    setBulkValidationSuccess(false);
+    try {
+      const res = await api.post('/api/returns/bulk-lookup', { references });
+      setBulkResults(res);
+    } catch (err: any) {
+      alert("Erreur lors de la recherche des références : " + err.message);
+    } finally {
+      setBulkIsSearching(false);
+    }
+  };
+
+  const handleBulkInputSearch = () => {
+    const refs = bulkInputText
+      .split(/[\n,;]+/)
+      .map(r => r.trim())
+      .filter(r => r.length > 0);
+    
+    if (refs.length === 0) {
+      alert("Veuillez saisir au moins une référence.");
+      return;
+    }
+    handleBulkReturnLookup(refs);
+  };
+
+  const handleBulkFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fileType = file.name.split('.').pop()?.toLowerCase();
+    if (fileType !== 'xlsx' && fileType !== 'xls') {
+      alert("Veuillez sélectionner un fichier Excel (.xlsx ou .xls).");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = new Uint8Array(event.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+        if (jsonData.length === 0) {
+          alert("Le fichier Excel est vide.");
+          return;
+        }
+
+        const firstRow = jsonData[0];
+        const keys = Object.keys(firstRow);
+        const matchedKey = keys.find(k => 
+          ['reference', 'référence', 'ref', 'dossier', 'id'].some(possible => k.toLowerCase().includes(possible))
+        );
+
+        if (!matchedKey) {
+          alert("Impossible de trouver une colonne pour les Références. Veuillez vérifier que votre fichier possède une colonne nommée 'reference' ou 'référence'.");
+          return;
+        }
+
+        const refs = jsonData
+          .map((row: any) => String(row[matchedKey] || '').trim())
+          .filter(r => r.length > 0);
+
+        if (refs.length === 0) {
+          alert("Aucune référence valide trouvée dans la colonne.");
+          return;
+        }
+
+        handleBulkReturnLookup(refs);
+      } catch (err: any) {
+        alert("Erreur lors de la lecture du fichier Excel: " + err.message);
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleBulkValidate = async () => {
+    const itemsToValidate = bulkResults.filter(r => r.found);
+    if (itemsToValidate.length === 0) {
+      alert("Aucune référence valide à retourner.");
+      return;
+    }
+
+    setBulkIsValidating(true);
+    try {
+      const res = await api.post('/api/returns/bulk-validate', { items: itemsToValidate });
+      if (res.success) {
+        const hist = await api.get('/api/returns/history');
+        setReturnHistory(hist);
+        setBulkValidationSuccess(true);
+        // Alert user
+        alert(`${res.count} retours enregistrés avec succès !`);
+      } else {
+        alert("Erreur lors de la validation.");
+      }
+    } catch (err: any) {
+      alert("Erreur lors de la validation : " + err.message);
+    } finally {
+      setBulkIsValidating(false);
+    }
+  };
+
+  const handleBulkInventoryLookup = async (references: string[]) => {
+    if (references.length === 0) return;
+    setBulkInventoryIsSearching(true);
+    try {
+      const res = await api.post('/api/mass-inventory/bulk-lookup', { references });
+      setBulkInventoryResults(res);
+    } catch (err: any) {
+      alert("Erreur lors de la recherche des références : " + err.message);
+    } finally {
+      setBulkInventoryIsSearching(false);
+    }
+  };
+
+  const handleBulkInventoryInputSearch = () => {
+    const refs = bulkInventoryInputText
+      .split(/[\n,;]+/)
+      .map(r => r.trim())
+      .filter(r => r.length > 0);
+    
+    if (refs.length === 0) {
+      alert("Veuillez saisir au moins une référence.");
+      return;
+    }
+    handleBulkInventoryLookup(refs);
+  };
+
+  const handleBulkInventoryFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const fileType = file.name.split('.').pop()?.toLowerCase();
+    if (fileType !== 'xlsx' && fileType !== 'xls') {
+      alert("Veuillez sélectionner un fichier Excel (.xlsx ou .xls).");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const data = new Uint8Array(event.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+        if (jsonData.length === 0) {
+          alert("Le fichier Excel est vide.");
+          return;
+        }
+
+        const firstRow = jsonData[0];
+        const keys = Object.keys(firstRow);
+        const matchedKey = keys.find(k => 
+          ['reference', 'référence', 'ref', 'dossier', 'id'].some(possible => k.toLowerCase().includes(possible))
+        );
+
+        if (!matchedKey) {
+          alert("Impossible de trouver une colonne pour les Références. Veuillez vérifier que votre fichier possède une colonne nommée 'reference' ou 'référence'.");
+          return;
+        }
+
+        const refs = jsonData
+          .map((row: any) => String(row[matchedKey] || '').trim())
+          .filter(r => r.length > 0);
+
+        if (refs.length === 0) {
+          alert("Aucune référence valide trouvée dans la colonne.");
+          return;
+        }
+
+        handleBulkInventoryLookup(refs);
+      } catch (err: any) {
+        alert("Erreur lors de la lecture du fichier Excel: " + err.message);
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const downloadBulkLabels = async () => {
+    if (!bulkLabelsRef.current) return;
+    setIsExportingLabels(true);
+    try {
+      const canvas = await safeHtml2Canvas(bulkLabelsRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        onclone: sanitizeOklchForCanvas
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgWidth = 190;
+      const pageHeight = 277;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 10;
+
+      pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight + 10;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      pdf.save(`Planche_Etiquettes_Retour_Bulk_${new Date().getTime()}.pdf`);
+    } catch (err) {
+      console.error("Error generating plates PDF:", err);
+      alert("Erreur lors du téléchargement du PDF des étiquettes.");
+    } finally {
+      setIsExportingLabels(false);
+    }
+  };
+
+  const downloadBulkInventoryLabels = async () => {
+    if (!bulkInventoryLabelsRef.current) return;
+    setIsExportingInventoryLabels(true);
+    try {
+      const canvas = await safeHtml2Canvas(bulkInventoryLabelsRef.current, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        onclone: sanitizeOklchForCanvas
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgWidth = 190;
+      const pageHeight = 277;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 10;
+
+      pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight + 10;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 10, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      
+      pdf.save(`Planche_Etiquettes_Inventaire_Bulk_${new Date().getTime()}.pdf`);
+    } catch (err) {
+      console.error("Error generating plates PDF:", err);
+      alert("Erreur lors du téléchargement du PDF des étiquettes.");
+    } finally {
+      setIsExportingInventoryLabels(false);
     }
   };
 
@@ -1864,6 +2402,32 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       alert("Statut de transfert mis à jour.");
     } catch (err) {
       alert("Erreur lors de la mise à jour.");
+    }
+  };
+
+  const handleConfirmTransferValidation = async (observations: string) => {
+    if (!validatingTransfer) return;
+    try {
+      const patchData = {
+        status: 'Validée',
+        observations,
+        acceptedBy: user?.displayName || user?.email || 'Administrateur des Archives',
+        acceptedAt: new Date().toISOString()
+      };
+
+      const res = await api.patch(`/api/transfer-requests/${validatingTransfer.id}`, patchData);
+      
+      const updatedItem: TransferRequestItem = res.item || {
+        ...validatingTransfer,
+        ...patchData
+      };
+
+      setTransferRequests(prev => prev.map(r => r.id === validatingTransfer.id ? { ...r, ...updatedItem } : r));
+      setValidatingTransfer(null);
+      setViewingTransferAcceptance(updatedItem);
+    } catch (err) {
+      console.error("Error validating transfer request:", err);
+      alert("Erreur lors de la validation du transfert.");
     }
   };
 
@@ -2526,13 +3090,6 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           Gestion de communication
         </button>
         <button
-          onClick={() => setActiveTab('returns')}
-          className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'returns' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
-        >
-          <RotateCcw size={18} />
-          Réintégration
-        </button>
-        <button
           onClick={() => setActiveTab('massInventory')}
           className={`flex-1 min-w-fit flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${activeTab === 'massInventory' ? 'bg-brand-primary text-white shadow-md' : 'text-slate-400 hover:text-slate-600'}`}
         >
@@ -2759,7 +3316,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         )}
       </AnimatePresence>
 
-      {activeTab === 'returns' && (
+      {(activeTab === 'returns' || (activeTab === 'communication' && communicationSubTab === 'returns')) && (
         <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 mb-6">
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
@@ -2832,149 +3389,400 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-8"
               >
-                <div className="max-w-2xl mx-auto flex gap-3">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                    <Input
-                      placeholder="Scannez ou saisissez la référence..."
-                      className="pl-12 py-6 text-lg rounded-2xl shadow-sm border-slate-200 focus:ring-brand-primary"
-                      value={returnSearchTerm}
-                      onChange={(e) => setReturnSearchTerm(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && performReturnSearch()}
-                    />
-                  </div>
-                  <Button 
-                    className="px-8 bg-brand-primary hover:opacity-90 rounded-2xl text-lg shadow-lg shadow-brand-primary/20"
-                    onClick={performReturnSearch}
+                {/* Switcher between direct search and list import */}
+                <div className="flex justify-center border-b border-slate-100 max-w-md mx-auto mb-6 gap-8">
+                  <button
+                    onClick={() => { setBulkReturnMode(false); setSearchResult(null); setBulkValidationSuccess(false); }}
+                    className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${!bulkReturnMode ? "text-brand-primary border-b-2 border-brand-primary font-black" : "text-slate-400 hover:text-slate-600"}`}
                   >
-                    RECHERCHER
-                  </Button>
+                    🔍 Retour individuel
+                  </button>
+                  <button
+                    onClick={() => { setBulkReturnMode(true); setSearchResult(null); setBulkValidationSuccess(false); }}
+                    className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${bulkReturnMode ? "text-brand-primary border-b-2 border-brand-primary font-black" : "text-slate-400 hover:text-slate-600"}`}
+                  >
+                    📋 Retour groupé (Liste)
+                  </button>
                 </div>
 
-                {searchResult && !validatedItemLabel && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="max-w-md mx-auto bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center"
-                  >
-                    <div className="mb-6 p-1 bg-white rounded-lg shadow-sm inline-block relative overflow-hidden" style={{ width: '52mm', height: '27mm', boxSizing: 'border-box', padding: '4pt' }}>
-                      <div className="absolute top-1 right-1 text-[6px] font-black text-slate-400">MAE</div>
-                      <div className="flex flex-col items-center justify-center h-full">
-                        <Barcode 
-                          value={`${searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
-                          width={1.2}
-                          height={30}
-                          format="CODE128"
-                          displayValue={false}
-                          margin={0}
+                {!bulkReturnMode ? (
+                  <>
+                    <div className="max-w-2xl mx-auto flex gap-3">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                        <Input
+                          placeholder="Scannez ou saisissez la référence..."
+                          className="pl-12 py-6 text-lg rounded-2xl shadow-sm border-slate-200 focus:ring-brand-primary"
+                          value={returnSearchTerm}
+                          onChange={(e) => setReturnSearchTerm(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && performReturnSearch()}
                         />
-                        <div className="mt-2 text-[10pt] font-black text-slate-800 tracking-tighter uppercase leading-none mb-[3mm]">
-                          {searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-{searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}
-                        </div>
                       </div>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-4 mb-8">
-                      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                        <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Boîte N°</span>
-                        <span className="text-xl font-black text-slate-800">{searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}</span>
-                      </div>
-                      <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-                        <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Localisation</span>
-                        <span className="text-xl font-black text-slate-800">{searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-8">
-                      <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Référence</span>
-                      <span className="text-lg font-bold text-slate-700">{searchResult.reference}</span>
-                    </div>
-
-                    <Button 
-                      className="w-full py-4 bg-brand-primary hover:opacity-90 rounded-2xl text-lg font-black shadow-lg shadow-brand-primary/20 flex items-center justify-center gap-2"
-                      onClick={() => validatePhysicalReturn(searchResult)}
-                    >
-                      <RotateCcw size={20} />
-                      VALIDER LE RETOUR
-                    </Button>
-                  </motion.div>
-                )}
-
-                {validatedItemLabel && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="max-w-xl mx-auto space-y-6"
-                  >
-                    <div className="bg-brand-primary/5 border border-brand-primary/10 rounded-3xl p-6 text-center">
-                      <div className="w-12 h-12 bg-brand-primary/10 text-brand-primary rounded-full flex items-center justify-center mx-auto mb-3">
-                        <CheckCircle2 size={24} />
-                      </div>
-                      <h3 className="text-lg font-bold text-brand-primary">Retour validé avec succès !</h3>
-                      <p className="text-brand-primary/80 text-sm">Vous pouvez maintenant imprimer ou télécharger l'étiquette.</p>
-                    </div>
-
-                    <div className="bg-white border border-slate-200 rounded-3xl p-10 flex flex-col items-center">
-                      <div 
-                        ref={labelRef} 
-                        id="printable-label"
-                        className="bg-white shadow-sm flex flex-col items-center relative"
-                        style={{ 
-                          width: '52mm', 
-                          height: '27mm', 
-                          boxSizing: 'border-box',
-                          padding: '4pt'
-                        }}
+                      <Button 
+                        className="px-8 bg-brand-primary hover:opacity-90 rounded-2xl text-lg shadow-lg shadow-brand-primary/20"
+                        onClick={performReturnSearch}
                       >
-                        {/* Top corner text like the image */}
-                        <div className="absolute top-1 right-1 text-[6pt] font-black tracking-tight">
-                          MAE
-                        </div>
-
-                        <div className="flex-1 flex items-center justify-center w-full mt-2">
-                          <Barcode 
-                            value={`${validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
-                            width={1.4}
-                            height={40}
-                            format="CODE128"
-                            margin={0}
-                            displayValue={false}
-                          />
-                        </div>
-
-                        <div className="w-full flex items-center justify-center pt-1 mb-[3mm]">
-                          <span className="text-[14pt] font-black text-black tracking-tighter uppercase leading-none">
-                            {validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-{validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-3 mt-8 w-full print:hidden">
-                        <Button 
-                          className="flex-1 bg-slate-800 hover:bg-slate-900 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
-                          onClick={() => {
-                            setValidatedItemLabel(null);
-                            setReturnSearchTerm('');
-                          }}
-                        >
-                          NOUVELLE RECHERCHE
-                        </Button>
-                        <Button 
-                          variant="outline"
-                          className="flex-1 border-slate-200 hover:bg-slate-50 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
-                          onClick={downloadLabel}
-                        >
-                          <Download size={20} /> TELECHARGER
-                        </Button>
-                        <Button 
-                          className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
-                          onClick={printLabel}
-                        >
-                          <Printer size={20} /> IMPRIMER
-                        </Button>
-                      </div>
+                        RECHERCHER
+                      </Button>
                     </div>
-                  </motion.div>
+
+                    {searchResult && !validatedItemLabel && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="max-w-md mx-auto bg-slate-50 border border-slate-100 rounded-3xl p-8 text-center"
+                      >
+                        <div className="mb-6 p-1 bg-white rounded-lg shadow-sm inline-block relative overflow-hidden" style={{ width: '52mm', height: '27mm', boxSizing: 'border-box', padding: '4pt' }}>
+                          <div className="absolute top-1 right-1 text-[6px] font-black text-slate-400">MAE</div>
+                          <div className="flex flex-col items-center justify-center h-full">
+                            <Barcode 
+                              value={`${searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
+                              width={1.2}
+                              height={30}
+                              format="CODE128"
+                              displayValue={false}
+                              margin={0}
+                            />
+                            <div className="mt-2 text-[10pt] font-black text-slate-800 tracking-tighter uppercase leading-none mb-[3mm]">
+                              {searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-{searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-8">
+                          <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                            <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Boîte N°</span>
+                            <span className="text-xl font-black text-slate-800">{searchResult.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}</span>
+                          </div>
+                          <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                            <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Localisation</span>
+                            <span className="text-xl font-black text-slate-800">{searchResult.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}</span>
+                          </div>
+                        </div>
+
+                        <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 mb-8">
+                          <span className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Référence</span>
+                          <span className="text-lg font-bold text-slate-700">{searchResult.reference}</span>
+                        </div>
+
+                        <Button 
+                          className="w-full py-4 bg-brand-primary hover:opacity-90 rounded-2xl text-lg font-black shadow-lg shadow-brand-primary/20 flex items-center justify-center gap-2"
+                          onClick={() => validatePhysicalReturn(searchResult)}
+                        >
+                          <RotateCcw size={20} />
+                          VALIDER LE RETOUR
+                        </Button>
+                      </motion.div>
+                    )}
+
+                    {validatedItemLabel && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="max-w-xl mx-auto space-y-6"
+                      >
+                        <div className="bg-brand-primary/5 border border-brand-primary/10 rounded-3xl p-6 text-center">
+                          <div className="w-12 h-12 bg-brand-primary/10 text-brand-primary rounded-full flex items-center justify-center mx-auto mb-3">
+                            <CheckCircle2 size={24} />
+                          </div>
+                          <h3 className="text-lg font-bold text-brand-primary">Retour validé avec succès !</h3>
+                          <p className="text-brand-primary/80 text-sm">Vous pouvez maintenant imprimer ou télécharger l'étiquette.</p>
+                        </div>
+
+                        <div className="bg-white border border-slate-200 rounded-3xl p-10 flex flex-col items-center">
+                          <div 
+                            ref={labelRef} 
+                            id="printable-label"
+                            className="bg-white shadow-sm flex flex-col items-center relative"
+                            style={{ 
+                              width: '52mm', 
+                              height: '27mm', 
+                              boxSizing: 'border-box',
+                              padding: '4pt'
+                            }}
+                          >
+                            <div className="absolute top-1 right-1 text-[6pt] font-black tracking-tight">
+                              MAE
+                            </div>
+
+                            <div className="flex-1 flex items-center justify-center w-full mt-2">
+                              <Barcode 
+                                value={`${validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
+                                width={1.4}
+                                height={40}
+                                format="CODE128"
+                                margin={0}
+                                displayValue={false}
+                              />
+                            </div>
+
+                            <div className="w-full flex items-center justify-center pt-1 mb-[3mm]">
+                              <span className="text-[14pt] font-black text-black tracking-tighter uppercase leading-none">
+                                {validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-{validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-3 mt-8 w-full print:hidden">
+                            <Button 
+                              className="flex-1 bg-slate-800 hover:bg-slate-900 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                              onClick={() => {
+                                setValidatedItemLabel(null);
+                                setReturnSearchTerm('');
+                              }}
+                            >
+                              NOUVELLE RECHERCHE
+                            </Button>
+                            <Button 
+                              variant="outline"
+                              className="flex-1 border-slate-200 hover:bg-slate-50 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                              onClick={downloadLabel}
+                            >
+                              <Download size={20} /> TELECHARGER
+                            </Button>
+                            <Button 
+                              className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                              onClick={printLabel}
+                            >
+                              <Printer size={20} /> IMPRIMER
+                            </Button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-8">
+                    {bulkValidationSuccess ? (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="max-w-2xl mx-auto space-y-6"
+                      >
+                        <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-8 text-center">
+                          <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <CheckCircle2 size={32} />
+                          </div>
+                          <h3 className="text-xl font-bold text-emerald-800">Réintégrations groupées validées !</h3>
+                          <p className="text-emerald-600 text-sm mt-2 font-medium">
+                            {bulkResults.filter(r => r.found).length} dossiers ont été enregistrés avec succès dans l'historique et leurs statuts ont été mis à jour.
+                          </p>
+                        </div>
+
+                        {/* Planche d'étiquettes de traçabilité pour les éléments réintégrés */}
+                        <div className="bg-white border border-slate-200/80 p-6 rounded-3xl shadow-xl">
+                          <h5 className="text-xs font-black uppercase text-slate-400 tracking-wider mb-6 flex items-center gap-2">
+                            <Sparkles size={16} className="text-brand-primary" /> Planche d'étiquettes de réintégration
+                          </h5>
+                          
+                          <div ref={bulkLabelsRef} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 bg-white p-4 border border-slate-100 rounded-2xl">
+                            {bulkResults.filter(r => r.found).map((item, i) => {
+                              const boiteClean = item.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '');
+                              const locClean = item.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '');
+                              return (
+                                <div key={i} className="border border-slate-200 p-4 rounded-xl flex flex-col justify-between items-center text-center bg-slate-50/20">
+                                  <span className="text-[7px] font-black text-slate-400 tracking-wider uppercase">MAE - RETOUR ARCHIVE</span>
+                                  <span className="font-mono font-black text-slate-800 text-xs mt-1 uppercase truncate max-w-full">Réf: {item.reference}</span>
+                                  
+                                  <div className="my-2 p-1.5 bg-white rounded-lg border border-slate-100 flex flex-col items-center justify-center w-full">
+                                    <Barcode 
+                                      value={`${boiteClean}-${locClean}`} 
+                                      width={1.0} 
+                                      height={25} 
+                                      fontSize={8}
+                                      margin={0}
+                                      displayValue={false}
+                                      background="#ffffff"
+                                    />
+                                  </div>
+
+                                  <div className="text-[10pt] font-black text-slate-800 tracking-tighter uppercase leading-none">
+                                    {boiteClean}-{locClean}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex gap-4 mt-8">
+                            <Button 
+                              className="flex-1 bg-slate-800 hover:bg-slate-900 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                              onClick={() => {
+                                setBulkResults([]);
+                                setBulkValidationSuccess(false);
+                                setBulkInputText('');
+                              }}
+                            >
+                              NOUVELLE LISTE
+                            </Button>
+                            <Button 
+                              className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-14 font-black flex items-center justify-center gap-2"
+                              onClick={downloadBulkLabels}
+                              disabled={isExportingLabels}
+                            >
+                              <Download size={20} /> TELECHARGER LES ETIQUETTES (PDF)
+                            </Button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+                          {/* Option A: Excel Import */}
+                          <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm flex flex-col justify-between space-y-4">
+                            <div>
+                              <div className="flex items-center gap-2 mb-3">
+                                <div className="p-2 bg-brand-primary/10 rounded-lg text-brand-primary">
+                                  <FileSpreadsheet size={18} />
+                                </div>
+                                <h4 className="font-bold text-slate-800 text-sm">Option A : Importer un fichier Excel</h4>
+                              </div>
+                              <p className="text-slate-500 text-xs leading-relaxed">
+                                Chargez un fichier Excel contenant une colonne contenant vos références de dossiers à réintégrer (par ex: <span className="font-semibold text-slate-700">reference</span> ou <span className="font-semibold text-slate-700">référence</span>).
+                              </p>
+                            </div>
+
+                            <div className="bg-slate-50/50 border-2 border-dashed border-slate-200 p-8 rounded-2xl text-center relative hover:bg-slate-50 transition-colors">
+                              <FileSpreadsheet className="mx-auto text-brand-primary mb-3" size={32} />
+                              <p className="text-xs font-black text-slate-700 mb-1">Sélectionnez votre liste Excel</p>
+                              <p className="text-[10px] text-slate-400 mb-4">Formats supportés : .xlsx, .xls</p>
+                              <input 
+                                type="file" 
+                                accept=".xlsx, .xls" 
+                                onChange={handleBulkFileImport} 
+                                id="bulk-return-file-input" 
+                                className="hidden" 
+                              />
+                              <label 
+                                htmlFor="bulk-return-file-input" 
+                                className="cursor-pointer bg-brand-primary text-white text-xs px-5 py-2.5 rounded-xl font-black shadow-md shadow-brand-primary/10 hover:opacity-90 inline-block transition-all"
+                              >
+                                Choisir un fichier
+                              </label>
+                            </div>
+                          </div>
+
+                          {/* Option B: Copy Paste references */}
+                          <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm flex flex-col justify-between space-y-4">
+                            <div>
+                              <div className="flex items-center gap-2 mb-3">
+                                <div className="p-2 bg-slate-800/10 rounded-lg text-slate-800">
+                                  <Search size={18} />
+                                </div>
+                                <h4 className="font-bold text-slate-800 text-sm">Option B : Saisie manuelle de liste</h4>
+                              </div>
+                              <p className="text-slate-500 text-xs leading-relaxed">
+                                Copiez-collez ou saisissez directement votre liste de références ci-dessous. Séparez chaque référence par un retour à la ligne ou une virgule.
+                              </p>
+                            </div>
+
+                            <div className="space-y-3">
+                              <textarea
+                                value={bulkInputText}
+                                onChange={(e) => setBulkInputText(e.target.value)}
+                                placeholder="Saisissez vos références (une par ligne)...&#10;Exple:&#10;REF12345&#10;REF67890"
+                                className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs font-bold font-mono text-slate-700 focus:outline-none focus:border-brand-primary h-32 resize-none"
+                              />
+                              <Button 
+                                onClick={handleBulkInputSearch} 
+                                className="w-full bg-slate-800 hover:bg-slate-900 text-xs font-black h-11 rounded-xl flex items-center justify-center gap-2" 
+                                disabled={bulkIsSearching}
+                              >
+                                {bulkIsSearching ? "Recherche en cours..." : "Lancer la recherche"}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bulk Lookup Results */}
+                        {bulkResults.length > 0 && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 15 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="space-y-6 max-w-5xl mx-auto"
+                          >
+                            <div className="border-t border-slate-100 pt-6 flex flex-wrap items-center justify-between gap-4">
+                              <div>
+                                <h4 className="text-base font-black text-slate-800 flex items-center gap-2">
+                                  📋 Résultats d'identification ({bulkResults.length} références traitées)
+                                </h4>
+                                <p className="text-xs text-slate-500 font-medium">
+                                  {bulkResults.filter(r => r.found).length} références trouvées et localisées dans la base, {bulkResults.filter(r => !r.found).length} non trouvées.
+                                </p>
+                              </div>
+                              
+                              <div className="flex gap-2">
+                                <Button
+                                  onClick={handleBulkValidate}
+                                  className="bg-brand-primary hover:opacity-90 font-black text-xs h-11 px-6 rounded-xl shadow-lg shadow-brand-primary/10 flex items-center gap-2"
+                                  disabled={bulkIsValidating || bulkResults.filter(r => r.found).length === 0}
+                                >
+                                  {bulkIsValidating ? "Validation..." : "Valider les réintégrations"}
+                                </Button>
+                              </div>
+                            </div>
+
+                            {/* Results Table */}
+                            <div className="overflow-hidden rounded-2xl border border-slate-100 shadow-sm bg-white">
+                              <table className="w-full text-left border-collapse">
+                                <thead className="bg-slate-50 border-b border-slate-100">
+                                  <tr>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Code-Barres Étiquette</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Référence</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Boîte N°</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Localisation Rayon</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Source de données</th>
+                                    <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Statut</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-50">
+                                  {bulkResults.map((item, index) => (
+                                    <tr key={index} className="hover:bg-slate-50/30 transition-colors">
+                                      <td className="px-6 py-3 font-medium">
+                                        {item.found ? (
+                                          <div className="p-1.5 bg-white border border-slate-200 rounded inline-block">
+                                            <Barcode 
+                                              value={`${item.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${item.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
+                                              width={0.9}
+                                              height={20}
+                                              format="CODE128"
+                                              displayValue={false}
+                                              margin={0}
+                                            />
+                                          </div>
+                                        ) : (
+                                          <span className="text-slate-300 font-mono text-xs font-bold">-</span>
+                                        )}
+                                      </td>
+                                      <td className="px-6 py-3 text-xs font-extrabold text-slate-700">{item.reference}</td>
+                                      <td className="px-6 py-3 text-xs font-bold text-slate-600">
+                                        {item.found ? item.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '') : <span className="text-slate-400">-</span>}
+                                      </td>
+                                      <td className="px-6 py-3 text-xs font-extrabold text-slate-700">
+                                        {item.found ? item.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '') : <span className="text-slate-400">-</span>}
+                                      </td>
+                                      <td className="px-6 py-3 text-xs font-medium text-slate-500">{item.source}</td>
+                                      <td className="px-6 py-3 text-right">
+                                        {item.found ? (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                            ● Identifié
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-100">
+                                            ● Non trouvé
+                                          </span>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </motion.div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
               </motion.div>
             )}
@@ -5145,151 +5953,389 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 exit={{ opacity: 0, y: -10 }}
                 className="space-y-6"
               >
-                {/* Search Bar & Direction Filters */}
-                <div className="bg-slate-50 border border-slate-100 rounded-3xl p-6 space-y-4">
-                  <div className="flex flex-col md:flex-row gap-4 items-center">
-                    <div className="relative flex-1 w-full">
-                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                      <input 
-                        type="text"
-                        placeholder="Rechercher par référence, intitulé, boite, travee, valise, mot-clé..." 
-                        className="w-full bg-white border border-slate-200 rounded-2xl pl-12 pr-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand-accent/20 focus:border-brand-accent transition-all shadow-sm"
-                        value={massSearchTerm}
-                        onChange={(e) => setMassSearchTerm(e.target.value)}
-                      />
-                    </div>
-                    <div className="w-full md:w-72">
-                      <select 
-                        className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm cursor-pointer"
-                        value={selectedDirection}
-                        onChange={(e) => setSelectedDirection(e.target.value)}
-                      >
-                        <option value="all">TOUTES LES DIRECTIONS</option>
-                        {RETENTION_CALENDAR.map(dir => (
-                          <option key={dir.name} value={dir.name}>
-                            {dir.name.toUpperCase()}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    {(massSearchTerm || selectedDirection !== 'all') && (
-                      <button 
-                        onClick={() => {
-                          setMassSearchTerm('');
-                          setSelectedDirection('all');
-                        }}
-                        className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors shrink-0 uppercase tracking-wider"
-                      >
-                        Rétablir
-                      </button>
-                    )}
-                  </div>
+                {/* Switcher between direct search and list import */}
+                <div className="flex justify-center border-b border-slate-100 max-w-md mx-auto mb-6 gap-8">
+                  <button
+                    onClick={() => setBulkInventorySearchMode(false)}
+                    className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${!bulkInventorySearchMode ? "text-brand-accent border-b-2 border-brand-accent font-black" : "text-slate-400 hover:text-slate-600"}`}
+                  >
+                    🔍 Recherche individuelle
+                  </button>
+                  <button
+                    onClick={() => setBulkInventorySearchMode(true)}
+                    className={`pb-3 text-xs font-black uppercase tracking-widest transition-all relative ${bulkInventorySearchMode ? "text-brand-accent border-b-2 border-brand-accent font-black" : "text-slate-400 hover:text-slate-600"}`}
+                  >
+                    📋 Recherche par liste
+                  </button>
                 </div>
 
-                {/* Results List */}
-                {massInventory.length === 0 ? (
-                  <div className="py-16 text-center border border-dashed border-slate-150 rounded-3xl bg-slate-50/20">
-                    <Search className="mx-auto text-slate-300 mb-3" size={32} />
-                    <p className="text-slate-500 text-sm font-semibold">Aucun dossier ou boîte pointée trouvé</p>
-                    <p className="text-slate-400 text-xs mt-1">Saisissez un critère de recherche ou filtrez par direction pour afficher les pointages.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between px-2">
-                      <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{massInventory.length} pointage(s) trouvé(s)</span>
+                {!bulkInventorySearchMode ? (
+                  <>
+                    {/* Search Bar & Direction Filters */}
+                    <div className="bg-slate-50 border border-slate-100 rounded-3xl p-6 space-y-4">
+                      <div className="flex flex-col md:flex-row gap-4 items-center">
+                        <div className="relative flex-1 w-full">
+                          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                          <input 
+                            type="text"
+                            placeholder="Rechercher par référence, intitulé, boite, travee, valise, mot-clé..." 
+                            className="w-full bg-white border border-slate-200 rounded-2xl pl-12 pr-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand-accent/20 focus:border-brand-accent transition-all shadow-sm"
+                            value={massSearchTerm}
+                            onChange={(e) => setMassSearchTerm(e.target.value)}
+                          />
+                        </div>
+                        <div className="w-full md:w-72">
+                          <select 
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm cursor-pointer"
+                            value={selectedDirection}
+                            onChange={(e) => setSelectedDirection(e.target.value)}
+                          >
+                            <option value="all">TOUTES LES DIRECTIONS</option>
+                            {RETENTION_CALENDAR.map(dir => (
+                              <option key={dir.name} value={dir.name}>
+                                {dir.name.toUpperCase()}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        {(massSearchTerm || selectedDirection !== 'all') && (
+                          <button 
+                            onClick={() => {
+                              setMassSearchTerm('');
+                              setSelectedDirection('all');
+                            }}
+                            className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors shrink-0 uppercase tracking-wider"
+                          >
+                            Rétablir
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-4">
-                      {massInventory.map((item: any) => {
-                        return (
-                          <div 
-                            key={item.id}
-                            className="bg-white border border-slate-100 rounded-2xl p-5 hover:border-slate-200 hover:shadow-md transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    {/* Results List */}
+                    {massInventory.length === 0 ? (
+                      <div className="py-16 text-center border border-dashed border-slate-150 rounded-3xl bg-slate-50/20">
+                        <Search className="mx-auto text-slate-300 mb-3" size={32} />
+                        <p className="text-slate-500 text-sm font-semibold">Aucun dossier ou boîte pointée trouvé</p>
+                        <p className="text-slate-400 text-xs mt-1">Saisissez un critère de recherche ou filtrez par direction pour afficher les pointages.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between px-2">
+                          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{massInventory.length} pointage(s) trouvé(s)</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-4">
+                          {massInventory.map((item: any) => {
+                            return (
+                              <div 
+                                key={item.id}
+                                className="bg-white border border-slate-100 rounded-2xl p-5 hover:border-slate-200 hover:shadow-md transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                              >
+                                <div className="space-y-2 flex-1 min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="font-extrabold text-slate-900 text-sm tracking-tight">{item.reference || "SANS RÉFÉRENCE"}</span>
+                                    <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-slate-100 text-slate-500 rounded-full uppercase tracking-wider">
+                                      {item.direction || 'DIRECTION'}
+                                    </span>
+                                    {item.sourceType === 'centralized' ? (
+                                      <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-full uppercase tracking-wider">
+                                        CENTRALISÉ ({item.status === 'verified' ? 'VALIDÉ' : 'POINTÉ'})
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-full uppercase tracking-wider">
+                                        IMPORT DE MASSE
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs font-bold text-slate-700 truncate line-clamp-1 max-w-2xl">{item.intitule || "Sans intitulé"}</p>
+                                  
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 font-medium">
+                                    <span><strong>Boîte:</strong> {item.numBoite || item.boxNumber || '-'}</span>
+                                    {item.localisation && (
+                                      <span><strong>Emplacement:</strong> {item.localisation}</span>
+                                    )}
+                                    {item.expiryDate && (
+                                      <span><strong>Délai Échéance:</strong> {item.expiryDate}</span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
+                                  {item.scanFile ? (
+                                    <div className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 animate-fade-in">
+                                      <button 
+                                        onClick={() => {
+                                          setPdfViewerFile(item.scanFile);
+                                          setPdfViewerTitle(item.intitule || item.reference || "Scan Dossier");
+                                        }}
+                                        className="flex items-center gap-1.5 px-2.5 py-1 text-emerald-800 hover:bg-emerald-100 rounded-lg transition-all font-bold text-xs uppercase cursor-pointer"
+                                        title="Voir le document PDF scanné"
+                                      >
+                                        <FileText size={14} className="text-emerald-600" />
+                                        <span>Voir Scan</span>
+                                      </button>
+                                      <button
+                                        onClick={() => deleteDossierScan(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id)}
+                                        className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded-lg transition-all cursor-pointer animate-pulse"
+                                        title="Supprimer le scan PDF de ce dossier"
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button 
+                                      onClick={() => {
+                                        setUploadingScanItemId(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id);
+                                        setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
+                                      }}
+                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
+                                      title="Associer un scan PDF numérisé"
+                                    >
+                                      <Plus size={14} />
+                                      <span>+ Scan PDF</span>
+                                    </button>
+                                  )}
+
+                                  <button 
+                                    onClick={() => setViewingRequest(item)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all font-bold text-xs uppercase select-none cursor-pointer"
+                                  >
+                                    <Eye size={14} /> Détails
+                                  </button>
+                                  {item.sourceType !== 'centralized' && (
+                                    <button 
+                                      onClick={() => deleteMassItem(item.id)}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
+                                    >
+                                      <Trash2 size={14} /> Supprimer
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-8 animate-fade-in">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+                      {/* Option A: Excel Import */}
+                      <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm flex flex-col justify-between space-y-4">
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <div className="p-2 bg-brand-accent/10 rounded-lg text-brand-accent">
+                              <FileSpreadsheet size={18} />
+                            </div>
+                            <h4 className="font-bold text-slate-800 text-sm">Option A : Importer un fichier Excel</h4>
+                          </div>
+                          <p className="text-slate-500 text-xs leading-relaxed">
+                            Chargez un fichier Excel contenant une colonne avec les références des dossiers à rechercher.
+                          </p>
+                        </div>
+
+                        <div className="bg-slate-50/50 border-2 border-dashed border-slate-200 p-8 rounded-2xl text-center relative hover:bg-slate-50 transition-colors">
+                          <FileSpreadsheet className="mx-auto text-brand-accent mb-3" size={32} />
+                          <p className="text-xs font-black text-slate-700 mb-1">Sélectionnez votre liste Excel</p>
+                          <p className="text-[10px] text-slate-400 mb-4">Formats supportés : .xlsx, .xls</p>
+                          <input 
+                            type="file" 
+                            accept=".xlsx, .xls" 
+                            onChange={handleBulkInventoryFileImport} 
+                            id="bulk-inventory-file-input" 
+                            className="hidden" 
+                          />
+                          <label 
+                            htmlFor="bulk-inventory-file-input" 
+                            className="cursor-pointer bg-brand-accent text-white text-xs px-5 py-2.5 rounded-xl font-black shadow-md shadow-brand-accent/10 hover:opacity-90 inline-block transition-all"
                           >
-                            <div className="space-y-2 flex-1 min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-extrabold text-slate-900 text-sm tracking-tight">{item.reference || "SANS RÉFÉRENCE"}</span>
-                                <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-slate-100 text-slate-500 rounded-full uppercase tracking-wider">
-                                  {item.direction || 'DIRECTION'}
-                                </span>
-                                {item.sourceType === 'centralized' ? (
-                                  <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-full uppercase tracking-wider">
-                                    CENTRALISÉ ({item.status === 'verified' ? 'VALIDÉ' : 'POINTÉ'})
-                                  </span>
-                                ) : (
-                                  <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-100 rounded-full uppercase tracking-wider">
-                                    IMPORT DE MASSE
-                                  </span>
-                                )}
-                              </div>
-                              <p className="text-xs font-bold text-slate-700 truncate line-clamp-1 max-w-2xl">{item.intitule || "Sans intitulé"}</p>
-                              
-                              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 font-medium">
-                                <span><strong>Boîte:</strong> {item.numBoite || item.boxNumber || '-'}</span>
-                                {item.localisation && (
-                                  <span><strong>Emplacement:</strong> {item.localisation}</span>
-                                )}
-                                {item.expiryDate && (
-                                  <span><strong>Délai Échéance:</strong> {item.expiryDate}</span>
-                                )}
-                              </div>
+                            Choisir un fichier
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Option B: Copy Paste references */}
+                      <div className="bg-white border border-slate-100 rounded-3xl p-6 shadow-sm flex flex-col justify-between space-y-4">
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <div className="p-2 bg-slate-800/10 rounded-lg text-slate-800">
+                              <Search size={18} />
+                            </div>
+                            <h4 className="font-bold text-slate-800 text-sm">Option B : Saisie manuelle de liste</h4>
+                          </div>
+                          <p className="text-slate-500 text-xs leading-relaxed">
+                            Copiez-collez ou saisissez directement votre liste de références ci-dessous. Séparez chaque référence par un retour à la ligne ou une virgule.
+                          </p>
+                        </div>
+
+                        <div className="space-y-3">
+                          <textarea
+                            value={bulkInventoryInputText}
+                            onChange={(e) => setBulkInventoryInputText(e.target.value)}
+                            placeholder="Saisissez vos références (une par ligne)...&#10;Exple:&#10;REF12345&#10;REF67890"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs font-bold font-mono text-slate-700 focus:outline-none focus:border-brand-accent h-32 resize-none"
+                          />
+                          <Button 
+                            onClick={handleBulkInventoryInputSearch} 
+                            className="w-full bg-slate-800 hover:bg-slate-900 rounded-xl text-xs font-bold"
+                            disabled={bulkInventoryIsSearching}
+                          >
+                            {bulkInventoryIsSearching ? "RECHERCHE EN COURS..." : "RECHERCHER LES RÉFÉRENCES"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Results of bulk inventory lookup */}
+                    {bulkInventoryIsSearching ? (
+                      <div className="text-center py-12">
+                        <div className="w-10 h-10 border-4 border-brand-accent border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                        <p className="text-slate-500 text-xs font-semibold">Recherche en cours dans la base de données...</p>
+                      </div>
+                    ) : bulkInventoryResults.length > 0 ? (
+                      <div className="space-y-4 max-w-5xl mx-auto animate-fade-in">
+                        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                          <div>
+                            <h3 className="font-bold text-slate-800 text-base">Résultats de la recherche groupée</h3>
+                            <p className="text-slate-400 text-xs font-medium">
+                              {bulkInventoryResults.filter(r => r.found).length} trouvé(s) sur {bulkInventoryResults.length} demandé(s)
+                            </p>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setBulkInventoryResults([]);
+                              setBulkInventoryInputText('');
+                            }}
+                            className="text-xs font-bold text-slate-400 hover:text-red-500 transition-all uppercase tracking-wider"
+                          >
+                            Vider les résultats
+                          </button>
+                        </div>
+
+                        <div className="bg-white border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                              <thead>
+                                <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                                  <th className="py-4 px-6">Référence</th>
+                                  <th className="py-4 px-6">Intitulé</th>
+                                  <th className="py-4 px-6">Boîte</th>
+                                  <th className="py-4 px-6">Localisation (Rayon)</th>
+                                  <th className="py-4 px-6">Direction</th>
+                                  <th className="py-4 px-6">Statut de Validation</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-50 text-xs font-medium text-slate-600">
+                                {bulkInventoryResults.map((item, idx) => (
+                                  <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                    <td className="py-4 px-6 font-mono font-black text-slate-900 select-all">
+                                      {item.reference}
+                                    </td>
+                                    <td className="py-4 px-6 text-slate-700 font-bold max-w-xs truncate">
+                                      {item.intitule || <span className="text-slate-300 italic">N/A</span>}
+                                    </td>
+                                    <td className="py-4 px-6 font-bold text-slate-800">
+                                      {item.numBoite ? (
+                                        <span className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded-md font-mono">
+                                          {item.numBoite}
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-300 italic">-</span>
+                                      )}
+                                    </td>
+                                    <td className="py-4 px-6 font-bold text-slate-700">
+                                      {item.localisation || <span className="text-slate-300 italic">-</span>}
+                                    </td>
+                                    <td className="py-4 px-6 font-extrabold text-slate-500 uppercase text-[10px]">
+                                      {item.direction || <span className="text-slate-300 italic">-</span>}
+                                    </td>
+                                    <td className="py-4 px-6">
+                                      {item.found ? (
+                                        item.status === "Validé par responsable" ? (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                            Validé par responsable
+                                          </span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                                            {item.status}
+                                          </span>
+                                        )
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-100">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                                          Non trouvé
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        {/* Planche d'étiquettes pour l'inventaire */}
+                        {bulkInventoryResults.filter(r => r.found).length > 0 && (
+                          <div className="bg-white border border-slate-200/80 p-6 rounded-3xl shadow-xl mt-6 animate-fade-in">
+                            <h5 className="text-xs font-black uppercase text-slate-400 tracking-wider mb-6 flex items-center gap-2">
+                              <Sparkles size={16} className="text-brand-primary" /> Planche d'étiquettes des dossiers trouvés
+                            </h5>
+                            
+                            <div ref={bulkInventoryLabelsRef} className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 bg-white p-4 border border-slate-100 rounded-2xl">
+                              {bulkInventoryResults.filter(r => r.found).map((item, i) => {
+                                const boiteClean = (item.numBoite || "").replace(/^SIN\.C-?/i, '').replace(/^\.+/, '') || "SANS-BOITE";
+                                const locClean = (item.localisation || "").replace(/^\d{4}-?/i, '').replace(/^\.+/, '') || "SANS-LOC";
+                                const barcodeValue = boiteClean && locClean && boiteClean !== "SANS-BOITE" && locClean !== "SANS-LOC" 
+                                  ? `${boiteClean}-${locClean}` 
+                                  : item.reference;
+                                return (
+                                  <div key={i} className="border border-slate-200 p-4 rounded-xl flex flex-col justify-between items-center text-center bg-slate-50/20">
+                                    <span className="text-[7px] font-black text-slate-400 tracking-wider uppercase">MAE - INVENTAIRE</span>
+                                    <span className="font-mono font-black text-slate-800 text-xs mt-1 uppercase truncate max-w-full">Réf: {item.reference}</span>
+                                    
+                                    <div className="my-2 p-1.5 bg-white rounded-lg border border-slate-100 flex flex-col items-center justify-center w-full">
+                                      <Barcode 
+                                        value={barcodeValue} 
+                                        width={1.0} 
+                                        height={25} 
+                                        fontSize={8}
+                                        margin={0}
+                                        displayValue={false}
+                                        background="#ffffff"
+                                      />
+                                    </div>
+
+                                    <div className="text-[10pt] font-black text-slate-800 tracking-tighter uppercase leading-none">
+                                      {barcodeValue}
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
-                              {item.scanFile ? (
-                                <div className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 animate-fade-in">
-                                  <button 
-                                    onClick={() => {
-                                      setPdfViewerFile(item.scanFile);
-                                      setPdfViewerTitle(item.intitule || item.reference || "Scan Dossier");
-                                    }}
-                                    className="flex items-center gap-1.5 px-2.5 py-1 text-emerald-800 hover:bg-emerald-100 rounded-lg transition-all font-bold text-xs uppercase cursor-pointer"
-                                    title="Voir le document PDF scanné"
-                                  >
-                                    <FileText size={14} className="text-emerald-600" />
-                                    <span>Voir Scan</span>
-                                  </button>
-                                  <button
-                                    onClick={() => deleteDossierScan(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id)}
-                                    className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded-lg transition-all cursor-pointer animate-pulse"
-                                    title="Supprimer le scan PDF de ce dossier"
-                                  >
-                                    <Trash2 size={13} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <button 
-                                  onClick={() => {
-                                    setUploadingScanItemId(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id);
-                                    setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
-                                  }}
-                                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
-                                  title="Associer un scan PDF numérisé"
-                                >
-                                  <Plus size={14} />
-                                  <span>+ Scan PDF</span>
-                                </button>
-                              )}
-
-                              <button 
-                                onClick={() => setViewingRequest(item)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 rounded-xl transition-all font-bold text-xs uppercase select-none cursor-pointer"
+                            <div className="flex gap-4 mt-8">
+                              <Button 
+                                className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-14 font-black flex items-center justify-center gap-2 text-white"
+                                onClick={downloadBulkInventoryLabels}
+                                disabled={isExportingInventoryLabels}
                               >
-                                <Eye size={14} /> Détails
-                              </button>
-                              {item.sourceType !== 'centralized' && (
-                                <button 
-                                  onClick={() => deleteMassItem(item.id)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
-                                >
-                                  <Trash2 size={14} /> Supprimer
-                                </button>
-                              )}
+                                <Download size={20} /> TELECHARGER LES ETIQUETTES (PDF)
+                              </Button>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="py-12 text-center border border-dashed border-slate-150 rounded-3xl bg-slate-50/20 max-w-xl mx-auto">
+                        <Search className="mx-auto text-slate-300 mb-3" size={32} />
+                        <p className="text-slate-500 text-sm font-semibold">Aucune recherche effectuée</p>
+                        <p className="text-slate-400 text-xs mt-1">Importez un fichier Excel ou collez une liste de références pour lancer l'identification automatique.</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </motion.div>
@@ -5461,6 +6507,31 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                     <p className="text-[10px] text-slate-400">Sort Final: <span className="text-red-600 font-bold">{item.finalDisposition || 'EL'}</span></p>
                                     <p className="text-[10px] text-slate-400">Boîte: <span className="text-slate-700 font-bold">{item.numBoite || '-'}</span></p>
                                     <p className="text-[10px] text-slate-400">Emplacement: <span className="text-slate-700 font-bold">{item.localisation || '-'}</span></p>
+                                 </div>
+                                 <div className="mt-3 pt-3 border-t border-slate-100 space-y-1 font-sans">
+                                   <label className="text-[9px] font-black uppercase text-slate-400 tracking-wider block">📋 Règle (du Calendrier) :</label>
+                                   <select
+                                     value={item.codeDua || ''}
+                                     onChange={async (e) => {
+                                       const newCode = e.target.value;
+                                       try {
+                                         await api.patch(`/api/mass-inventory/${item.id}`, { codeDua: newCode });
+                                         // Re-trigger analysis
+                                         await api.post('/api/elimination/analyze', {});
+                                         fetchEliminationData();
+                                       } catch (err: any) {
+                                         alert("Erreur de modification : " + err.message);
+                                       }
+                                     }}
+                                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[10px] font-bold text-slate-700 focus:outline-none focus:border-brand-primary"
+                                   >
+                                     <option value="">-- Choisir Règle --</option>
+                                     {archivalDirectory.map((rule: any) => (
+                                       <option key={rule.id} value={rule.reference}>
+                                         {rule.reference} : {rule.title} ({rule.activeYears} ans)
+                                       </option>
+                                     ))}
+                                   </select>
                                  </div>
                                </div>
                             </div>
@@ -6226,7 +7297,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             </div>
           )}
           {activeTab === 'communication' && (
-            <div className="flex gap-2 mb-6 bg-slate-50 p-1.5 rounded-2xl w-fit mx-auto md:mx-0">
+            <div className="flex gap-2 mb-6 bg-slate-50 p-1.5 rounded-2xl w-fit mx-auto md:mx-0 flex-wrap">
               <button
                 onClick={() => setCommunicationSubTab('all')}
                 className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'all' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
@@ -6244,6 +7315,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                 className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'signed' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
               >
                 <CheckCircle2 size={16} /> Nouvelle demande de communication
+              </button>
+              <button
+                onClick={() => setCommunicationSubTab('returns')}
+                className={`flex items-center gap-2 px-6 py-2 rounded-xl text-xs font-bold transition-all ${communicationSubTab === 'returns' ? 'bg-white text-brand-primary shadow-sm border border-slate-100' : 'text-slate-400 hover:text-slate-600'}`}
+              >
+                <RotateCcw size={16} /> Réintégration
               </button>
             </div>
           )}
@@ -6282,7 +7359,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
             </div>
           )}
 
-          {!(activeTab === 'communication' && (communicationSubTab === 'signed' && agentSessionSubTab !== 'history' || communicationSubTab === 'processus')) && (
+          {!(activeTab === 'communication' && (communicationSubTab === 'signed' && agentSessionSubTab !== 'history' || communicationSubTab === 'processus' || communicationSubTab === 'returns')) && (
           <div className="flex flex-col md:flex-row gap-4 items-center justify-between mb-6">
             <div className="flex flex-wrap items-center gap-4 flex-1 w-full">
             {((activeTab === 'communication' && communicationSubTab === 'all') || activeTab === 'returns') ? (
@@ -7115,7 +8192,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
               </div>
             );
           })()
-        ) : (
+        ) : activeTab === 'communication' && communicationSubTab === 'returns' ? null : (
           <Card className="overflow-hidden p-0 border-none shadow-xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -7270,7 +8347,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                 localisation: invItem?.localisation || 'N/A',
                                 barcodeData: `${req.boite || 'N/A'}-${invItem?.localisation || 'N/A'}`
                               });
-                              setActiveTab('returns');
+                              setActiveTab('communication');
+                              setCommunicationSubTab('returns');
                               setReturnSubTab('search');
                             }}
                             className={cn("p-1.5 transition-colors", req.highlightColor ? "text-white/60 hover:text-white" : "text-slate-300 hover:text-green-600")}
@@ -7278,7 +8356,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           >
                             <Printer size={16} />
                           </button>
-                          {activeTab === 'returns' && !dateRetStr && (
+                          {((activeTab === 'communication' && communicationSubTab === 'returns') || activeTab === 'returns') && !dateRetStr && (
                             <button 
                               onClick={() => handleReturn(req)} 
                               className={cn(
@@ -7346,7 +8424,8 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                 localisation: invItem?.localisation || 'N/A',
                                 barcodeData: `${req.boite || 'N/A'}-${invItem?.localisation || 'N/A'}`
                               });
-                              setActiveTab('returns');
+                              setActiveTab('communication');
+                              setCommunicationSubTab('returns');
                               setReturnSubTab('search');
                             }}
                             className="p-1.5 text-slate-300 hover:text-green-600 transition-colors"
@@ -7419,12 +8498,30 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2">
+                          <button 
+                            onClick={() => setViewingTransferPreliminaire(req)}
+                            className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg transition-all"
+                            title="Voir le Bordereau d'envoi préliminaire"
+                          >
+                            <FileText size={18} />
+                          </button>
+
+                          {(req.status === 'Validée' || req.status === 'Acceptée') && (
+                            <button 
+                              onClick={() => setViewingTransferAcceptance(req)}
+                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all font-bold"
+                              title="Voir la Fiche d'Acceptation"
+                            >
+                              <ShieldCheck size={18} />
+                            </button>
+                          )}
+
                           {req.status === 'En attente' && (
                             <>
                               <button 
-                                onClick={() => handleUpdateTransferStatus(req.id, 'Validée')}
+                                onClick={() => setValidatingTransfer(req)}
                                 className="p-1.5 text-brand-primary hover:bg-brand-primary/10 rounded-lg transition-all"
-                                title="Valider le transfert"
+                                title="Valider le transfert et saisir les observations"
                               >
                                 <CheckCircle size={18} />
                               </button>
@@ -9283,6 +10380,31 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           </div>
         )}
       </AnimatePresence>
+
+      {/* Validation Modal for Admin */}
+      {validatingTransfer && (
+        <ValidationTransfertModal
+          request={validatingTransfer}
+          onClose={() => setValidatingTransfer(null)}
+          onConfirm={handleConfirmTransferValidation}
+        />
+      )}
+
+      {/* Preliminary Dispatch Slip Modal */}
+      {viewingTransferPreliminaire && (
+        <BordereauPreliminaireModal
+          request={viewingTransferPreliminaire}
+          onClose={() => setViewingTransferPreliminaire(null)}
+        />
+      )}
+
+      {/* Official Acceptance Sheet Modal */}
+      {viewingTransferAcceptance && (
+        <FicheAcceptationModal
+          request={viewingTransferAcceptance}
+          onClose={() => setViewingTransferAcceptance(null)}
+        />
+      )}
     </div>
   );
 };

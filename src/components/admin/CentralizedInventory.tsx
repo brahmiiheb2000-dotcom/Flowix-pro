@@ -5751,6 +5751,8 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
   const [newRuleTitle, setNewRuleTitle] = useState('');
   const [newRuleDuration, setNewRuleDuration] = useState(5);
   const [newRuleDirection, setNewRuleDirection] = useState('Général');
+  const [selectedBulkRuleId, setSelectedBulkRuleId] = useState<string>('');
+  const [batchScope, setBatchScope] = useState<'all' | 'missing'>('all');
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' } | null>(null);
   
   // Multi-criteria search state
@@ -6319,6 +6321,145 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
       duration: totalDur,
       expiryYear: currentYear + totalDur
     };
+  };
+
+  // Apply a selected DUA rule to all imported inventory items (drafts and/or saved folders)
+  const handleApplyRuleToInventory = async (rule: any, scope: 'all' | 'missing' = 'all') => {
+    if (!rule) {
+      triggerLocalToast("Veuillez sélectionner une règle de conservation valide.", "error");
+      return;
+    }
+
+    const duration = (parseInt(String(rule.activeYears || 0)) + parseInt(String(rule.semiActiveYears || 0))) || rule.duration || 5;
+    const ruleCode = rule.reference;
+    const ruleTitle = rule.title;
+    const ruleCategory = rule.category || 'Autre';
+    const ruleId = rule.id;
+
+    let draftCount = 0;
+    let savedCount = 0;
+
+    // 1. Update draftFolders (if any imported draft inventory lines exist)
+    if (draftFolders.length > 0) {
+      const updatedDrafts = draftFolders.map((f: any) => {
+        if (scope === 'missing' && f.codeDua && f.codeDua.trim() !== '' && f.codeDua !== 'auto') {
+          return f;
+        }
+        draftCount++;
+        let closureYear = new Date().getFullYear();
+        if (f.dateCloture) {
+          const match = String(f.dateCloture).match(/\d{4}/);
+          if (match) closureYear = parseInt(match[0]);
+        } else if (f.year) {
+          const match = String(f.year).match(/\d{4}/);
+          if (match) closureYear = parseInt(match[0]);
+        }
+        const expiryYear = closureYear + duration;
+
+        return {
+          ...f,
+          codeDua: ruleCode,
+          category: ruleCategory,
+          ruleId: ruleId,
+          retentionYears: duration,
+          expiryDate: String(expiryYear),
+          dateElimination: `${expiryYear}-12-31`,
+          docCode: ruleCode,
+          errors: f.errors ? f.errors.filter((e: string) => !e.toLowerCase().includes('code') && !e.toLowerCase().includes('dua')) : []
+        };
+      });
+      setDraftFolders(updatedDrafts);
+    }
+
+    // 2. Update folders (persistent inventory items)
+    if (folders && folders.length > 0) {
+      const updatedFolders = folders.map((f: any) => {
+        if (scope === 'missing' && f.codeDua && f.codeDua.trim() !== '' && f.codeDua !== 'auto') {
+          return f;
+        }
+        savedCount++;
+        let closureYear = new Date().getFullYear();
+        if (f.dateCloture) {
+          const match = String(f.dateCloture).match(/\d{4}/);
+          if (match) closureYear = parseInt(match[0]);
+        } else if (f.year) {
+          const match = String(f.year).match(/\d{4}/);
+          if (match) closureYear = parseInt(match[0]);
+        }
+        const expiryYear = closureYear + duration;
+
+        return {
+          ...f,
+          codeDua: ruleCode,
+          category: ruleCategory,
+          ruleId: ruleId,
+          retentionYears: duration,
+          expiryDate: String(expiryYear),
+          dateElimination: `${expiryYear}-12-31`,
+          docCode: ruleCode
+        };
+      });
+
+      if (savedCount > 0) {
+        setFolders(updatedFolders);
+        try {
+          await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
+          await set('ci_folders_v2', updatedFolders);
+        } catch (err) {
+          console.error("Sync error applying DUA rule:", err);
+        }
+      }
+    }
+
+    const totalUpdated = Math.max(draftCount, savedCount);
+    const targetDisplay = totalUpdated > 0 ? totalUpdated : (draftFolders.length || folders.length);
+    triggerLocalToast(
+      `Règle ${ruleCode} ("${ruleTitle}" - ${duration} ans) appliquée avec succès à ${targetDisplay} ligne(s) d'inventaire !`,
+      "success"
+    );
+  };
+
+  const handleApplyRuleToSingleItem = async (targetItem: any, rule: any) => {
+    if (!targetItem || !rule) return;
+    const duration = (parseInt(String(rule.activeYears || 0)) + parseInt(String(rule.semiActiveYears || 0))) || rule.duration || 5;
+    const ruleCode = rule.reference;
+    const ruleCategory = rule.category || 'Autre';
+    const ruleId = rule.id;
+
+    let closureYear = new Date().getFullYear();
+    if (targetItem.dateCloture) {
+      const match = String(targetItem.dateCloture).match(/\d{4}/);
+      if (match) closureYear = parseInt(match[0]);
+    } else if (targetItem.year) {
+      const match = String(targetItem.year).match(/\d{4}/);
+      if (match) closureYear = parseInt(match[0]);
+    }
+    const expiryYear = closureYear + duration;
+
+    const patch = {
+      codeDua: ruleCode,
+      category: ruleCategory,
+      ruleId: ruleId,
+      retentionYears: duration,
+      expiryDate: String(expiryYear),
+      dateElimination: `${expiryYear}-12-31`,
+      docCode: ruleCode
+    };
+
+    if (draftFolders.some((f: any) => f.id === targetItem.id || f.reference === targetItem.reference)) {
+      setDraftFolders((prev: any[]) => prev.map((f: any) => (f.id === targetItem.id || f.reference === targetItem.reference) ? { ...f, ...patch } : f));
+    }
+    if (folders.some((f: any) => f.id === targetItem.id || f.reference === targetItem.reference)) {
+      const updatedFolders = folders.map((f: any) => (f.id === targetItem.id || f.reference === targetItem.reference) ? { ...f, ...patch } : f);
+      setFolders(updatedFolders);
+      try {
+        await api.post('/api/centralized-inventory/sync', { folders: updatedFolders, boxes });
+        await set('ci_folders_v2', updatedFolders);
+      } catch (err) {
+        console.error("Single item sync error:", err);
+      }
+    }
+    triggerLocalToast(`Code DUA ${ruleCode} appliqué à ${targetItem.reference}`, "success");
   };
 
   // Integrated Multi-criteria Search results (Combining current drafts + saved)
@@ -7835,10 +7976,15 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
 
             {/* Rules display table */}
             <div className="md:col-span-2 bg-white border rounded-[2rem] overflow-hidden shadow-sm">
-              <div className="px-8 py-5 bg-slate-50/50 border-b border-slate-100">
-                <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest m-0 leading-none">RÉFÉRENTIEL DU CALENDRIER DE CONSERVATION</h3>
-                <span className="text-[10px] font-bold text-slate-400 uppercase mt-1 block">
-                  Calcul automatique : Date d'élimination = Date clôture dossier + Durée CC
+              <div className="px-8 py-5 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest m-0 leading-none">RÉFÉRENTIEL DU CALENDRIER DE CONSERVATION</h3>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase mt-1 block">
+                    Calcul automatique : Date d'élimination = Date clôture dossier + Durée CC
+                  </span>
+                </div>
+                <span className="text-[10px] font-black font-mono bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full border border-emerald-200">
+                  {archivalRules.length} Règles
                 </span>
               </div>
 
@@ -7850,6 +7996,7 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                       <th className="px-6 py-4">Description</th>
                       <th className="px-6 py-4 text-center">Durée</th>
                       <th className="px-6 py-4">Simulateur Elimination</th>
+                      <th className="px-6 py-4 text-center">Appliquer à tout l'inventaire</th>
                       <th className="px-6 py-4 text-right">Effacer</th>
                     </tr>
                   </thead>
@@ -7871,6 +8018,16 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                               An + {sim.duration} ans ➔ Exp : {sim.expiryYear}
                             </span>
                           </td>
+                          <td className="px-6 py-4 text-center">
+                            <button
+                              onClick={() => handleApplyRuleToInventory(rule, 'all')}
+                              title="Appliquer ce code DUA et cette règle à TOUTES les lignes d'inventaire importées"
+                              className="px-3 py-1.5 bg-brand-primary text-white hover:bg-emerald-800 rounded-xl text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm transition-all cursor-pointer whitespace-nowrap"
+                            >
+                              <CheckCircle2 size={13} />
+                              Appliquer à tout ({draftFolders.length > 0 ? draftFolders.length : folders.length})
+                            </button>
+                          </td>
                           <td className="px-6 py-4 text-right">
                             <button
                               onClick={() => handleDeleteRule(rule.id)}
@@ -7885,6 +8042,201 @@ export const GestionArchivesModule = ({ folders, setFolders, boxes, setBoxes, ar
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+
+          {/* Global Batch Application & Inventory DUA Preview Panel */}
+          <div className="bg-white border rounded-[2rem] p-6 shadow-sm space-y-5">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest m-0 flex items-center gap-2">
+                  <Sparkles size={16} className="text-brand-primary" />
+                  APPLICATION GLOBALE DE LA RÈGLE DUA À L'ENSEMBLE DE L'INVENTAIRE IMPORTÉ
+                </h3>
+                <span className="text-[10px] font-bold text-slate-400 uppercase mt-1 block">
+                  Choisissez le code DUA et la règle de conservation à appliquer automatiquement à l'ensemble des dossiers importés
+                </span>
+              </div>
+
+              {/* Metrics badge */}
+              <div className="flex items-center gap-3">
+                <div className="bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl text-center">
+                  <span className="text-[9px] font-extrabold text-emerald-800 uppercase block leading-none">Total Lignes Importées</span>
+                  <span className="text-xs font-black text-emerald-700 font-mono">
+                    {draftFolders.length > 0 ? draftFolders.length : folders.length}
+                  </span>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl text-center">
+                  <span className="text-[9px] font-extrabold text-amber-800 uppercase block leading-none">Sans Code DUA</span>
+                  <span className="text-xs font-black text-amber-700 font-mono">
+                    {(draftFolders.length > 0 ? draftFolders : folders).filter((f: any) => !f.codeDua || f.codeDua === '' || f.codeDua === 'auto').length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end bg-slate-50 p-4.5 rounded-2xl border border-slate-200/80">
+              <div className="md:col-span-5 space-y-1">
+                <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">
+                  1. Sélectionner le Code et la Règle DUA dans le Référentiel
+                </label>
+                <select
+                  value={selectedBulkRuleId}
+                  onChange={e => setSelectedBulkRuleId(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-800 focus:outline-none font-bold"
+                >
+                  <option value="">-- Choisir une règle DUA --</option>
+                  {(archivalRules || []).map((rule: any) => {
+                    const dur = (parseInt(String(rule.activeYears || 0)) + parseInt(String(rule.semiActiveYears || 0))) || rule.duration || 5;
+                    return (
+                      <option key={rule.id} value={rule.id}>
+                        {rule.reference} : {rule.title} ({dur} ans) [{rule.direction || 'Général'}]
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div className="md:col-span-3 space-y-1">
+                <label className="text-[9px] font-black text-slate-500 uppercase tracking-wider block">
+                  2. Périmètre d'application
+                </label>
+                <select
+                  value={batchScope}
+                  onChange={e => setBatchScope(e.target.value as any)}
+                  className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-800 focus:outline-none font-bold"
+                >
+                  <option value="all">Toutes les lignes ({draftFolders.length > 0 ? draftFolders.length : folders.length} dossiers)</option>
+                  <option value="missing">Seulement les lignes sans Code DUA</option>
+                </select>
+              </div>
+
+              <div className="md:col-span-4">
+                <button
+                  onClick={() => {
+                    const selectedRule = (archivalRules || []).find((r: any) => String(r.id) === String(selectedBulkRuleId));
+                    if (!selectedRule) {
+                      triggerLocalToast("Veuillez d'abord sélectionner une règle DUA dans la liste.", "error");
+                      return;
+                    }
+                    handleApplyRuleToInventory(selectedRule, batchScope);
+                  }}
+                  className="w-full py-2.5 bg-brand-primary text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-800 transition-all text-center cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-emerald-900/10"
+                >
+                  <CheckCircle2 size={16} />
+                  Appliquer la règle à tout l'inventaire
+                </button>
+              </div>
+            </div>
+
+            {/* Live Preview Table of Imported Lines with their DUA rules */}
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <h4 className="text-[11px] font-black text-slate-700 uppercase tracking-wider m-0">
+                  Lignes d'inventaire et règles DUA appliquées
+                </h4>
+                <span className="text-[10px] font-bold text-slate-400 font-mono">
+                  {draftFolders.length > 0 ? `${draftFolders.length} dossiers en cours d'import` : `${folders.length} dossiers enregistrés`}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto border border-slate-200 rounded-2xl max-h-[350px] overflow-y-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b bg-slate-50/80 text-[9px] font-black text-slate-400 uppercase tracking-widest font-sans sticky top-0 z-10 backdrop-blur-sm">
+                      <th className="px-4 py-3">Réf. Dossier</th>
+                      <th className="px-4 py-3">Intitulé / Type</th>
+                      <th className="px-4 py-3">Code DUA Appliqué</th>
+                      <th className="px-4 py-3 text-center">Durée CC</th>
+                      <th className="px-4 py-3">Année Clôture</th>
+                      <th className="px-4 py-3">Date/Année Élimination</th>
+                      <th className="px-4 py-3 text-right">Règle DUA Ligne</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                    {(draftFolders.length > 0 ? draftFolders : folders).length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-slate-400 font-medium">
+                          Aucune ligne d'inventaire importée actuellement.
+                        </td>
+                      </tr>
+                    ) : (
+                      (draftFolders.length > 0 ? draftFolders : folders).slice(0, 50).map((item: any, idx: number) => {
+                        const matchedRule = (archivalRules || []).find((r: any) => r.reference?.toUpperCase() === item.codeDua?.toUpperCase());
+                        const duration = item.retentionYears || (matchedRule ? (parseInt(String(matchedRule.activeYears || 0)) + parseInt(String(matchedRule.semiActiveYears || 0))) || 5 : 5);
+                        let closureYear = '-';
+                        if (item.dateCloture) {
+                          const match = String(item.dateCloture).match(/\d{4}/);
+                          if (match) closureYear = match[0];
+                        } else if (item.year) {
+                          closureYear = String(item.year);
+                        }
+                        const elimYear = closureYear !== '-' ? parseInt(closureYear) + duration : '-';
+
+                        return (
+                          <tr key={item.id || idx} className="hover:bg-slate-50/60 transition-colors">
+                            <td className="px-4 py-2.5 font-mono font-bold text-slate-800">{item.reference}</td>
+                            <td className="px-4 py-2.5 text-slate-600 font-medium truncate max-w-[200px]" title={item.intitule || item.title || item.reference}>
+                              {item.intitule || item.title || 'Dossier archivé'}
+                            </td>
+                            <td className="px-4 py-2.5 font-mono font-black text-brand-primary">
+                              {item.codeDua && item.codeDua !== 'auto' ? (
+                                <span className="bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                                  {item.codeDua}
+                                </span>
+                              ) : (
+                                <span className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded border border-amber-200 text-[10px] font-bold">
+                                  Non défini
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2.5 text-center">
+                              <span className="font-mono font-bold bg-slate-100 px-2 py-0.5 rounded text-slate-700">
+                                {duration} ans
+                              </span>
+                            </td>
+                            <td className="px-4 py-2.5 font-mono text-slate-600 font-bold">{closureYear}</td>
+                            <td className="px-4 py-2.5 font-mono font-bold text-emerald-600">
+                              {elimYear !== '-' ? (
+                                <span className="bg-emerald-50 px-2 py-0.5 rounded border border-emerald-150">
+                                  ➔ {elimYear}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 font-normal">-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <select
+                                value={item.codeDua || ''}
+                                onChange={(e) => {
+                                  const selectedRef = e.target.value;
+                                  const rule = (archivalRules || []).find((r: any) => r.reference?.toUpperCase() === selectedRef?.toUpperCase());
+                                  if (rule) {
+                                    handleApplyRuleToSingleItem(item, rule);
+                                  }
+                                }}
+                                className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand-primary cursor-pointer"
+                              >
+                                <option value="">-- Choisir --</option>
+                                {(archivalRules || []).map((rule: any) => (
+                                  <option key={rule.id} value={rule.reference}>
+                                    {rule.reference} ({rule.title})
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {((draftFolders.length > 0 ? draftFolders : folders).length > 50) && (
+                <p className="text-[10px] text-slate-400 font-bold text-center">
+                  Affichage des 50 premières lignes sur {(draftFolders.length > 0 ? draftFolders.length : folders.length)} au total.
+                </p>
+              )}
             </div>
           </div>
         </div>

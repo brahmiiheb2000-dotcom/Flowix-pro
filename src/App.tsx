@@ -40,32 +40,6 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
-interface SidebarLinkProps {
-  icon: React.ReactNode;
-  label: string;
-  active?: boolean;
-  onClick?: () => void;
-}
-
-function SidebarLink({ icon, label, active, onClick }: SidebarLinkProps) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
-        active 
-          ? "bg-brand-secondary text-brand-primary shadow-sm border border-brand-primary/10" 
-          : "text-slate-500 hover:bg-brand-secondary hover:text-slate-900"
-      )}
-    >
-      <span className={cn(active ? "text-brand-primary" : "text-slate-400")}>
-        {icon}
-      </span>
-      {label}
-    </button>
-  );
-}
-
 export default function App() {
   const [user, setUser] = useState<any | null>(null);
   const [role, setRole] = useState<UserRole | null>(null);
@@ -185,8 +159,6 @@ export default function App() {
   }, [user?.email, role]); // Depend on stable values
 
   const switchRole = async (newRole: UserRole) => {
-    // Session is handled by cookie, but we can update UI role if local state allows
-    // In a real app we'd call an API to update the token or DB
     setRole(newRole);
   };
 
@@ -386,3 +358,4 @@ export default function App() {
     </AuthContext.Provider>
   );
 }
+

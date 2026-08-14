@@ -30,7 +30,18 @@ import {
   ShieldCheck,
   FileStack,
   CheckCircle,
-  XCircle
+  XCircle,
+  Sparkles,
+  Eye,
+  Archive,
+  Printer,
+  Clock,
+  MapPin,
+  Layers,
+  Filter,
+  CalendarRange,
+  Tag,
+  SlidersHorizontal
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem, BordereauFinalInventaireModal, BordereauFinalEliminationModal } from '../transfer/TransferDocsModals';
@@ -52,10 +63,23 @@ export function ResponsableDashboard() {
   const [pendingInventories, setPendingInventories] = useState<any[]>([]);
   const [eliminationRequests, setEliminationRequests] = useState<any[]>([]);
   const [transferRequests, setTransferRequests] = useState<any[]>([]);
+  const [integrationBatches, setIntegrationBatches] = useState<any[]>([]);
+  const [inspectingBatch, setInspectingBatch] = useState<any | null>(null);
+  const [viewingBatchSlip, setViewingBatchSlip] = useState<any | null>(null);
   const [rules, setRules] = useState<any[]>([]);
   const [organigramme, setOrganigramme] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [barcodeSettings, setBarcodeSettings] = useState<any[]>([]);
+
+  // Search/Filters state for Integration Batches (Validation & Audit)
+  const [integrationBatchSearch, setIntegrationBatchSearch] = useState('');
+  const [integrationBatchStatusFilter, setIntegrationBatchStatusFilter] = useState<'all' | 'en_attente_audit' | 'valide' | 'rejete'>('all');
+  const [integrationBatchDirectionFilter, setIntegrationBatchDirectionFilter] = useState('');
+
+  // Search & Filter state for Folders inside the Inspection Modal
+  const [inspectFolderSearch, setInspectFolderSearch] = useState('');
+  const [inspectFolderSortFinal, setInspectFolderSortFinal] = useState<'all' | 'EL' | 'CP'>('all');
+  const [inspectFolderSelectedBox, setInspectFolderSelectedBox] = useState<'all' | string>('all');
 
   // Modals state for transfer requests and final audit bordereaux
   const [validatingTransfer, setValidatingTransfer] = useState<TransferRequestItem | null>(null);
@@ -199,6 +223,14 @@ export function ResponsableDashboard() {
         setTransferRequests(transReqs || []);
       } catch (e) {
         console.error("Failed to load transfer requests", e);
+      }
+
+      // 8. Fetch integration batches (7-step integration workflow)
+      try {
+        const batches = await api.get('/api/inventory-integration/batches');
+        setIntegrationBatches(batches || []);
+      } catch (e) {
+        console.error("Failed to load integration batches", e);
       }
 
     } catch (err: any) {
@@ -480,6 +512,143 @@ export function ResponsableDashboard() {
   };
 
   // ----------------------------------------------------
+  // --- INTEGRATION BATCH VALIDATION (WORKFLOW 7 ÉTAPES) ---
+  // ----------------------------------------------------
+  const handleValidateIntegrationBatch = async (batchId: string) => {
+    try {
+      const res = await api.post(`/api/inventory-integration/batches/${batchId}/validate`, {});
+      showToast(res.message || "Lot validé avec succès et stockage scellé dans le centre d'archives !", "success");
+      const target = integrationBatches.find(b => b.id === batchId);
+      if (target) {
+        setViewingBatchSlip({
+          ...target,
+          status: 'validé',
+          validatedAt: new Date().toISOString(),
+          validatedBy: 'Responsable Audit'
+        });
+      }
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message || "Erreur lors de la validation du lot", "error");
+    }
+  };
+
+  const handleRejectIntegrationBatch = async (batchId: string) => {
+    const reason = window.prompt("Motif du rejet du lot d'inventaire :", "Dossiers non conformes aux règles de versement");
+    if (!reason) return;
+    try {
+      await api.post(`/api/inventory-integration/batches/${batchId}/reject`, { reason });
+      showToast("Lot d'inventaire rejeté.", "info");
+      loadAllData();
+    } catch (err: any) {
+      showToast(err.message || "Erreur lors du rejet du lot", "error");
+    }
+  };
+
+  // Helper function to format any date input strictly into DD/MM/YYYY format (e.g., 11/02/2026)
+  const formatDateToDDMMYYYY = (val: any): string => {
+    if (!val) return '-';
+    
+    if (typeof val === 'string') {
+      const clean = val.trim();
+      if (!clean || clean === '-' || clean === 'null' || clean === 'undefined') return '-';
+      
+      // Check if it's already in DD/MM/YYYY or DD-MM-YYYY format
+      const ddmmyyyy = clean.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})/);
+      if (ddmmyyyy) {
+        return `${ddmmyyyy[1].padStart(2, '0')}/${ddmmyyyy[2].padStart(2, '0')}/${ddmmyyyy[3]}`;
+      }
+
+      // Check if it's YYYY-MM-DD or YYYY/MM/DD format
+      const yyyymmdd = clean.match(/^(\d{4})[\/\.-](\d{1,2})[\/\.-](\d{1,2})/);
+      if (yyyymmdd) {
+        return `${yyyymmdd[3].padStart(2, '0')}/${yyyymmdd[2].padStart(2, '0')}/${yyyymmdd[1]}`;
+      }
+
+      // If it's a 4-digit year only
+      if (/^\d{4}$/.test(clean)) {
+        return `31/12/${clean}`;
+      }
+    }
+
+    // Handle number (Excel serial date number)
+    if (typeof val === 'number' && val > 1000 && val < 100000) {
+      const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const year = d.getUTCFullYear();
+        return `${day}/${month}/${year}`;
+      }
+    }
+
+    // Parse using Date constructor (handles ISO strings, full date strings like Tue Oct 16 2018...)
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      if (year >= 1900 && year <= 2100) {
+        return `${day}/${month}/${year}`;
+      }
+    }
+
+    // Fallback: extract 4-digit year if present
+    const yearMatch = String(val).match(/\d{4}/);
+    if (yearMatch) {
+      return `31/12/${yearMatch[0]}`;
+    }
+
+    return String(val);
+  };
+
+  // Helper function to extract and format closure date strictly as DD/MM/YYYY
+  const getClosureDateDisplay = (f: any) => {
+    const rawDate = f.dateCloture || f.dateFin || f.year || f.dateDebut || '';
+    return formatDateToDDMMYYYY(rawDate);
+  };
+
+  // Helper function to extract and format confirmed retention rules (Règle DUA Confirmée)
+  const getConfirmedRuleDisplay = (f: any, batchRule?: any) => {
+    const codeDua = f.codeDua || f.ruleId || batchRule?.reference || batchRule?.ruleId || (f.direction ? `DUA-${String(f.direction).slice(0, 4).toUpperCase()}` : 'DUA Standard');
+    const titleDua = f.ruleTitle || batchRule?.title || (typeof batchRule === 'string' ? batchRule : 'Conservation légale');
+    
+    // Retention duration in years
+    let duration = f.retentionYears || batchRule?.retentionYears;
+    if (!duration && f.expiryDate && f.year) {
+      const diff = parseInt(f.expiryDate) - parseInt(f.year);
+      if (!isNaN(diff) && diff > 0) duration = diff;
+    }
+    if (!duration) duration = 5;
+
+    // Calculate expiration / elimination date
+    let expYear = f.expiryDate;
+    if (!expYear && f.dateElimination) {
+      expYear = String(f.dateElimination).match(/\d{4}/)?.[0];
+    }
+    if (!expYear) {
+      const cYear = f.dateCloture ? String(f.dateCloture).match(/\d{4}/)?.[0] : (f.year || null);
+      if (cYear && duration) {
+        expYear = String(parseInt(cYear) + parseInt(duration));
+      }
+    }
+
+    const sortFinal = f.finalDisposition || batchRule?.finalDisposition || f.sortFinal || 'EL';
+
+    return {
+      codeDua,
+      titleDua,
+      duration: `${duration} ans`,
+      durationNum: duration,
+      expiryYear: expYear ? `Échéance : ${expYear}` : 'Échéance calculée',
+      expiryYearNum: expYear,
+      expiryFullDate: f.dateElimination || (expYear ? `${expYear}-12-31` : null),
+      disposition: sortFinal,
+      isElimination: sortFinal === 'EL' || sortFinal === 'Élimination' || sortFinal === 'D' || sortFinal === 'Destruction'
+    };
+  };
+
+  // ----------------------------------------------------
   // --- INVENTORY ITEM DIRECT EDIT (modifier les contenus) ---
   // ----------------------------------------------------
   const startEditItem = (item: any) => {
@@ -728,11 +897,274 @@ export function ResponsableDashboard() {
         
         {/* TAB 1: AUDIT & VALIDATIONS */}
         {activeTab === 'audit' && (
-          <div className="space-y-6">
+          <div className="space-y-8">
+
+            {/* --- NOUVEAUX LOTS D'INTÉGRATION 7 ÉTAPES EN ATTENTE D'AUDIT & HISTORIQUE --- */}
+            <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-slate-950 text-white rounded-3xl p-6 shadow-xl border border-emerald-500/30 space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl bg-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-500/20 shrink-0">
+                    <Sparkles size={22} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <h3 className="text-base font-black text-white">Lots d'Inventaires Intégrés (Workflow 7 Étapes)</h3>
+                      <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        {integrationBatches.filter(b => b.status === 'en_attente_audit').length} en attente
+                      </span>
+                      {integrationBatches.filter(b => b.status === 'validé').length > 0 && (
+                        <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40">
+                          {integrationBatches.filter(b => b.status === 'validé').length} scellé(s)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      Contrôle d'audit, inspection des dates extrêmes, règles de conservation et validation du stockage physique.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5 self-start sm:self-auto">
+                  <button
+                    onClick={loadAllData}
+                    className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 border border-white/10"
+                  >
+                    <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Actualiser
+                  </button>
+                </div>
+              </div>
+
+              {/* BARRE DE RECHERCHE ET FILTRES DANS LES LOTS D'INVENTAIRES */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3 p-3.5 bg-black/30 rounded-2xl border border-white/10">
+                {/* Search input */}
+                <div className="md:col-span-6 relative">
+                  <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-400" />
+                  <input
+                    type="text"
+                    placeholder="Rechercher lot (ex: LOT-2026, Sinistre, nom archiviste, note...)"
+                    value={integrationBatchSearch}
+                    onChange={e => setIntegrationBatchSearch(e.target.value)}
+                    className="w-full pl-10 pr-9 py-2.5 bg-white/10 text-white placeholder:text-slate-400 rounded-xl text-xs font-medium border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all"
+                  />
+                  {integrationBatchSearch && (
+                    <button
+                      onClick={() => setIntegrationBatchSearch('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-0.5 rounded-full hover:bg-white/10"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Direction Filter */}
+                <div className="md:col-span-3">
+                  <select
+                    value={integrationBatchDirectionFilter}
+                    onChange={e => setIntegrationBatchDirectionFilter(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-white/10 text-white rounded-xl text-xs font-bold border border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    <option value="" className="bg-slate-900 text-white">Toutes les directions</option>
+                    {Array.from(new Set(integrationBatches.map(b => b.direction).filter(Boolean))).map((dir: string) => (
+                      <option key={dir} value={dir} className="bg-slate-900 text-white">{dir}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Status Filter */}
+                <div className="md:col-span-3 flex items-center gap-1.5 overflow-x-auto">
+                  <button
+                    onClick={() => setIntegrationBatchStatusFilter('all')}
+                    className={`flex-1 px-2.5 py-2 rounded-xl text-[11px] font-bold transition-all text-center whitespace-nowrap ${
+                      integrationBatchStatusFilter === 'all'
+                        ? 'bg-emerald-500 text-white shadow-md shadow-emerald-900 font-black'
+                        : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    Tous ({integrationBatches.length})
+                  </button>
+                  <button
+                    onClick={() => setIntegrationBatchStatusFilter('en_attente_audit')}
+                    className={`flex-1 px-2.5 py-2 rounded-xl text-[11px] font-bold transition-all text-center whitespace-nowrap ${
+                      integrationBatchStatusFilter === 'en_attente_audit'
+                        ? 'bg-amber-500 text-slate-950 font-black shadow-md shadow-amber-950'
+                        : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    En attente ({integrationBatches.filter(b => b.status === 'en_attente_audit').length})
+                  </button>
+                  <button
+                    onClick={() => setIntegrationBatchStatusFilter('valide')}
+                    className={`flex-1 px-2.5 py-2 rounded-xl text-[11px] font-bold transition-all text-center whitespace-nowrap ${
+                      integrationBatchStatusFilter === 'valide'
+                        ? 'bg-blue-600 text-white font-black shadow-md'
+                        : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    Scellés ({integrationBatches.filter(b => b.status === 'validé').length})
+                  </button>
+                </div>
+              </div>
+
+              {/* RÉSULTAT DES LOTS FILTRÉS */}
+              {(() => {
+                const filtered = integrationBatches.filter(batch => {
+                  if (integrationBatchStatusFilter !== 'all') {
+                    if (integrationBatchStatusFilter === 'valide' && batch.status !== 'validé') return false;
+                    if (integrationBatchStatusFilter === 'en_attente_audit' && batch.status !== 'en_attente_audit') return false;
+                    if (integrationBatchStatusFilter === 'rejete' && batch.status !== 'rejeté') return false;
+                  }
+                  if (integrationBatchDirectionFilter && batch.direction !== integrationBatchDirectionFilter) {
+                    return false;
+                  }
+                  if (integrationBatchSearch.trim()) {
+                    const q = integrationBatchSearch.toLowerCase().trim();
+                    const bNum = String(batch.batchNumber || '').toLowerCase();
+                    const dir = String(batch.direction || '').toLowerCase();
+                    const by = String(batch.importedBy || '').toLowerCase();
+                    const notes = String(batch.notes || '').toLowerCase();
+                    const ruleRef = String(batch.ruleApplied?.reference || batch.ruleApplied?.title || '').toLowerCase();
+                    const match = bNum.includes(q) || dir.includes(q) || by.includes(q) || notes.includes(q) || ruleRef.includes(q);
+                    if (!match) return false;
+                  }
+                  return true;
+                });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-6 bg-white/5 rounded-2xl border border-white/5 text-center text-xs text-slate-400 font-medium">
+                      {integrationBatches.length === 0 ? (
+                        "Aucun lot d'inventaire enregistré pour le moment."
+                      ) : (
+                        `Aucun lot ne correspond à vos critères de recherche "${integrationBatchSearch || integrationBatchStatusFilter || integrationBatchDirectionFilter}".`
+                      )}
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 gap-4">
+                    {filtered.map(batch => {
+                      const isPending = batch.status === 'en_attente_audit';
+                      const isValidated = batch.status === 'validé';
+
+                      return (
+                        <div
+                          key={batch.id}
+                          className="bg-white/10 backdrop-blur-md rounded-2xl p-5 border border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-all hover:bg-white/[0.13]"
+                        >
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {batch.inventoryRef && (
+                                <span className="font-mono font-black text-emerald-200 bg-emerald-900/80 px-2.5 py-0.5 rounded-lg border border-emerald-400/40 text-xs shadow-xs">
+                                  Réf : {batch.inventoryRef}
+                                </span>
+                              )}
+                              <span className="font-mono font-black text-white text-sm bg-white/10 px-2.5 py-0.5 rounded-lg border border-white/10">
+                                {batch.batchNumber}
+                              </span>
+                              {batch.inventoryName && (
+                                <span className="font-bold text-slate-200 text-xs bg-white/10 px-2.5 py-0.5 rounded-lg border border-white/10">
+                                  {batch.inventoryName}
+                                </span>
+                              )}
+                              <span className="text-xs font-bold text-emerald-300 bg-emerald-900/60 px-2.5 py-0.5 rounded-lg border border-emerald-500/30">
+                                {batch.direction}
+                              </span>
+                              {isPending && (
+                                <span className="text-[10px] font-black uppercase text-amber-300 bg-amber-950/70 px-2.5 py-0.5 rounded-md border border-amber-500/40 animate-pulse">
+                                  ⏳ En attente validation Responsable Audit
+                                </span>
+                              )}
+                              {isValidated && (
+                                <span className="text-[10px] font-black uppercase text-blue-300 bg-blue-950/70 px-2.5 py-0.5 rounded-md border border-blue-500/40 flex items-center gap-1">
+                                  <CheckCircle size={11} /> Validé & Scellé en centre d'archives
+                                </span>
+                              )}
+                              {batch.status === 'rejeté' && (
+                                <span className="text-[10px] font-black uppercase text-rose-300 bg-rose-950/70 px-2.5 py-0.5 rounded-md border border-rose-500/40">
+                                  ❌ Rejeté
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="text-xs text-slate-300 flex flex-wrap items-center gap-x-4 gap-y-1.5 font-medium">
+                              <span className="flex items-center gap-1.5">
+                                <Archive size={13} className="text-emerald-400" />
+                                <strong>{batch.boxesCount || batch.boxesData?.length || 0}</strong> boîte(s) conditionnée(s)
+                              </span>
+                              <span className="flex items-center gap-1.5">
+                                <FileText size={13} className="text-emerald-400" />
+                                <strong>{batch.foldersCount || batch.foldersData?.length || 0}</strong> dossier(s)
+                              </span>
+                              {batch.ruleApplied && (
+                                <span className="flex items-center gap-1.5 text-emerald-200">
+                                  <Shield size={13} className="text-emerald-400" />
+                                  DUA : <strong>{batch.ruleApplied?.reference || batch.ruleApplied?.title || 'DUA confirmée'}</strong>
+                                </span>
+                              )}
+                              <span>👤 Importé par : <strong className="text-white">{batch.importedBy || 'Archiviste'}</strong></span>
+                              <span>📅 Date : <strong>{new Date(batch.importedAt).toLocaleDateString('fr-FR')}</strong></span>
+                            </div>
+
+                            {batch.notes && (
+                              <div className="text-[11px] text-slate-300 italic bg-black/20 px-3 py-1.5 rounded-xl border border-white/5">
+                                Note : {batch.notes}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                            <button
+                              onClick={() => {
+                                setInspectFolderSearch('');
+                                setInspectFolderSortFinal('all');
+                                setInspectFolderSelectedBox('all');
+                                setInspectingBatch(batch);
+                              }}
+                              className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border border-white/10 shadow-sm"
+                            >
+                              <Eye size={14} className="text-emerald-400" /> Inspecter le Lot & Dates
+                            </button>
+                            
+                            {isPending && (
+                              <>
+                                <button
+                                  onClick={() => handleRejectIntegrationBatch(batch.id)}
+                                  className="px-3.5 py-2.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border border-rose-500/30"
+                                >
+                                  <X size={14} /> Rejeter
+                                </button>
+                                <button
+                                  onClick={() => handleValidateIntegrationBatch(batch.id)}
+                                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-all shadow-lg shadow-emerald-950"
+                                >
+                                  <CheckSquare size={14} /> Valider & Confirmer le Stockage
+                                </button>
+                              </>
+                            )}
+
+                            {isValidated && (
+                              <button
+                                onClick={() => setViewingBatchSlip(batch)}
+                                className="px-4 py-2.5 bg-blue-600/80 hover:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-md"
+                              >
+                                <Printer size={14} /> Bordereau Récapitulatif
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* --- VALIDATION DES INVENTAIRES UNITAIRES ET MASS INVENTORY EXISTANTS --- */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
               <div>
-                <h3 className="text-lg font-bold text-slate-800">Validation Finale des Inventaires</h3>
-                <p className="text-slate-500 text-xs">Passez en revue les inventaires de masse soumis avec outils d'édition intégrés.</p>
+                <h3 className="text-lg font-bold text-slate-800">Contrôle Unitaire & Inventaire Général</h3>
+                <p className="text-slate-500 text-xs">Passez en revue les inventaires individuels ou modifiez directement les contenus.</p>
               </div>
 
               {/* Barcode filter controls */}
@@ -2287,6 +2719,654 @@ export function ResponsableDashboard() {
           validatedAt={new Date()}
           onClose={() => setViewingFinalEliminationBatch(null)}
         />
+      )}
+
+      {/* --- MODAL INSPECTION DU LOT D'INTÉGRATION COMPLET (ÉTAPE 7) --- */}
+      {inspectingBatch && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-5xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200">
+            <div className="p-6 bg-slate-900 text-white flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2.5 py-0.5 rounded border border-emerald-900">
+                    Détail du Lot d'Intégration
+                  </span>
+                  {inspectingBatch.inventoryRef && (
+                    <span className="text-xs font-mono font-black text-emerald-300 bg-emerald-900/80 px-2.5 py-0.5 rounded border border-emerald-500/40">
+                      Réf : {inspectingBatch.inventoryRef}
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-xl font-extrabold mt-1">
+                  {inspectingBatch.inventoryName || `Lot ${inspectingBatch.batchNumber}`} — {inspectingBatch.direction}
+                </h3>
+                <p className="text-xs text-slate-400 font-mono">
+                  Code Lot : {inspectingBatch.batchNumber} • Vérification détaillée des {inspectingBatch.foldersCount || inspectingBatch.foldersData?.length || 0} dossiers et {inspectingBatch.boxesCount || inspectingBatch.boxesData?.length || 0} boîtes avant validation finale.
+                </p>
+              </div>
+              <button
+                onClick={() => setInspectingBatch(null)}
+                className="p-2 hover:bg-white/10 rounded-full text-slate-400 hover:text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase text-slate-400">Boîtes générées</p>
+                  <p className="text-2xl font-black text-slate-800">{inspectingBatch.boxesCount || inspectingBatch.boxesData?.length || 0}</p>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase text-slate-400">Dossiers intégrés</p>
+                  <p className="text-2xl font-black text-slate-800">{inspectingBatch.foldersCount || inspectingBatch.foldersData?.length || 0}</p>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase text-slate-400">Règle DUA</p>
+                  <p className="text-xs font-bold text-emerald-700 truncate" title={inspectingBatch.ruleApplied?.title || inspectingBatch.ruleApplied?.reference || 'Règle standard'}>
+                    {inspectingBatch.ruleApplied?.reference || 'DUA Associée'}
+                  </p>
+                </div>
+                <div className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase text-slate-400">Statut</p>
+                  <span className="inline-block mt-1 text-[11px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                    {inspectingBatch.status}
+                  </span>
+                </div>
+              </div>
+
+              {/* Table of Boxes */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+                <h4 className="text-sm font-black text-slate-800 flex items-center gap-2">
+                  <Archive size={16} className="text-emerald-600" /> Boîtes d'Archives et Localisations
+                </h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-bold">
+                        <th className="p-2.5">Code Boîte</th>
+                        <th className="p-2.5">Code-Barres</th>
+                        <th className="p-2.5">Emplacement Physique</th>
+                        <th className="p-2.5">Type d'Archive</th>
+                        <th className="p-2.5 text-center">Nombre Dossiers</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {(inspectingBatch.boxesData || []).map((b: any, idx: number) => {
+                        const boxNum = b.boxNumber || b.number || `Boîte #${idx + 1}`;
+                        
+                        // Dynamically compute exact number of folders for this box
+                        const folderCount = b.foldersCount ?? b.folderCount ?? (
+                          Array.isArray(b.foldersList) && b.foldersList.length > 0
+                            ? b.foldersList.length
+                            : Array.isArray(b.folders) && b.folders.length > 0
+                              ? b.folders.length
+                              : (inspectingBatch.foldersData || []).filter((f: any) => {
+                                  const fBox = f.boxNumber || f.numBoite || f.generatedBoxNumber;
+                                  return String(fBox).trim() === String(boxNum).trim();
+                                }).length
+                        );
+
+                        // Format full physical location
+                        let locStr = b.localisation || b.location;
+                        if (!locStr || locStr === 'Centre Archives Central') {
+                          const parts: string[] = [];
+                          if (b.batiment) parts.push(b.batiment);
+                          if (b.depot && b.salle) parts.push(`${b.depot} / ${b.salle}`);
+                          else if (b.depot) parts.push(b.depot);
+                          else if (b.salle) parts.push(b.salle);
+
+                          const coords: string[] = [];
+                          if (b.rayon) coords.push(`Rayon ${b.rayon}`);
+                          if (b.travee) coords.push(`Travée ${b.travee}`);
+                          if (b.tablette) coords.push(`Étagère ${b.tablette}`);
+                          if (b.niveau) coords.push(`Niveau ${b.niveau}`);
+
+                          if (coords.length > 0) parts.push(coords.join(' - '));
+                          if (parts.length > 0) locStr = parts.join(' • ');
+                        }
+                        if (!locStr) locStr = 'Centre Archives Central';
+
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                            <td className="p-2.5 font-bold font-mono text-emerald-800 bg-emerald-50/50 rounded">{boxNum}</td>
+                            <td className="p-2.5 font-mono text-slate-600">{b.barcode || `BOX-${boxNum}-2026`}</td>
+                            <td className="p-2.5 font-bold text-slate-700">{locStr}</td>
+                            <td className="p-2.5 text-slate-600">{b.archiveType || inspectingBatch.direction}</td>
+                            <td className="p-2.5 text-center">
+                              <span className="inline-flex items-center justify-center font-mono font-black text-xs text-emerald-950 bg-emerald-100/90 px-3 py-1 rounded-lg border border-emerald-300">
+                                {folderCount}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Table of Folders with Search, Filters, Extreme Dates and Confirmed Retention Rules */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                  <div className="flex items-center gap-2">
+                    <FileText size={18} className="text-emerald-600" />
+                    <h4 className="text-sm font-black text-slate-800">
+                      Liste Complète des Dossiers d'Inventaire
+                    </h4>
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                      {inspectingBatch.foldersData?.length || 0} dossiers
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
+                    <Clock size={13} className="text-slate-400" />
+                    <span>Calcul des dates extrêmes selon la date de clôture & règles DUA</span>
+                  </div>
+                </div>
+
+                {/* Search and Filters Bar for Dossiers */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
+                  {/* Search query */}
+                  <div className="sm:col-span-6 relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Filtrer par n° ordre, référence, intitulé, règle DUA, dates, boîte..."
+                      value={inspectFolderSearch}
+                      onChange={e => setInspectFolderSearch(e.target.value)}
+                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                    />
+                    {inspectFolderSearch && (
+                      <button
+                        onClick={() => setInspectFolderSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Filter by Box */}
+                  <div className="sm:col-span-3">
+                    <select
+                      value={inspectFolderSelectedBox}
+                      onChange={e => setInspectFolderSelectedBox(e.target.value)}
+                      className="w-full px-2.5 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    >
+                      <option value="all">Toutes les boîtes ({inspectingBatch.boxesData?.length || 0})</option>
+                      {(inspectingBatch.boxesData || []).map((b: any, bIdx: number) => {
+                        const boxNum = b.boxNumber || b.number;
+                        const count = b.foldersCount ?? b.folderCount ?? (
+                          Array.isArray(b.foldersList) && b.foldersList.length > 0
+                            ? b.foldersList.length
+                            : (inspectingBatch.foldersData || []).filter((f: any) => String(f.boxNumber || f.numBoite || f.generatedBoxNumber).trim() === String(boxNum).trim()).length
+                        );
+                        return (
+                          <option key={bIdx} value={boxNum}>
+                            {boxNum} ({count} dos.)
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {/* Filter by Sort Final */}
+                  <div className="sm:col-span-3 flex items-center gap-1">
+                    <button
+                      onClick={() => setInspectFolderSortFinal('all')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all text-center ${
+                        inspectFolderSortFinal === 'all'
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'bg-white text-slate-600 hover:bg-slate-200 border border-slate-200'
+                      }`}
+                    >
+                      Tous
+                    </button>
+                    <button
+                      onClick={() => setInspectFolderSortFinal('EL')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all text-center ${
+                        inspectFolderSortFinal === 'EL'
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-white text-rose-700 hover:bg-rose-50 border border-slate-200'
+                      }`}
+                    >
+                      Élim. (EL)
+                    </button>
+                    <button
+                      onClick={() => setInspectFolderSortFinal('CP')}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold transition-all text-center ${
+                        inspectFolderSortFinal === 'CP'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-white text-emerald-700 hover:bg-emerald-50 border border-slate-200'
+                      }`}
+                    >
+                      Cons. (CP)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Filtered Dossiers List */}
+                {(() => {
+                  const allFolders = inspectingBatch.foldersData || [];
+
+                  // Collect distinct raw Excel column keys across all folders
+                  const rawExcelCols: string[] = Array.from(new Set<string>(
+                    allFolders.flatMap((f: any) => f.rawRow && typeof f.rawRow === 'object' ? Object.keys(f.rawRow) : [])
+                  )).filter(k => k && k !== 'undefined' && k !== 'null');
+
+                  const filteredFolders = allFolders.filter((f: any, idx: number) => {
+                    // Search query match
+                    if (inspectFolderSearch.trim()) {
+                      const q = inspectFolderSearch.toLowerCase().trim();
+                      const numOrdre = String(idx + 1);
+                      const boxNum = String(f.boxNumber || f.numBoite || '').toLowerCase();
+                      const ref = String(f.reference || '').toLowerCase();
+                      const intitule = String(f.intitule || f.titre || f.designation || '').toLowerCase();
+                      const dua = String(f.codeDua || f.ruleId || '').toLowerCase();
+                      const dCloture = String(f.dateCloture || f.dateFin || f.year || '').toLowerCase();
+                      const dDebut = String(f.dateDebut || '').toLowerCase();
+                      const sort = String(f.sortFinal || f.finalDisposition || '').toLowerCase();
+                      const inRawRow = f.rawRow && typeof f.rawRow === 'object'
+                        ? Object.values(f.rawRow).some(v => String(v).toLowerCase().includes(q))
+                        : false;
+
+                      const match = numOrdre.includes(q) || boxNum.includes(q) || ref.includes(q) || intitule.includes(q) || dua.includes(q) || dCloture.includes(q) || dDebut.includes(q) || sort.includes(q) || inRawRow;
+                      if (!match) return false;
+                    }
+
+                    // Box filter
+                    if (inspectFolderSelectedBox !== 'all') {
+                      const boxNum = String(f.boxNumber || f.numBoite || '');
+                      if (boxNum !== inspectFolderSelectedBox) return false;
+                    }
+
+                    // Sort final filter
+                    if (inspectFolderSortFinal !== 'all') {
+                      const sort = String(f.sortFinal || f.finalDisposition || 'EL').toUpperCase();
+                      if (inspectFolderSortFinal === 'EL' && !sort.includes('EL') && !sort.includes('ÉLIM') && !sort.includes('D')) return false;
+                      if (inspectFolderSortFinal === 'CP' && !sort.includes('CP') && !sort.includes('CONS') && !sort.includes('C')) return false;
+                    }
+
+                    return true;
+                  });
+
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                        <div className="flex items-center gap-2">
+                          <span>
+                            Affichage de <strong className="text-slate-800 font-bold">{filteredFolders.length}</strong> sur <strong>{allFolders.length}</strong> ligne(s)
+                          </span>
+                          {rawExcelCols.length > 0 && (
+                            <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              {rawExcelCols.length} colonne(s) Excel d'origine sans modification
+                            </span>
+                          )}
+                        </div>
+                        {(inspectFolderSearch || inspectFolderSelectedBox !== 'all' || inspectFolderSortFinal !== 'all') && (
+                          <button
+                            onClick={() => {
+                              setInspectFolderSearch('');
+                              setInspectFolderSelectedBox('all');
+                              setInspectFolderSortFinal('all');
+                            }}
+                            className="text-emerald-600 hover:text-emerald-700 font-bold cursor-pointer hover:underline"
+                          >
+                            Réinitialiser les filtres
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="overflow-x-auto max-h-80 rounded-xl border border-slate-200">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-200 bg-slate-100 text-slate-700 font-bold sticky top-0 z-10">
+                              <th className="p-3 w-12 text-center">N°</th>
+                              
+                              {/* Raw Excel Columns */}
+                              {rawExcelCols.length > 0 ? (
+                                rawExcelCols.map(colName => (
+                                  <th key={colName} className="p-3 whitespace-nowrap text-slate-800 font-black">
+                                    {colName}
+                                  </th>
+                                ))
+                              ) : (
+                                <>
+                                  <th className="p-3">Boîte / Stockage</th>
+                                  <th className="p-3">Référence Dossier</th>
+                                  <th className="p-3">Date Début</th>
+                                  <th className="p-3">Date Clôture</th>
+                                  <th className="p-3">Intitulé / Objet</th>
+                                </>
+                              )}
+
+                              {/* DUA & Sort final */}
+                              <th className="p-3 text-center bg-emerald-50 text-emerald-950 font-black border-l border-emerald-200 whitespace-nowrap">
+                                Règle Confirmée & DUA
+                              </th>
+                              <th className="p-3 text-center bg-emerald-50 text-emerald-950 font-black whitespace-nowrap">
+                                Sort Final
+                              </th>
+                              {rawExcelCols.length > 0 && (
+                                <th className="p-3 bg-emerald-50 text-emerald-950 font-black whitespace-nowrap">
+                                  Boîte Assignée
+                                </th>
+                              )}
+                              <th className="p-3 bg-emerald-50 text-emerald-950 font-black whitespace-nowrap">
+                                Localisation
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 bg-white">
+                            {filteredFolders.length === 0 ? (
+                              <tr>
+                                <td colSpan={rawExcelCols.length > 0 ? rawExcelCols.length + 4 : 8} className="p-8 text-center text-slate-400 font-medium">
+                                  Aucun dossier ne correspond à vos filtres de recherche.
+                                </td>
+                              </tr>
+                            ) : (
+                              filteredFolders.map((f: any, idx: number) => {
+                                const closureDateDisplay = getClosureDateDisplay(f);
+                                const ruleDisplay = getConfirmedRuleDisplay(f, inspectingBatch.ruleApplied);
+                                const originalIdx = allFolders.indexOf(f);
+                                const primaryRef = f.reference || f.intitule || f.titre || f.designation || `Dossier #${originalIdx >= 0 ? originalIdx + 1 : idx + 1}`;
+                                const boxNum = f.boxNumber || f.numBoite || 'Non assignée';
+
+                                return (
+                                  <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                                    {/* N° Ordre */}
+                                    <td className="p-3 text-center font-mono font-bold text-slate-400">
+                                      #{originalIdx >= 0 ? originalIdx + 1 : idx + 1}
+                                    </td>
+
+                                    {/* Raw Excel Cells */}
+                                    {rawExcelCols.length > 0 ? (
+                                      rawExcelCols.map(colName => {
+                                        const rawVal = f.rawRow && f.rawRow[colName] !== undefined && f.rawRow[colName] !== null
+                                          ? String(f.rawRow[colName])
+                                          : (f[colName] !== undefined ? String(f[colName]) : '-');
+                                        const isNumeric = /^\d+$/.test(rawVal.trim());
+                                        
+                                        return (
+                                          <td key={colName} className="p-3 whitespace-nowrap font-medium text-slate-900">
+                                            <span className={`font-mono ${isNumeric ? 'font-bold text-slate-950' : 'text-slate-800'}`}>
+                                              {rawVal}
+                                            </span>
+                                          </td>
+                                        );
+                                      })
+                                    ) : (
+                                      <>
+                                        <td className="p-3">
+                                          <button
+                                            onClick={() => setInspectFolderSelectedBox(f.boxNumber || f.numBoite)}
+                                            title="Cliquer pour filtrer cette boîte"
+                                            className="inline-flex items-center gap-1 font-mono font-black text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200 text-[11px] w-fit cursor-pointer transition-colors"
+                                          >
+                                            <Archive size={11} className="text-emerald-600" />
+                                            {boxNum}
+                                          </button>
+                                        </td>
+                                        <td className="p-3 font-mono font-bold text-slate-900">
+                                          {primaryRef}
+                                        </td>
+                                        <td className="p-3 font-mono text-slate-600">
+                                          {f.dateDebut || '-'}
+                                        </td>
+                                        <td className="p-3 font-mono font-bold text-slate-800">
+                                          {closureDateDisplay}
+                                        </td>
+                                        <td className="p-3 text-slate-600 max-w-xs truncate" title={f.intitule || primaryRef}>
+                                          {f.intitule && f.intitule !== f.reference && f.intitule !== f.numBoite ? f.intitule : '-'}
+                                        </td>
+                                      </>
+                                    )}
+
+                                    {/* Règle Confirmée & DUA */}
+                                    <td className="p-3 text-center border-l border-slate-200">
+                                      <div className="inline-flex items-center gap-1.5 flex-wrap justify-center">
+                                        <span className="font-mono font-black text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded text-xs border border-emerald-300">
+                                          {ruleDisplay.codeDua}
+                                        </span>
+                                        <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                          {ruleDisplay.duration}
+                                        </span>
+                                      </div>
+                                    </td>
+
+                                    {/* Sort Final */}
+                                    <td className="p-3 text-center">
+                                      <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                                        ruleDisplay.isElimination
+                                          ? 'bg-rose-100 text-rose-800 border border-rose-300 shadow-2xs'
+                                          : 'bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs'
+                                      }`}>
+                                        {ruleDisplay.isElimination ? 'Élimination (EL)' : 'Conservation (CP)'}
+                                      </span>
+                                    </td>
+
+                                    {/* Boîte if rawExcelCols active */}
+                                    {rawExcelCols.length > 0 && (
+                                      <td className="p-3">
+                                        <button
+                                          onClick={() => setInspectFolderSelectedBox(f.boxNumber || f.numBoite)}
+                                          title="Cliquer pour filtrer cette boîte"
+                                          className="inline-flex items-center gap-1 font-mono font-black text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200 text-[11px] w-fit cursor-pointer transition-colors"
+                                        >
+                                          <Archive size={11} className="text-emerald-600" />
+                                          {boxNum}
+                                        </button>
+                                      </td>
+                                    )}
+
+                                    {/* Localisation */}
+                                    <td className="p-3 text-[11px] text-slate-500 font-mono whitespace-nowrap">
+                                      {f.localisation || 'Centre Archives Central'}
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+
+            <div className="p-4 bg-white border-t border-slate-200 flex items-center justify-between">
+              <button
+                onClick={() => setInspectingBatch(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
+              >
+                Fermer l'Inspection
+              </button>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    const b = inspectingBatch;
+                    setInspectingBatch(null);
+                    handleRejectIntegrationBatch(b.id);
+                  }}
+                  className="px-4 py-2 bg-rose-100 hover:bg-rose-200 text-rose-700 rounded-xl text-xs font-bold transition-all"
+                >
+                  Rejeter le Lot
+                </button>
+                <button
+                  onClick={() => {
+                    const b = inspectingBatch;
+                    setInspectingBatch(null);
+                    handleValidateIntegrationBatch(b.id);
+                  }}
+                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-md shadow-emerald-950 flex items-center gap-2"
+                >
+                  <CheckSquare size={14} /> Valider & Sceller Définitivement
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MODAL BORDEREAU DE VERSEMENT OFFICIEL & STOCKAGE SCIELLÉ --- */}
+      {viewingBatchSlip && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200">
+            <div className="p-5 bg-emerald-900 text-white flex items-center justify-between print:hidden">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-700 flex items-center justify-center">
+                  <ShieldCheck size={20} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base">Bordereau de Versement et Stockage Scellé</h3>
+                  <p className="text-xs text-emerald-200">Document officiel validé par la Session Responsable Audit</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => window.print()}
+                  className="px-4 py-2 bg-white text-emerald-900 hover:bg-emerald-50 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Printer size={14} /> Imprimer le Bordereau
+                </button>
+                <button
+                  onClick={() => setViewingBatchSlip(null)}
+                  className="p-2 hover:bg-white/10 rounded-full text-emerald-200 hover:text-white"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-8 overflow-y-auto space-y-6 flex-1 text-slate-800 bg-white" id="printable-bordereau">
+              {/* Header */}
+              <div className="border-b-2 border-emerald-800 pb-6 text-center space-y-1">
+                <h1 className="text-xl font-black uppercase tracking-wider text-slate-900">
+                  BORDEREAU OFFICIEL DE VERSEMENT ET DE STOCKAGE DÉFINITIF
+                </h1>
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
+                  Système Centralisé de Gestion des Archives — Audit & Conformité
+                </p>
+              </div>
+
+              {/* Metadata Grid */}
+              <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 text-xs">
+                <div>
+                  <p className="text-slate-500 font-bold uppercase text-[10px]">Numéro de Versement / Lot</p>
+                  <p className="font-mono font-black text-slate-900 text-sm">{viewingBatchSlip.batchNumber}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase text-[10px]">Service / Direction Versante</p>
+                  <p className="font-black text-emerald-800 text-sm">{viewingBatchSlip.direction}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase text-[10px]">Date d'Intégration & Validation</p>
+                  <p className="font-medium text-slate-800">{new Date(viewingBatchSlip.validatedAt || Date.now()).toLocaleString('fr-FR')}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 font-bold uppercase text-[10px]">Responsable d'Audit Validateur</p>
+                  <p className="font-bold text-slate-800">{viewingBatchSlip.validatedBy || 'Responsable Audit'}</p>
+                </div>
+              </div>
+
+              {/* Summary Stats */}
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <p className="text-[10px] font-bold uppercase text-emerald-700">Total Boîtes Scellées</p>
+                  <p className="text-2xl font-black text-emerald-900">{viewingBatchSlip.boxesCount || viewingBatchSlip.boxesData?.length || 0}</p>
+                </div>
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                  <p className="text-[10px] font-bold uppercase text-blue-700">Total Dossiers Versés</p>
+                  <p className="text-2xl font-black text-blue-900">{viewingBatchSlip.foldersCount || viewingBatchSlip.foldersData?.length || 0}</p>
+                </div>
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                  <p className="text-[10px] font-bold uppercase text-purple-700">Statut Conservation</p>
+                  <p className="text-base font-black text-purple-900 mt-1">Conforme DUA</p>
+                </div>
+              </div>
+
+              {/* Boîtes et emplacements table */}
+              <div className="space-y-2">
+                <h4 className="text-xs font-black uppercase text-slate-700 tracking-wider">Récapitulatif des Boîtes et Localisations Physiques</h4>
+                <table className="w-full text-left text-xs border border-slate-200">
+                  <thead className="bg-slate-100 text-slate-700 font-bold">
+                    <tr>
+                      <th className="p-2 border-b border-slate-200">N° Boîte</th>
+                      <th className="p-2 border-b border-slate-200">Code-Barres</th>
+                      <th className="p-2 border-b border-slate-200">Emplacement Salle / Rayon / Étagère</th>
+                      <th className="p-2 border-b border-slate-200 text-center">Nb Dossiers</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(viewingBatchSlip.boxesData || []).map((box: any, idx: number) => {
+                      const boxNum = box.boxNumber || box.number || `Boîte #${idx + 1}`;
+                      const folderCount = box.foldersCount ?? box.folderCount ?? (
+                        Array.isArray(box.foldersList) && box.foldersList.length > 0
+                          ? box.foldersList.length
+                          : (viewingBatchSlip.foldersData || []).filter((f: any) => String(f.boxNumber || f.numBoite || f.generatedBoxNumber).trim() === String(boxNum).trim()).length
+                      );
+                      let locStr = box.localisation || box.location;
+                      if (!locStr || locStr === 'Centre Archives Central') {
+                        const parts: string[] = [];
+                        if (box.batiment) parts.push(box.batiment);
+                        if (box.depot && box.salle) parts.push(`${box.depot} / ${box.salle}`);
+                        else if (box.depot) parts.push(box.depot);
+                        else if (box.salle) parts.push(box.salle);
+
+                        const coords: string[] = [];
+                        if (box.rayon) coords.push(`Rayon ${box.rayon}`);
+                        if (box.travee) coords.push(`Travée ${box.travee}`);
+                        if (box.tablette) coords.push(`Étagère ${box.tablette}`);
+                        if (box.niveau) coords.push(`Niveau ${box.niveau}`);
+
+                        if (coords.length > 0) parts.push(coords.join(' - '));
+                        if (parts.length > 0) locStr = parts.join(' • ');
+                      }
+                      if (!locStr) locStr = 'Centre Archives Central';
+
+                      return (
+                        <tr key={idx}>
+                          <td className="p-2 font-mono font-bold text-emerald-800">{boxNum}</td>
+                          <td className="p-2 font-mono">{box.barcode || `BOX-${boxNum}-2026`}</td>
+                          <td className="p-2 font-bold text-slate-700">{locStr}</td>
+                          <td className="p-2 text-center font-bold font-mono">{folderCount}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Signatures */}
+              <div className="grid grid-cols-2 gap-8 pt-8 border-t border-slate-200">
+                <div className="border border-dashed border-slate-300 rounded-2xl p-4 text-center space-y-12">
+                  <p className="text-xs font-bold text-slate-600">Le Service Versant</p>
+                  <div className="text-[10px] text-slate-400">Date et Signature</div>
+                </div>
+                <div className="border border-dashed border-slate-300 rounded-2xl p-4 text-center space-y-12 bg-emerald-50/50">
+                  <p className="text-xs font-bold text-emerald-800">Le Responsable du Centre d'Archives (Validé)</p>
+                  <div className="text-[10px] text-emerald-600 font-bold">Document scellé électroniquement</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-100 border-t border-slate-200 flex justify-end print:hidden">
+              <button
+                onClick={() => setViewingBatchSlip(null)}
+                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

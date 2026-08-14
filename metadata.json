@@ -1,6 +1,6 @@
 {
   "name": "Flowix Pro",
-  "description": "Professional internal archive request management system with multi-role access, digital signatures, and automated PDF reporting.",
+  "description": "Système de gestion des archives d'entreprise avec intégration d'inventaire en 7 étapes, calendrier DUA, codes-barres, localisation et validation d'audit.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

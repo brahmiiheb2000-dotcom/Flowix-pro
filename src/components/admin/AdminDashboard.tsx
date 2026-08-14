@@ -21,6 +21,7 @@ import {
 import { suggestRetentionRule, extractArchivalRulesFromPDF } from '../../services/archiveAIService';
 
 import { CentralizedInventory } from './CentralizedInventory';
+import { InventoryIntegrationWizard } from './InventoryIntegrationWizard';
 import { TabHelpPrompts } from './TabHelpPrompts';
 import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem } from '../transfer/TransferDocsModals';
 
@@ -217,7 +218,7 @@ const safeHtml2Canvas = async (element: HTMLElement, options: any = {}) => {
 };
 
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
-  const { user, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
+  const { user, profile, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
   
   const [requests, setRequests] = useState<any[]>([]);
   const [remoteRequests, setRemoteRequests] = useState<any[]>([]);
@@ -226,6 +227,15 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [requestSubTab, setRequestSubTab] = useState<'all' | 'transfers'>('all');
   const [communicationSubTab, setCommunicationSubTab] = useState<'all' | 'signed' | 'processus' | 'returns'>(initialTab === 'returns' ? 'returns' : 'all');
   const [agentSessionSubTab, setAgentSessionSubTab] = useState<'history' | 'new' | 'remote'>('history');
+
+  useEffect(() => {
+    if (initialTab === 'returns') {
+      setActiveTab('communication');
+      setCommunicationSubTab('returns');
+    } else if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   
   // Modals state for transfer requests
   const [validatingTransfer, setValidatingTransfer] = useState<TransferRequestItem | null>(null);
@@ -278,7 +288,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [selectedDirection, setSelectedDirection] = useState<string>('all');
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
-  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search' | 'transfer'>('centralized');
+  const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search' | 'transfer' | 'integration'>('integration');
 
   // Bulk Inventory Search States
   const [bulkInventorySearchMode, setBulkInventorySearchMode] = useState<boolean>(false);
@@ -3930,6 +3940,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 mb-6">
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
+              onClick={() => setMassSubTab('integration')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black transition-all ${massSubTab === 'integration' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              <Sparkles size={16} /> INTÉGRATION (WORKFLOW 7 ÉTAPES)
+            </button>
+            <button
               onClick={() => setMassSubTab('centralized')}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${massSubTab === 'centralized' ? 'bg-white text-brand-accent shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
@@ -5930,6 +5946,20 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     </div>
                   </div>
                 )}
+              </motion.div>
+            )}
+
+            {massSubTab === 'integration' && (
+              <motion.div
+                key="integration-workflow"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="w-full"
+              >
+                <InventoryIntegrationWizard onIntegrationComplete={() => {
+                  fetchData();
+                }} />
               </motion.div>
             )}
 

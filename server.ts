@@ -96,14 +96,32 @@ db.exec(`
     direction TEXT UNIQUE,
     prefix TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS integration_batches (
+    id TEXT PRIMARY KEY,
+    batchNumber TEXT,
+    direction TEXT,
+    importedAt TEXT,
+    importedBy TEXT,
+    status TEXT DEFAULT 'en_attente_audit', -- 'en_attente_audit', 'validé', 'rejeté'
+    foldersCount INTEGER DEFAULT 0,
+    boxesCount INTEGER DEFAULT 0,
+    foldersData TEXT,
+    boxesData TEXT,
+    ruleApplied TEXT,
+    validatedAt TEXT,
+    validatedBy TEXT,
+    rejectionReason TEXT,
+    notes TEXT
+  );
 `);
 
-// Migration: Add new columns if missing
+// Migration for mass_inventory
 const newCols = [
   'dossier', 'codeAgence', 'sin', 'police', 'adherant', 
   'dateDeclaration', 'typeSinistre', 'dateCloture', 
   'etatSinistre', 'paquet', 'ruleId', 'expiryDate', 'archivalStatus', 'rawData',
-  'isEliminated', 'scanFile'
+  'isEliminated', 'scanFile', 'batchId', 'batchNumber', 'inventoryRef', 'inventoryName', 'validatedBy', 'validatedAt'
 ];
 newCols.forEach(col => {
   try {
@@ -114,10 +132,20 @@ newCols.forEach(col => {
 });
 
 // Migration for centralized_inventory
-const centralizedCols = ['ruleId', 'expiryDate', 'archivalStatus', 'direction', 'intitule', 'isEliminated', 'scanFile'];
+const centralizedCols = ['ruleId', 'expiryDate', 'archivalStatus', 'direction', 'intitule', 'isEliminated', 'scanFile', 'batchId', 'batchNumber', 'inventoryRef', 'inventoryName', 'validatedBy'];
 centralizedCols.forEach(col => {
   try {
     db.exec(`ALTER TABLE centralized_inventory ADD COLUMN ${col} TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+});
+
+// Migration for integration_batches (inventoryRef, inventoryName)
+const batchNewCols = ['inventoryRef', 'inventoryName'];
+batchNewCols.forEach(col => {
+  try {
+    db.exec(`ALTER TABLE integration_batches ADD COLUMN ${col} TEXT`);
   } catch (e) {
     // Column already exists
   }
@@ -3061,6 +3089,356 @@ async function startServer() {
         }
       })();
       res.json({ success: true, count: references.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==========================================
+  // --- INVENTORY INTEGRATION WIZARD ENDPOINTS ---
+  // ==========================================
+  
+  // List all integration batches
+  app.get("/api/inventory-integration/batches", authenticate, (req: any, res) => {
+    try {
+      const batches = db.prepare(`
+        SELECT * FROM integration_batches 
+        ORDER BY importedAt DESC
+      `).all();
+      
+      const parsedBatches = batches.map((b: any) => {
+        let ruleObj = b.ruleApplied;
+        try {
+          if (typeof b.ruleApplied === 'string' && (b.ruleApplied.startsWith('{') || b.ruleApplied.startsWith('['))) {
+            ruleObj = JSON.parse(b.ruleApplied);
+          }
+        } catch (e) {}
+
+        try {
+          return {
+            ...b,
+            foldersData: b.foldersData ? JSON.parse(b.foldersData) : [],
+            boxesData: b.boxesData ? JSON.parse(b.boxesData) : [],
+            ruleApplied: ruleObj
+          };
+        } catch (e) {
+          return {
+            ...b,
+            ruleApplied: ruleObj
+          };
+        }
+      });
+      res.json(parsedBatches);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get pending integration batches count
+  app.get("/api/inventory-integration/pending-count", authenticate, (req: any, res) => {
+    try {
+      const row = db.prepare(`
+        SELECT COUNT(*) as count FROM integration_batches 
+        WHERE status = 'en_attente_audit'
+      `).get() as any;
+      res.json({ count: row ? row.count : 0 });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Submit a new integration batch (Steps 1 to 6 completed, waiting for step 7 audit validation)
+  app.post("/api/inventory-integration/submit-batch", authenticate, (req: any, res) => {
+    try {
+      const { 
+        batchNumber,
+        inventoryRef,
+        inventoryName,
+        direction, 
+        folders, 
+        boxes, 
+        ruleApplied, 
+        notes 
+      } = req.body;
+
+      if (!folders || !Array.isArray(folders) || folders.length === 0) {
+        return res.status(400).json({ error: "Aucun dossier à intégrer dans ce lot." });
+      }
+
+      const id = `BATCH_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const bNum = batchNumber || `LOT-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
+      const invRef = inventoryRef || bNum;
+      const invName = inventoryName || `${direction || 'Inventaire'} ${new Date().getFullYear()}`;
+      const importedAt = new Date().toISOString();
+      const importedBy = req.user?.displayName || req.user?.email || 'Archiviste';
+
+      db.prepare(`
+        INSERT INTO integration_batches (
+          id, batchNumber, direction, importedAt, importedBy, status,
+          foldersCount, boxesCount, foldersData, boxesData, ruleApplied, notes,
+          inventoryRef, inventoryName
+        ) VALUES (?, ?, ?, ?, ?, 'en_attente_audit', ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        bNum,
+        direction || 'Général',
+        importedAt,
+        importedBy,
+        folders.length,
+        boxes ? boxes.length : 0,
+        JSON.stringify(folders),
+        JSON.stringify(boxes || []),
+        typeof ruleApplied === 'object' ? JSON.stringify(ruleApplied) : String(ruleApplied || ''),
+        notes || '',
+        invRef,
+        invName
+      );
+
+      res.json({ 
+        success: true, 
+        id, 
+        batchNumber: bNum,
+        inventoryRef: invRef,
+        inventoryName: invName,
+        message: "Lot d'inventaire soumis avec succès pour validation finale par le Responsable Audit !" 
+      });
+    } catch (err: any) {
+      console.error("Error submitting integration batch:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Final Audit Validation of an Integration Batch
+  app.post("/api/inventory-integration/batches/:id/validate", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Seul le Responsable Audit ou l'Administrateur peut valider définitivement un lot d'inventaire." });
+    }
+
+    try {
+      const { id } = req.params;
+      const batch = db.prepare("SELECT * FROM integration_batches WHERE id = ?").get(id) as any;
+      if (!batch) {
+        return res.status(404).json({ error: "Lot d'inventaire non trouvé." });
+      }
+
+      const folders = batch.foldersData ? JSON.parse(batch.foldersData) : [];
+      const boxes = batch.boxesData ? JSON.parse(batch.boxesData) : [];
+      const validatedAt = new Date().toISOString();
+      const validatedBy = req.user?.displayName || req.user?.email || 'Responsable Audit';
+
+      db.transaction(() => {
+        // 1. Insert or update boxes into centralized_boxes
+        const upsertBox = db.prepare(`
+          INSERT INTO centralized_boxes (id, number, title, isOpen, depot, travee, tablette, createdAt, updatedAt)
+          VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            number = excluded.number,
+            title = excluded.title,
+            isOpen = 0,
+            depot = excluded.depot,
+            travee = excluded.travee,
+            tablette = excluded.tablette,
+            updatedAt = excluded.updatedAt
+        `);
+
+        for (const box of boxes) {
+          const boxId = box.id || `box_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          upsertBox.run(
+            boxId,
+            box.number || box.boxNumber || 'Boîte',
+            box.title || box.direction || batch.direction,
+            box.depot || 'Dépôt Principal',
+            box.travee || box.rayon || 'A',
+            box.tablette || box.etagere || '01',
+            box.createdAt || validatedAt,
+            validatedAt
+          );
+        }
+
+        // 2. Insert or update folders into centralized_inventory
+        const upsertCentralFolder = db.prepare(`
+          INSERT INTO centralized_inventory (
+            reference, dateCloture, status, boxNumber, pointedAt, verifiedAt, updatedAt,
+            ruleId, expiryDate, archivalStatus, direction, intitule,
+            batchId, batchNumber, inventoryRef, inventoryName, validatedBy
+          ) VALUES (?, ?, 'verified', ?, ?, ?, ?, ?, ?, 'Active', ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(reference) DO UPDATE SET
+            dateCloture = excluded.dateCloture,
+            status = 'verified',
+            boxNumber = excluded.boxNumber,
+            pointedAt = excluded.pointedAt,
+            verifiedAt = excluded.verifiedAt,
+            updatedAt = excluded.updatedAt,
+            ruleId = excluded.ruleId,
+            expiryDate = excluded.expiryDate,
+            archivalStatus = 'Active',
+            direction = excluded.direction,
+            intitule = excluded.intitule,
+            batchId = excluded.batchId,
+            batchNumber = excluded.batchNumber,
+            inventoryRef = excluded.inventoryRef,
+            inventoryName = excluded.inventoryName,
+            validatedBy = excluded.validatedBy
+        `);
+
+        // 3. Insert or update into mass_inventory for global search & consultations
+        const upsertMassFolder = db.prepare(`
+          INSERT INTO mass_inventory (
+            id, reference, intitule, direction, numBoite, localisation,
+            dateDebut, dateFin, dateCloture, dossier, codeAgence, sin, police, adherant,
+            dateDeclaration, typeSinistre, etatSinistre, paquet,
+            ruleId, expiryDate, archivalStatus, rawData,
+            batchId, batchNumber, inventoryRef, inventoryName, validatedBy, validatedAt,
+            createdAt
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            reference = excluded.reference,
+            intitule = excluded.intitule,
+            direction = excluded.direction,
+            numBoite = excluded.numBoite,
+            localisation = excluded.localisation,
+            dateDebut = excluded.dateDebut,
+            dateFin = excluded.dateFin,
+            dateCloture = excluded.dateCloture,
+            dossier = excluded.dossier,
+            codeAgence = excluded.codeAgence,
+            sin = excluded.sin,
+            police = excluded.police,
+            adherant = excluded.adherant,
+            dateDeclaration = excluded.dateDeclaration,
+            typeSinistre = excluded.typeSinistre,
+            etatSinistre = excluded.etatSinistre,
+            paquet = excluded.paquet,
+            ruleId = excluded.ruleId,
+            expiryDate = excluded.expiryDate,
+            archivalStatus = 'Active',
+            rawData = excluded.rawData,
+            batchId = excluded.batchId,
+            batchNumber = excluded.batchNumber,
+            inventoryRef = excluded.inventoryRef,
+            inventoryName = excluded.inventoryName,
+            validatedBy = excluded.validatedBy,
+            validatedAt = excluded.validatedAt
+        `);
+
+        for (const folder of folders) {
+          const ref = folder.reference || `REF_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+          const boxNum = folder.boxNumber || folder.numBoite || 'Non assigné';
+          const loc = folder.localisation || folder.location || '';
+          
+          upsertCentralFolder.run(
+            ref,
+            folder.dateCloture || folder.dateFin || '',
+            boxNum,
+            folder.pointedAt || validatedAt,
+            validatedAt,
+            validatedAt,
+            folder.codeDua || folder.ruleId || '',
+            folder.expiryDate || '',
+            folder.direction || batch.direction,
+            folder.intitule || folder.title || `Dossier ${ref}`,
+            id,
+            batch.batchNumber || '',
+            batch.inventoryRef || '',
+            batch.inventoryName || '',
+            validatedBy
+          );
+
+          upsertMassFolder.run(
+            `mass_${ref}`,
+            ref,
+            folder.intitule || folder.title || `Dossier ${ref}`,
+            folder.direction || batch.direction,
+            boxNum,
+            loc,
+            folder.dateDebut || folder.year || '',
+            folder.dateFin || folder.dateCloture || '',
+            folder.dateCloture || '',
+            folder.dossier || folder.numDossier || ref,
+            folder.codeAgence || folder.agence || '',
+            folder.sin || folder.numSinistre || '',
+            folder.police || folder.numPolice || '',
+            folder.adherant || folder.nomAdherant || folder.client || '',
+            folder.dateDeclaration || '',
+            folder.typeSinistre || folder.nature || '',
+            folder.etatSinistre || '',
+            folder.paquet || '',
+            folder.codeDua || folder.ruleId || '',
+            folder.expiryDate || '',
+            folder.rawData ? (typeof folder.rawData === 'string' ? folder.rawData : JSON.stringify(folder.rawData)) : JSON.stringify(folder),
+            id,
+            batch.batchNumber || '',
+            batch.inventoryRef || '',
+            batch.inventoryName || '',
+            validatedBy,
+            validatedAt,
+            validatedAt
+          );
+        }
+
+        // 4. Record entry in validation history
+        db.prepare(`
+          INSERT INTO centralized_validation_history (
+            id, validationDate, foldersCount, boxesCount, boxesList, source
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          `VAL_${Date.now()}`,
+          validatedAt,
+          folders.length,
+          boxes.length,
+          boxes.map((b: any) => b.number).join(', '),
+          `Intégration Lot ${batch.batchNumber} (${batch.direction})`
+        );
+
+        // 5. Update batch status to 'validé'
+        db.prepare(`
+          UPDATE integration_batches 
+          SET status = 'validé', validatedAt = ?, validatedBy = ?
+          WHERE id = ?
+        `).run(validatedAt, validatedBy, id);
+      })();
+
+      res.json({
+        success: true,
+        message: `Lot ${batch.batchNumber} validé avec succès ! ${folders.length} dossier(s) et ${boxes.length} boîte(s) ont été scellés et stockés définitivement dans le centre d'archives.`,
+        foldersCount: folders.length,
+        boxesCount: boxes.length
+      });
+    } catch (err: any) {
+      console.error("Error validating integration batch:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Reject an Integration Batch
+  app.post("/api/inventory-integration/batches/:id/reject", authenticate, (req: any, res) => {
+    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: "Interdit" });
+    }
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const validatedAt = new Date().toISOString();
+      const validatedBy = req.user?.displayName || req.user?.email || 'Responsable Audit';
+
+      db.prepare(`
+        UPDATE integration_batches 
+        SET status = 'rejeté', rejectionReason = ?, validatedAt = ?, validatedBy = ?
+        WHERE id = ?
+      `).run(reason || 'Non conforme', validatedAt, validatedBy, id);
+
+      res.json({ success: true, message: "Lot d'inventaire rejeté." });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete an Integration Batch
+  app.delete("/api/inventory-integration/batches/:id", authenticate, (req: any, res) => {
+    try {
+      const { id } = req.params;
+      db.prepare("DELETE FROM integration_batches WHERE id = ?").run(id);
+      res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

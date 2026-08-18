@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '../../App';
 import { Button, Card, Input } from '../UI';
-import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check, UploadCloud, ShieldCheck } from 'lucide-react';
+import { Search, Filter, Trash2, Edit2, CheckCircle, Clock, BarChart3, Users, FileStack, ExternalLink, TrendingUp, X, Save, Inbox, RotateCcw, RotateCw, CheckCircle2, XCircle, Building2, Eye, FileText, PencilLine, Download, FileSpreadsheet, Printer, Library, Plus, History, Route, ArrowRightLeft, MapPin, ChevronRight, Bell, FileCheck, CheckCheck as CheckDouble, Sparkles, CheckSquare, Calendar, Hash, Send, User, Mail, Layers, Archive, AlertCircle, Tag, BadgeAlert, Check, UploadCloud, ShieldCheck, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isSameDay } from 'date-fns';
 import { cn, toSafeDate } from '../../lib/utils';
@@ -217,6 +217,81 @@ const safeHtml2Canvas = async (element: HTMLElement, options: any = {}) => {
   }
 };
 
+// Extract and clean location to standard format e.g. "S1-B-207"
+const formatSmartLocation = (item: any): string => {
+  if (!item) return '';
+  const d = String(item.depot || '').trim();
+  const t = String(item.travee || '').trim();
+  const tab = String(item.tablette || '').trim();
+  if (d || t || tab) {
+    return [d, t, tab].filter(Boolean).join('-');
+  }
+  const rawLoc = String(item.localisation || item.location || '').trim();
+  if (!rawLoc) return '';
+  const cleaned = rawLoc
+    .replace(/dépôt\s*:?\s*/gi, '')
+    .replace(/depot\s*:?\s*/gi, '')
+    .replace(/salle\s*:?\s*/gi, '')
+    .replace(/travée\s*:?\s*/gi, '')
+    .replace(/travee\s*:?\s*/gi, '')
+    .replace(/étagère\s*:?\s*/gi, '')
+    .replace(/etagere\s*:?\s*/gi, '')
+    .replace(/tablette\s*:?\s*/gi, '')
+    .replace(/rayon\s*:?\s*/gi, '')
+    .replace(/\bt\s*:\s*/gi, '')
+    .replace(/\btab\s*:\s*/gi, '')
+    .replace(/\br\s*:\s*/gi, '')
+    .replace(/\be\s*:\s*/gi, '')
+    .replace(/•/g, '-')
+    .replace(/[\/\\,;:_]+/g, '-')
+    .replace(/\s*-\s*/g, '-')
+    .replace(/-+/g, '-')
+    .trim()
+    .replace(/^-+|-+$/g, '');
+  return cleaned;
+};
+
+// Extract clean box number e.g. "6348"
+const formatSmartBox = (item: any): string => {
+  if (!item) return '';
+  const raw = String(item.numBoite || item.boxNumber || '').trim();
+  return raw
+    .replace(/^SIN\.C-?/i, '')
+    .replace(/^\.+/, '')
+    .replace(/bo[iî]te\s*:?\s*/i, '')
+    .trim();
+};
+
+// Returns smart barcode data formatted as "6348--S1-B-207"
+const getSmartBarcodeData = (item: any) => {
+  const box = formatSmartBox(item);
+  const loc = formatSmartLocation(item);
+  const barcodeValue = loc ? `${box}--${loc}` : box;
+  return { box, loc, barcodeValue };
+};
+
+// Safe parser for scanFile field (handles null, string, JSON array string, or array)
+const parseScanFiles = (scanFile: any): string[] => {
+  if (!scanFile) return [];
+  if (Array.isArray(scanFile)) return scanFile.map(s => String(s).trim()).filter(Boolean);
+  if (typeof scanFile === 'string') {
+    let trimmed = scanFile.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map(s => String(s).trim()).filter(Boolean);
+        }
+      } catch (e) {}
+    }
+    // Clean any stray quotes or brackets
+    trimmed = trimmed.replace(/^[\["']+|[\]"']+$/g, '').trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+};
+
 export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requests' | 'communication' | 'returns' | 'stats' | 'massInventory' | 'elimination' }) => {
   const { user, profile, remoteRequests: sharedRemoteRequests, pendingRequests: sharedPendingRequests, lastUpdate: sharedLastUpdate } = useAuth();
   
@@ -266,7 +341,12 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState(0);
   const [archivedComms, setArchivedComms] = useState<any[]>([]);
-  const [returnSubTab, setReturnSubTab] = useState<'import' | 'search' | 'history' | 'inventory'>('search');
+  const [returnSubTab, setReturnSubTab] = useState<'auditSearch' | 'search' | 'import' | 'history' | 'inventory'>('auditSearch');
+  const [auditReturnSearchTerm, setAuditReturnSearchTerm] = useState('');
+  const [auditReturnDirection, setAuditReturnDirection] = useState('all');
+  const [auditReturnStatusFilter, setAuditReturnStatusFilter] = useState<'all' | 'communicated' | 'available'>('all');
+  const [auditSearchResults, setAuditSearchResults] = useState<any[]>([]);
+  const [auditSearchLoading, setAuditSearchLoading] = useState(false);
   const [statsSubTab, setStatsSubTab] = useState<'indicators' | 'guide'>('indicators');
   const [returnInventory, setReturnInventory] = useState<any[]>([]);
   const [returnHistory, setReturnHistory] = useState<any[]>([]);
@@ -286,6 +366,9 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [massInventoryStats, setMassInventoryStats] = useState({ total: 0 });
   const [massSearchTerm, setMassSearchTerm] = useState('');
   const [selectedDirection, setSelectedDirection] = useState<string>('all');
+  const [selectedValidatedBatch, setSelectedValidatedBatch] = useState<string>('all');
+  const [validatedOnlyFilter, setValidatedOnlyFilter] = useState<boolean>(false);
+  const [validatedBatchesList, setValidatedBatchesList] = useState<any[]>([]);
   const [importingDirection, setImportingDirection] = useState<string>('');
   const [importingRule, setImportingRule] = useState<any | null>(null);
   const [massSubTab, setMassSubTab] = useState<'view' | 'import' | 'history' | 'monitoring' | 'centralized' | 'search' | 'transfer' | 'integration'>('integration');
@@ -941,6 +1024,7 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
   const [uploadingScanItemId, setUploadingScanItemId] = useState<string | null>(null);
   const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
   const [pdfViewerTitle, setPdfViewerTitle] = useState<string>('');
+  const [isUploadingScan, setIsUploadingScan] = useState(false);
 
   const fetchAllRequestsForSignatures = async () => {
     try {
@@ -1322,23 +1406,50 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     }
   };
 
-  const deleteDossierScan = async (id: string) => {
-    if (!confirm("Supprimer le scan de ce dossier ?")) return;
+  const deleteDossierScan = async (id: string, filename?: string) => {
+    const confirmMsg = filename 
+      ? `Supprimer le document "${filename.substring(filename.indexOf('_') + 1) || filename}" ?` 
+      : "Supprimer le scan de ce dossier ?";
+    if (!confirm(confirmMsg)) return;
     try {
-      await api.delete(`/api/inventory/${id}/delete-scan`);
-      setMassInventory(prev => prev.map(m => {
+      const url = filename 
+        ? `/api/inventory/${id}/delete-scan?filename=${encodeURIComponent(filename)}`
+        : `/api/inventory/${id}/delete-scan`;
+      await api.delete(url);
+      
+      const updateListWithDeletion = (list: any[]) => list.map(m => {
         const itemIdToCompare = id.startsWith('centralized_') ? id.replace('centralized_', '') : id;
         const matchId = m.sourceType === 'centralized' ? m.reference : m.id;
-        if (matchId === itemIdToCompare) {
+        if (matchId === itemIdToCompare || m.reference === itemIdToCompare || m.id === itemIdToCompare) {
+          if (filename) {
+            const scans = parseScanFiles(m.scanFile).filter(s => s !== filename);
+            return { ...m, scanFile: scans.length > 0 ? JSON.stringify(scans) : null };
+          }
           return { ...m, scanFile: null };
         }
         return m;
-      }));
-      alert("Le scan du dossier a été supprimé.");
+      });
+
+      setMassInventory(updateListWithDeletion);
+      setAuditSearchResults(updateListWithDeletion);
+      alert("Le document a été supprimé.");
     } catch (err: any) {
       alert("Erreur lors de la suppression du scan : " + err.message);
     }
   };
+
+  // Fetch validated integration batches for quick filtering
+  useEffect(() => {
+    if (activeTab === 'massInventory') {
+      api.get('/api/inventory-integration/batches')
+        .then((data: any) => {
+          if (Array.isArray(data)) {
+            setValidatedBatchesList(data.filter((b: any) => b.status === 'validé'));
+          }
+        })
+        .catch(console.error);
+    }
+  }, [activeTab]);
 
   // Search for mass inventory under sub-tab 'search'
   useEffect(() => {
@@ -1346,15 +1457,50 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     
     const delayDebounceFn = setTimeout(async () => {
       try {
-        const results = await api.get(`/api/mass-inventory?search=${encodeURIComponent(massSearchTerm)}&direction=${encodeURIComponent(selectedDirection)}`);
+        const queryParams = new URLSearchParams({
+          search: massSearchTerm || '',
+          direction: selectedDirection || 'all',
+          batchId: selectedValidatedBatch || 'all',
+          validatedOnly: validatedOnlyFilter ? 'true' : 'false'
+        });
+        const results = await api.get(`/api/mass-inventory?${queryParams.toString()}`);
         setMassInventory(results);
       } catch (err) {
         console.error("Search error:", err);
       }
-    }, massSearchTerm ? 400 : 0); // No debounce for initial load or direction change only
+    }, massSearchTerm ? 350 : 0); // No debounce for initial load or dropdown filter change
 
     return () => clearTimeout(delayDebounceFn);
-  }, [massSearchTerm, selectedDirection, activeTab, massSubTab]);
+  }, [massSearchTerm, selectedDirection, selectedValidatedBatch, validatedOnlyFilter, activeTab, massSubTab]);
+
+  // Search for validated inventories in return tab
+  useEffect(() => {
+    if (
+      (activeTab !== 'returns' && !(activeTab === 'communication' && communicationSubTab === 'returns')) ||
+      returnSubTab !== 'auditSearch'
+    ) {
+      return;
+    }
+
+    setAuditSearchLoading(true);
+    const delayDebounceFn = setTimeout(async () => {
+      try {
+        const queryParams = new URLSearchParams({
+          search: auditReturnSearchTerm || '',
+          direction: auditReturnDirection || 'all',
+          status: auditReturnStatusFilter || 'all'
+        });
+        const results = await api.get(`/api/returns/audit-search?${queryParams.toString()}`);
+        setAuditSearchResults(Array.isArray(results) ? results : []);
+      } catch (err) {
+        console.error("Audit returns search error:", err);
+      } finally {
+        setAuditSearchLoading(false);
+      }
+    }, auditReturnSearchTerm ? 300 : 0);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [activeTab, communicationSubTab, returnSubTab, auditReturnSearchTerm, auditReturnDirection, auditReturnStatusFilter]);
 
 
 
@@ -1489,12 +1635,18 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
     try {
       const today = format(new Date(), 'dd/MM/yyyy');
       const todayTime = format(new Date(), 'dd/MM/yyyy HH:mm');
+      const { box: numBoiteClean, loc: localisationClean, barcodeValue } = getSmartBarcodeData(item);
       const entry = {
         reference: item.reference,
-        numBoite: item.numBoite,
-        localisation: item.localisation,
+        intitule: item.intitule || item.title || '',
+        direction: item.direction || '',
+        numBoite: numBoiteClean,
+        localisation: localisationClean,
+        depot: item.depot,
+        travee: item.travee,
+        tablette: item.tablette,
         dateRetour: todayTime,
-        barcodeData: `${item.numBoite}-${item.localisation}`
+        barcodeData: barcodeValue
       };
       
       // 1. Record in History
@@ -1542,6 +1694,20 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         setArchivedComms(prev => prev.map(a => archiveMatches.some(m => m.id === a.id) ? { ...a, dateRetour: today, status: 'Retourné' } : a));
       }
 
+      // Update search items in state so status instantly transforms into 'Disponible'
+      setAuditSearchResults(prev => prev.map(i => {
+        if (String(i.reference).trim().toLowerCase() === refToMatch) {
+          return {
+            ...i,
+            isCommunicated: false,
+            communicationStatus: 'Disponible',
+            communicationBorrower: '',
+            justReturned: true
+          };
+        }
+        return i;
+      }));
+
       // Show label
       setValidatedItemLabel(entry);
       setSearchResult(null);
@@ -1564,15 +1730,17 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
       
       const imgData = canvas.toDataURL('image/png');
       
-      // Dimensions: 52mm x 27mm
+      // Dimensions: 60mm x 35mm
       const pdf = new jsPDF({
         orientation: 'landscape',
         unit: 'mm',
-        format: [52, 27]
+        format: [60, 35]
       });
 
-      pdf.addImage(imgData, 'PNG', 0, 0, 52, 27);
-      pdf.save(`Etiquette_${validatedItemLabel.numBoite}_${validatedItemLabel.localisation.replace(/[/\\?%*:|"<>]/g, '-')}.pdf`);
+      pdf.addImage(imgData, 'PNG', 0, 0, 60, 35);
+      const safeRef = String(validatedItemLabel.reference || '').replace(/[/\\?%*:|"<>]/g, '-');
+      const safeCode = String(validatedItemLabel.barcodeData || validatedItemLabel.numBoite || '').replace(/[/\\?%*:|"<>]/g, '-');
+      pdf.save(`Etiquette_${safeRef}_${safeCode}.pdf`);
     } catch (err) {
       console.error("Capture effort error:", err);
       alert("Erreur lors de la génération du PDF.");
@@ -3330,25 +3498,31 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
         <div className="bg-white rounded-3xl p-6 shadow-xl shadow-slate-200/50 border border-slate-100 mb-6">
           <div className="flex flex-wrap gap-2 mb-8 bg-slate-50 p-1.5 rounded-2xl w-fit">
             <button
-              onClick={() => { setReturnSubTab('search'); setSearchResult(null); }}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'search' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => { setReturnSubTab('auditSearch'); setSearchResult(null); setValidatedItemLabel(null); }}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'auditSearch' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
-              <Search size={16} /> RECHERCHE
+              <Search size={16} /> RECHERCHE AUDIT
             </button>
             <button
-              onClick={() => setReturnSubTab('import')}
+              onClick={() => { setReturnSubTab('search'); setSearchResult(null); setValidatedItemLabel(null); }}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'search' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              <RotateCcw size={16} /> RETOUR SCAN / LISTE
+            </button>
+            <button
+              onClick={() => { setReturnSubTab('import'); setValidatedItemLabel(null); }}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'import' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <FileSpreadsheet size={16} /> IMPORTATION
             </button>
             <button
-              onClick={() => setReturnSubTab('history')}
+              onClick={() => { setReturnSubTab('history'); setValidatedItemLabel(null); }}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'history' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Clock size={16} /> HISTORIQUE
             </button>
             <button
-              onClick={() => setReturnSubTab('inventory')}
+              onClick={() => { setReturnSubTab('inventory'); setValidatedItemLabel(null); }}
               className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${returnSubTab === 'inventory' ? 'bg-white text-brand-primary shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
             >
               <Inbox size={16} /> INVENTAIRE
@@ -3356,6 +3530,341 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
           </div>
 
           <AnimatePresence mode="wait">
+            {returnSubTab === 'auditSearch' && (
+              <motion.div
+                key="auditSearch"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-6"
+              >
+                {/* Search & Filter Header */}
+                <div className="bg-gradient-to-r from-slate-50 via-slate-50 to-indigo-50/40 p-6 rounded-3xl border border-slate-200/80 space-y-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-base font-black text-slate-800 flex items-center gap-2">
+                        <Search className="text-brand-primary" size={20} />
+                        Recherche dans tous les inventaires validés par le Responsable Audit
+                      </h3>
+                      <p className="text-slate-500 text-xs mt-0.5">
+                        Consultez la boîte et la localisation exacte des dossiers validés et effectuez leur réintégration en un clic.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 self-start md:self-auto">
+                      <span className="text-xs font-bold px-3 py-1.5 bg-white border border-slate-200 rounded-xl text-slate-700 shadow-sm flex items-center gap-1.5">
+                        <CheckCircle2 size={14} className="text-emerald-500" />
+                        <span className="font-extrabold text-brand-primary">{auditSearchResults.length}</span> dossier(s) trouvé(s)
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Search Inputs & Dropdowns */}
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-2">
+                    <div className="md:col-span-6 relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <Input
+                        placeholder="Tapez pour rechercher (référence, intitulé, boîte, localisation, emprunteur...)"
+                        className="pl-11 pr-10 py-5 text-sm rounded-2xl bg-white border-slate-200 focus:ring-brand-primary shadow-sm"
+                        value={auditReturnSearchTerm}
+                        onChange={(e) => setAuditReturnSearchTerm(e.target.value)}
+                      />
+                      {auditReturnSearchTerm && (
+                        <button
+                          onClick={() => setAuditReturnSearchTerm('')}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <select
+                        value={auditReturnDirection}
+                        onChange={(e) => setAuditReturnDirection(e.target.value)}
+                        aria-label="Filtrer par direction"
+                        className="w-full h-[46px] px-3.5 bg-white border border-slate-200 rounded-2xl text-xs font-bold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-primary/20"
+                      >
+                        <option value="all">TOUTES LES DIRECTIONS</option>
+                        {RETENTION_CALENDAR.map(d => (
+                          <option key={d.name} value={d.name}>{d.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <select
+                        value={auditReturnStatusFilter}
+                        onChange={(e) => setAuditReturnStatusFilter(e.target.value as any)}
+                        aria-label="Filtrer par statut"
+                        className="w-full h-[46px] px-3.5 bg-white border border-slate-200 rounded-2xl text-xs font-bold text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-primary/20"
+                      >
+                        <option value="all">TOUS LES STATUTS</option>
+                        <option value="communicated">📤 COMMUNIQUÉS (À réintégrer)</option>
+                        <option value="available">✓ DISPONIBLES (En rayon)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Validated Label Preview Section if an item was just returned or clicked */}
+                {validatedItemLabel && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="max-w-xl mx-auto my-6 space-y-6"
+                  >
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-6 text-center shadow-sm">
+                      <div className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-3">
+                        <CheckCircle2 size={24} />
+                      </div>
+                      <h3 className="text-lg font-bold text-emerald-900">Étiquette Intelligente Prête</h3>
+                      <p className="text-emerald-700 text-xs mt-1">
+                        Dossier : <span className="font-extrabold">{validatedItemLabel.reference}</span> {validatedItemLabel.direction ? `(${validatedItemLabel.direction})` : ''} • Boîte : <span className="font-extrabold">{validatedItemLabel.numBoite}</span> • Localisation : <span className="font-extrabold">{validatedItemLabel.localisation}</span>
+                      </p>
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-3xl p-8 flex flex-col items-center shadow-md">
+                      {/* Smart Barcode Label Component */}
+                      {(() => {
+                        const { box, loc, barcodeValue } = getSmartBarcodeData(validatedItemLabel);
+                        return (
+                          <div 
+                            ref={labelRef} 
+                            id="printable-label"
+                            className="bg-white shadow-sm flex flex-col justify-between relative border border-slate-300 text-black overflow-hidden font-sans"
+                            style={{ 
+                              width: '60mm', 
+                              height: '35mm', 
+                              boxSizing: 'border-box', 
+                              padding: '2.5mm 3.5mm',
+                              backgroundColor: '#ffffff'
+                            }}
+                          >
+                            {/* En-tête intelligent avec référence du dossier (non incluse dans le code-barres) */}
+                            <div className="w-full flex items-start justify-between border-b border-slate-400/60 pb-1 mb-0.5">
+                              <div className="flex flex-col text-left overflow-hidden pr-1">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[6.5pt] font-black uppercase text-slate-500 tracking-wider">RÉF :</span>
+                                  <span className="text-[8.5pt] font-black text-black tracking-tight truncate max-w-[36mm]">
+                                    {validatedItemLabel.reference}
+                                  </span>
+                                </div>
+                                {(validatedItemLabel.intitule || validatedItemLabel.direction) && (
+                                  <span className="text-[5.5pt] font-bold text-slate-600 truncate max-w-[36mm] leading-tight">
+                                    {validatedItemLabel.direction ? `[${validatedItemLabel.direction}] ` : ''}{validatedItemLabel.intitule}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-right shrink-0">
+                                <span className="text-[6pt] font-black text-black tracking-tighter uppercase px-1 py-0.5 bg-slate-100 border border-slate-300 rounded">
+                                  MAE
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Code-barres au centre : Valeur = 6348--S1-B-207 */}
+                            <div className="flex-1 flex items-center justify-center w-full my-0.5">
+                              <Barcode 
+                                value={barcodeValue || `${box}--${loc}`} 
+                                width={1.3}
+                                height={34}
+                                format="CODE128"
+                                margin={0}
+                                displayValue={false}
+                              />
+                            </div>
+
+                            {/* Numéro de boîte et localisation affichés sous la forme 6348--S1-B-207 */}
+                            <div className="w-full flex flex-col items-center justify-center pt-0.5 border-t border-slate-400/60 mt-0.5">
+                              <span className="text-[12pt] font-black text-black tracking-tighter uppercase leading-none font-mono">
+                                {barcodeValue || `${box}--${loc}`}
+                              </span>
+                              <div className="flex items-center justify-center gap-2 text-[5pt] font-black text-slate-500 uppercase tracking-wider mt-0.5">
+                                <span>BOÎTE : <strong className="text-black">{box || '—'}</strong></span>
+                                <span>•</span>
+                                <span>LOCALISATION : <strong className="text-black">{loc || '—'}</strong></span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      <div className="flex gap-3 mt-6 w-full print:hidden">
+                        <Button 
+                          variant="outline"
+                          className="flex-1 border-slate-200 hover:bg-slate-50 rounded-2xl h-12 font-bold text-xs flex items-center justify-center gap-2"
+                          onClick={() => setValidatedItemLabel(null)}
+                        >
+                          FERMER L'ÉTIQUETTE
+                        </Button>
+                        <Button 
+                          variant="outline"
+                          className="flex-1 border-slate-200 hover:bg-slate-50 rounded-2xl h-12 font-bold text-xs flex items-center justify-center gap-2"
+                          onClick={downloadLabel}
+                        >
+                          <Download size={16} /> TÉLÉCHARGER PDF
+                        </Button>
+                        <Button 
+                          className="flex-1 bg-brand-primary hover:opacity-90 rounded-2xl h-12 font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-brand-primary/20 text-white"
+                          onClick={printLabel}
+                        >
+                          <Printer size={16} /> IMPRIMER
+                        </Button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+
+                {/* Results Section */}
+                {auditSearchLoading ? (
+                  <div className="py-16 text-center space-y-3">
+                    <Loader2 className="w-8 h-8 text-brand-primary animate-spin mx-auto" />
+                    <p className="text-sm font-bold text-slate-600">Recherche dans les inventaires validés en cours...</p>
+                  </div>
+                ) : auditSearchResults.length === 0 ? (
+                  <div className="py-16 text-center space-y-3 bg-slate-50/60 rounded-3xl border border-dashed border-slate-200">
+                    <Search className="w-10 h-10 text-slate-300 mx-auto" />
+                    <p className="text-base font-bold text-slate-700">Aucun dossier validé trouvé</p>
+                    <p className="text-xs text-slate-400 max-w-md mx-auto">
+                      Essayez de modifier votre mot-clé de recherche ou réinitialisez les filtres par direction et statut.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {auditSearchResults.map((item, idx) => {
+                      const isComm = Boolean(item.isCommunicated || item.communicationStatus === 'Communiqué');
+                      return (
+                        <div
+                          key={item.id || item.reference || idx}
+                          className="bg-white rounded-2xl border border-slate-200/90 hover:border-brand-primary/40 p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between gap-4 group"
+                        >
+                          {/* Top Row: Ref, Direction, Audit Badge & Status */}
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-black text-slate-900 bg-slate-100/90 px-3 py-1 rounded-xl border border-slate-200/60 tracking-tight">
+                                  {item.reference}
+                                </span>
+                                {item.direction && (
+                                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 bg-blue-50 text-blue-700 rounded-lg border border-blue-100">
+                                    {item.direction}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Status Badge */}
+                              {isComm ? (
+                                <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500 text-white rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm animate-pulse">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                  COMMUNIQUÉ (En cours)
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-600 text-white rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm">
+                                  <CheckCircle2 size={12} />
+                                  DISPONIBLE
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Validation Badge */}
+                            <div className="flex items-center gap-2 pt-1">
+                              <span className="text-[10px] font-extrabold text-emerald-800 bg-emerald-50/90 border border-emerald-200 px-2.5 py-0.5 rounded-lg flex items-center gap-1">
+                                <CheckCircle2 size={12} className="text-emerald-600" />
+                                Validé Audit {item.batchNumber ? `(Lot ${item.batchNumber})` : ''} {item.validatedBy ? `· ${item.validatedBy}` : ''}
+                              </span>
+                            </div>
+
+                            {/* Intitulé */}
+                            {item.intitule && (
+                              <p className="text-xs font-bold text-slate-700 line-clamp-2 pt-1">
+                                {item.intitule}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Middle: Box & Location Highlights */}
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <span className="block text-[10px] font-extrabold uppercase text-slate-400 mb-0.5">📦 Boîte N°</span>
+                                <span className="font-black text-slate-800 text-xs">
+                                  {item.numBoite || item.boxNumber || 'Non spécifié'}
+                                </span>
+                              </div>
+                              <div className="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <span className="block text-[10px] font-extrabold uppercase text-slate-400 mb-0.5">📍 Localisation</span>
+                                <span className="font-black text-slate-800 text-xs truncate block" title={item.localisation || item.location}>
+                                  {item.localisation || item.location || 'Non spécifiée'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Communication Details Alert if loaned */}
+                            {isComm && (
+                              <div className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-2.5 text-xs text-amber-900 flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 overflow-hidden">
+                                  <span className="font-black text-[11px] shrink-0">👤 Emprunteur:</span>
+                                  <span className="font-bold underline truncate">{item.communicationBorrower || "Non précisé"}</span>
+                                </div>
+                                {item.communicationDate && (
+                                  <span className="text-[10px] text-amber-700 shrink-0 font-semibold">
+                                    📅 {String(item.communicationDate).split('T')[0]}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Bottom Row: Actions */}
+                          <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                              Code : {item.numBoite || item.boxNumber || '-'}-{item.localisation || item.location || '-'}
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {isComm ? (
+                                <Button
+                                  onClick={() => validatePhysicalReturn(item)}
+                                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-95 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 flex items-center gap-1.5 transition-transform active:scale-95"
+                                >
+                                  <RotateCcw size={14} />
+                                  RÉINTÉGRER CE DOSSIER
+                                </Button>
+                              ) : (
+                                <Button
+                                  onClick={() => {
+                                    const { box: numClean, loc: locClean, barcodeValue } = getSmartBarcodeData(item);
+                                    setValidatedItemLabel({
+                                      reference: item.reference,
+                                      intitule: item.intitule || item.title || '',
+                                      direction: item.direction || '',
+                                      numBoite: numClean,
+                                      localisation: locClean,
+                                      depot: item.depot,
+                                      travee: item.travee,
+                                      tablette: item.tablette,
+                                      dateRetour: format(new Date(), 'dd/MM/yyyy HH:mm'),
+                                      barcodeData: barcodeValue
+                                    });
+                                  }}
+                                  variant="outline"
+                                  className="px-3.5 py-2 border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                                >
+                                  <Barcode size={14} className="text-slate-500" />
+                                  ÉTIQUETTE CODE-BARRES
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </motion.div>
+            )}
             {returnSubTab === 'import' && (
               <motion.div
                 key="import"
@@ -3499,39 +4008,70 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           <p className="text-brand-primary/80 text-sm">Vous pouvez maintenant imprimer ou télécharger l'étiquette.</p>
                         </div>
 
-                        <div className="bg-white border border-slate-200 rounded-3xl p-10 flex flex-col items-center">
-                          <div 
-                            ref={labelRef} 
-                            id="printable-label"
-                            className="bg-white shadow-sm flex flex-col items-center relative"
-                            style={{ 
-                              width: '52mm', 
-                              height: '27mm', 
-                              boxSizing: 'border-box',
-                              padding: '4pt'
-                            }}
-                          >
-                            <div className="absolute top-1 right-1 text-[6pt] font-black tracking-tight">
-                              MAE
-                            </div>
+                        <div className="bg-white border border-slate-200 rounded-3xl p-8 flex flex-col items-center shadow-md">
+                          {(() => {
+                            const { box, loc, barcodeValue } = getSmartBarcodeData(validatedItemLabel);
+                            return (
+                              <div 
+                                ref={labelRef} 
+                                id="printable-label"
+                                className="bg-white shadow-sm flex flex-col justify-between relative border border-slate-300 text-black overflow-hidden font-sans"
+                                style={{ 
+                                  width: '60mm', 
+                                  height: '35mm', 
+                                  boxSizing: 'border-box', 
+                                  padding: '2.5mm 3.5mm',
+                                  backgroundColor: '#ffffff'
+                                }}
+                              >
+                                {/* En-tête intelligent avec référence du dossier (non incluse dans le code-barres) */}
+                                <div className="w-full flex items-start justify-between border-b border-slate-400/60 pb-1 mb-0.5">
+                                  <div className="flex flex-col text-left overflow-hidden pr-1">
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[6.5pt] font-black uppercase text-slate-500 tracking-wider">RÉF :</span>
+                                      <span className="text-[8.5pt] font-black text-black tracking-tight truncate max-w-[36mm]">
+                                        {validatedItemLabel.reference}
+                                      </span>
+                                    </div>
+                                    {(validatedItemLabel.intitule || validatedItemLabel.direction) && (
+                                      <span className="text-[5.5pt] font-bold text-slate-600 truncate max-w-[36mm] leading-tight">
+                                        {validatedItemLabel.direction ? `[${validatedItemLabel.direction}] ` : ''}{validatedItemLabel.intitule}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <span className="text-[6pt] font-black text-black tracking-tighter uppercase px-1 py-0.5 bg-slate-100 border border-slate-300 rounded">
+                                      MAE
+                                    </span>
+                                  </div>
+                                </div>
 
-                            <div className="flex-1 flex items-center justify-center w-full mt-2">
-                              <Barcode 
-                                value={`${validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-${validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}`} 
-                                width={1.4}
-                                height={40}
-                                format="CODE128"
-                                margin={0}
-                                displayValue={false}
-                              />
-                            </div>
+                                {/* Code-barres au centre : Valeur = 6348--S1-B-207 */}
+                                <div className="flex-1 flex items-center justify-center w-full my-0.5">
+                                  <Barcode 
+                                    value={barcodeValue || `${box}--${loc}`} 
+                                    width={1.3}
+                                    height={34}
+                                    format="CODE128"
+                                    margin={0}
+                                    displayValue={false}
+                                  />
+                                </div>
 
-                            <div className="w-full flex items-center justify-center pt-1 mb-[3mm]">
-                              <span className="text-[14pt] font-black text-black tracking-tighter uppercase leading-none">
-                                {validatedItemLabel.numBoite.replace(/^SIN\.C-?/i, '').replace(/^\.+/, '')}-{validatedItemLabel.localisation.replace(/^\d{4}-?/i, '').replace(/^\.+/, '')}
-                              </span>
-                            </div>
-                          </div>
+                                {/* Numéro de boîte et localisation affichés sous la forme 6348--S1-B-207 */}
+                                <div className="w-full flex flex-col items-center justify-center pt-0.5 border-t border-slate-400/60 mt-0.5">
+                                  <span className="text-[12pt] font-black text-black tracking-tighter uppercase leading-none font-mono">
+                                    {barcodeValue || `${box}--${loc}`}
+                                  </span>
+                                  <div className="flex items-center justify-center gap-2 text-[5pt] font-black text-slate-500 uppercase tracking-wider mt-0.5">
+                                    <span>BOÎTE : <strong className="text-black">{box || '—'}</strong></span>
+                                    <span>•</span>
+                                    <span>LOCALISATION : <strong className="text-black">{loc || '—'}</strong></span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           <div className="flex gap-3 mt-8 w-full print:hidden">
                             <Button 
@@ -6008,15 +6548,15 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                           <input 
                             type="text"
-                            placeholder="Rechercher par référence, intitulé, boite, travee, valise, mot-clé..." 
+                            placeholder="Rechercher par référence, intitulé, boite, N° Lot, adhérent, N° sinistre..." 
                             className="w-full bg-white border border-slate-200 rounded-2xl pl-12 pr-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand-accent/20 focus:border-brand-accent transition-all shadow-sm"
                             value={massSearchTerm}
                             onChange={(e) => setMassSearchTerm(e.target.value)}
                           />
                         </div>
-                        <div className="w-full md:w-72">
+                        <div className="w-full md:w-64">
                           <select 
-                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm cursor-pointer"
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-accent shadow-sm cursor-pointer"
                             value={selectedDirection}
                             onChange={(e) => setSelectedDirection(e.target.value)}
                           >
@@ -6028,11 +6568,38 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                             ))}
                           </select>
                         </div>
-                        {(massSearchTerm || selectedDirection !== 'all') && (
+                        <div className="w-full md:w-72">
+                          <select 
+                            className="w-full bg-white border border-slate-200 rounded-2xl px-4 py-3 text-xs font-bold text-emerald-800 border-emerald-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 shadow-sm cursor-pointer"
+                            value={selectedValidatedBatch}
+                            onChange={(e) => setSelectedValidatedBatch(e.target.value)}
+                          >
+                            <option value="all">TOUS LES INVENTAIRES VALIDÉS</option>
+                            {validatedBatchesList.map((batch: any) => (
+                              <option key={batch.id} value={batch.id}>
+                                ✓ LOT {batch.batchNumber || batch.id.substring(0,8)} ({batch.direction})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          onClick={() => setValidatedOnlyFilter(!validatedOnlyFilter)}
+                          className={`px-4 py-3 rounded-2xl text-xs font-black uppercase tracking-wider transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                            validatedOnlyFilter
+                              ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
+                              : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          <CheckCircle2 size={15} />
+                          <span>Validés Audit</span>
+                        </button>
+                        {(massSearchTerm || selectedDirection !== 'all' || selectedValidatedBatch !== 'all' || validatedOnlyFilter) && (
                           <button 
                             onClick={() => {
                               setMassSearchTerm('');
                               setSelectedDirection('all');
+                              setSelectedValidatedBatch('all');
+                              setValidatedOnlyFilter(false);
                             }}
                             className="text-xs font-bold text-slate-400 hover:text-red-500 transition-colors shrink-0 uppercase tracking-wider"
                           >
@@ -6046,21 +6613,32 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                     {massInventory.length === 0 ? (
                       <div className="py-16 text-center border border-dashed border-slate-150 rounded-3xl bg-slate-50/20">
                         <Search className="mx-auto text-slate-300 mb-3" size={32} />
-                        <p className="text-slate-500 text-sm font-semibold">Aucun dossier ou boîte pointée trouvé</p>
-                        <p className="text-slate-400 text-xs mt-1">Saisissez un critère de recherche ou filtrez par direction pour afficher les pointages.</p>
+                        <p className="text-slate-500 text-sm font-semibold">Aucun dossier ou boîte validée trouvé</p>
+                        <p className="text-slate-400 text-xs mt-1">Saisissez un critère de recherche ou sélectionnez un lot validé par le responsable audit.</p>
                       </div>
                     ) : (
                       <div className="space-y-4">
                         <div className="flex items-center justify-between px-2">
-                          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">{massInventory.length} pointage(s) trouvé(s)</span>
+                          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+                            {massInventory.length} dossier(s) / pointage(s) trouvé(s)
+                          </span>
+                          {selectedValidatedBatch !== 'all' && (
+                            <span className="text-[11px] font-black text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+                              Filtré par Lot Validé
+                            </span>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-1 gap-4">
                           {massInventory.map((item: any) => {
+                            const isValidatedAudit = Boolean(item.validatedBy || item.batchNumber || item.status === 'verified');
+
                             return (
                               <div 
                                 key={item.id}
-                                className="bg-white border border-slate-100 rounded-2xl p-5 hover:border-slate-200 hover:shadow-md transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                                className={`bg-white border rounded-2xl p-5 hover:shadow-md transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                                  isValidatedAudit ? 'border-emerald-100/90 shadow-sm' : 'border-slate-100'
+                                }`}
                               >
                                 <div className="space-y-2 flex-1 min-w-0">
                                   <div className="flex flex-wrap items-center gap-2">
@@ -6068,7 +6646,25 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                     <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-slate-100 text-slate-500 rounded-full uppercase tracking-wider">
                                       {item.direction || 'DIRECTION'}
                                     </span>
-                                    {item.sourceType === 'centralized' ? (
+                                    
+                                    {/* Statut de Communication */}
+                                    {item.isCommunicated || item.communicationStatus === 'Communiqué' ? (
+                                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500 text-white border border-amber-600 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm animate-pulse">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                        COMMUNIQUÉ (En cours)
+                                      </span>
+                                    ) : isValidatedAudit ? (
+                                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[9px] font-bold uppercase tracking-wider">
+                                        ✓ DISPONIBLE
+                                      </span>
+                                    ) : null}
+
+                                    {isValidatedAudit ? (
+                                      <span className="text-[9px] font-black px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full uppercase tracking-wider flex items-center gap-1">
+                                        <CheckCircle2 size={11} className="text-emerald-600" />
+                                        VALIDÉ PAR RESPONSABLE AUDIT {item.batchNumber ? `(LOT ${item.batchNumber})` : ''}
+                                      </span>
+                                    ) : item.sourceType === 'centralized' ? (
                                       <span className="text-[9px] font-extrabold px-2.5 py-0.5 bg-teal-50 text-teal-600 border border-teal-100 rounded-full uppercase tracking-wider">
                                         CENTRALISÉ ({item.status === 'verified' ? 'VALIDÉ' : 'POINTÉ'})
                                       </span>
@@ -6080,52 +6676,105 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                   </div>
                                   <p className="text-xs font-bold text-slate-700 truncate line-clamp-1 max-w-2xl">{item.intitule || "Sans intitulé"}</p>
                                   
-                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400 font-medium">
+                                  {/* Info d'emprunt si communiqué */}
+                                  {(item.isCommunicated || item.communicationStatus === 'Communiqué') && (item.communicationBorrower || item.borrower) && (
+                                    <div className="flex items-center gap-2 bg-amber-50 border border-amber-200/80 rounded-xl px-3 py-1.5 w-fit">
+                                      <span className="text-xs">📤</span>
+                                      <span className="text-xs font-bold text-amber-900">
+                                        Emprunteur : <span className="font-extrabold underline">{item.communicationBorrower || item.borrower}</span>
+                                      </span>
+                                      {(item.communicationDate || item.dateCommunication) && (
+                                        <span className="text-[10px] font-medium text-amber-700 ml-1">
+                                          (Sorti le {String(item.communicationDate || item.dateCommunication).split('T')[0]})
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 font-medium">
                                     <span><strong>Boîte:</strong> {item.numBoite || item.boxNumber || '-'}</span>
-                                    {item.localisation && (
-                                      <span><strong>Emplacement:</strong> {item.localisation}</span>
+                                    {(item.localisation || item.location) && (
+                                      <span><strong>Emplacement:</strong> {item.localisation || item.location}</span>
+                                    )}
+                                    {item.adherant && (
+                                      <span><strong>Adhérent:</strong> {item.adherant}</span>
+                                    )}
+                                    {item.sin && (
+                                      <span><strong>N° Sinistre:</strong> {item.sin}</span>
+                                    )}
+                                    {item.police && (
+                                      <span><strong>Police:</strong> {item.police}</span>
+                                    )}
+                                    {item.validatedBy && (
+                                      <span className="text-emerald-700 font-bold"><strong>Auditeur:</strong> {item.validatedBy}</span>
                                     )}
                                     {item.expiryDate && (
-                                      <span><strong>Délai Échéance:</strong> {item.expiryDate}</span>
+                                      <span><strong>Échéance:</strong> {item.expiryDate}</span>
                                     )}
                                   </div>
                                 </div>
 
                                 <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
-                                  {item.scanFile ? (
-                                    <div className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 animate-fade-in">
+                                  {(() => {
+                                    const attachedScans = parseScanFiles(item.scanFile);
+                                    const targetItemId = item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id;
+                                    
+                                    if (attachedScans.length > 0) {
+                                      return (
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          {attachedScans.map((scanName, sIdx) => {
+                                            const displayName = scanName.substring(scanName.indexOf('_') + 1) || scanName;
+                                            return (
+                                              <div key={sIdx} className="flex items-center gap-1 bg-emerald-50 border border-emerald-200 rounded-xl p-0.5 animate-fade-in shadow-xs">
+                                                <button 
+                                                  onClick={() => {
+                                                    setPdfViewerFile(scanName);
+                                                    setPdfViewerTitle(`${item.intitule || item.reference || "Scan"} - ${displayName}`);
+                                                  }}
+                                                  className="flex items-center gap-1.5 px-2.5 py-1 text-emerald-800 hover:bg-emerald-100 rounded-lg transition-all font-bold text-xs uppercase cursor-pointer"
+                                                  title={`Voir le document PDF: ${displayName}`}
+                                                >
+                                                  <FileText size={14} className="text-emerald-600 shrink-0" />
+                                                  <span className="max-w-[120px] truncate">{attachedScans.length > 1 ? displayName : 'Voir Scan'}</span>
+                                                </button>
+                                                <button
+                                                  onClick={() => deleteDossierScan(targetItemId, scanName)}
+                                                  className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded-lg transition-all cursor-pointer"
+                                                  title="Supprimer ce scan PDF"
+                                                >
+                                                  <Trash2 size={13} />
+                                                </button>
+                                              </div>
+                                            );
+                                          })}
+                                          <button 
+                                            onClick={() => {
+                                              setUploadingScanItemId(targetItemId);
+                                              setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
+                                            }}
+                                            className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all font-bold cursor-pointer"
+                                            title="Ajouter un autre scan PDF"
+                                          >
+                                            <Plus size={13} />
+                                          </button>
+                                        </div>
+                                      );
+                                    }
+
+                                    return (
                                       <button 
                                         onClick={() => {
-                                          setPdfViewerFile(item.scanFile);
-                                          setPdfViewerTitle(item.intitule || item.reference || "Scan Dossier");
+                                          setUploadingScanItemId(targetItemId);
+                                          setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
                                         }}
-                                        className="flex items-center gap-1.5 px-2.5 py-1 text-emerald-800 hover:bg-emerald-100 rounded-lg transition-all font-bold text-xs uppercase cursor-pointer"
-                                        title="Voir le document PDF scanné"
+                                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer shadow-xs"
+                                        title="Associer un scan PDF numérisé"
                                       >
-                                        <FileText size={14} className="text-emerald-600" />
-                                        <span>Voir Scan</span>
+                                        <Plus size={14} />
+                                        <span>+ Scan PDF</span>
                                       </button>
-                                      <button
-                                        onClick={() => deleteDossierScan(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id)}
-                                        className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded-lg transition-all cursor-pointer animate-pulse"
-                                        title="Supprimer le scan PDF de ce dossier"
-                                      >
-                                        <Trash2 size={13} />
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <button 
-                                      onClick={() => {
-                                        setUploadingScanItemId(item.sourceType === 'centralized' ? 'centralized_' + item.reference : item.id);
-                                        setPdfViewerTitle(item.intitule || item.reference || "Associer un Scan");
-                                      }}
-                                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100 rounded-xl transition-all font-bold text-xs uppercase cursor-pointer"
-                                      title="Associer un scan PDF numérisé"
-                                    >
-                                      <Plus size={14} />
-                                      <span>+ Scan PDF</span>
-                                    </button>
-                                  )}
+                                    );
+                                  })()}
 
                                   <button 
                                     onClick={() => setViewingRequest(item)}
@@ -6282,12 +6931,32 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                                       {item.direction || <span className="text-slate-300 italic">-</span>}
                                     </td>
                                     <td className="py-4 px-6">
-                                      {item.found ? (
-                                        item.status === "Validé par responsable" ? (
-                                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                                            Validé par responsable
+                                      {item.isCommunicated || item.communicationStatus === 'Communiqué' ? (
+                                        <div className="flex flex-col gap-1">
+                                          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-500 text-white border border-amber-600 shadow-sm animate-pulse">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                            COMMUNIQUÉ (En cours)
                                           </span>
+                                          {(item.communicationBorrower || item.borrower) && (
+                                            <span className="text-[10px] font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 truncate max-w-[200px]" title={`Emprunteur: ${item.communicationBorrower || item.borrower}`}>
+                                              👤 {item.communicationBorrower || item.borrower}
+                                            </span>
+                                          )}
+                                          {item.found && (
+                                            <span className="text-[9px] font-semibold text-slate-400">
+                                              ({item.validationStatus || item.status})
+                                            </span>
+                                          )}
+                                        </div>
+                                      ) : item.found ? (
+                                        item.status === "Validé par responsable" ? (
+                                          <div className="flex flex-col gap-0.5">
+                                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                                              Validé par responsable
+                                            </span>
+                                            <span className="text-[9px] font-bold text-emerald-700 pl-1">✓ Disponible</span>
+                                          </div>
                                         ) : (
                                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
                                             <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
@@ -8793,14 +9462,40 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                         </Button>
                       )}
                       <div className="text-right space-y-1">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Statut Archivistique</p>
-                        <div className="flex justify-end pt-1">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Disponibilité & Archivage</p>
+                        <div className="flex flex-wrap justify-end gap-1.5 pt-1">
+                           {viewingRequest.isCommunicated || viewingRequest.communicationStatus === 'Communiqué' ? (
+                             <span className="bg-amber-500 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm animate-pulse">
+                               COMMUNIQUÉ (En cours)
+                             </span>
+                           ) : (
+                             <span className="bg-emerald-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm">
+                               ✓ DISPONIBLE
+                             </span>
+                           )}
                            {viewingRequest.archivalStatus === 'Expired' && <span className="bg-rose-500 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Échu ({viewingRequest.expiryDate})</span>}
                            {viewingRequest.archivalStatus === 'SemiActive' && <span className="bg-brand-accent text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Semi-Actif</span>}
                            {viewingRequest.archivalStatus === 'Active' && <span className="bg-brand-primary text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Actif</span>}
                         </div>
                       </div>
                     </div>
+
+                    {(viewingRequest.isCommunicated || viewingRequest.communicationStatus === 'Communiqué') && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <span className="p-2.5 bg-amber-500 text-white rounded-xl font-bold text-base shadow-sm">📤</span>
+                          <div>
+                            <h5 className="font-extrabold text-amber-900 text-xs uppercase tracking-wide">Dossier actuellement prêté / communiqué</h5>
+                            <p className="text-amber-800 text-xs font-semibold mt-0.5">
+                              Emprunteur : <span className="font-bold underline">{viewingRequest.communicationBorrower || viewingRequest.borrower || "Non renseigné"}</span>
+                              {(viewingRequest.communicationDate || viewingRequest.dateCommunication) && (
+                                <span className="ml-2">| Date de sortie : {String(viewingRequest.communicationDate || viewingRequest.dateCommunication).split('T')[0]}</span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-6 rounded-[2rem] border border-slate-200">
                        <div className="space-y-1">
@@ -10300,60 +10995,89 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
                   <p className="text-slate-400 text-[10px] uppercase font-bold">{pdfViewerTitle || 'Dossier'}</p>
                 </div>
                 <button 
-                  onClick={() => setUploadingScanItemId(null)}
-                  className="p-1.5 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                  onClick={() => {
+                    if (!isUploadingScan) setUploadingScanItemId(null);
+                  }}
+                  disabled={isUploadingScan}
+                  className="p-1.5 hover:bg-slate-200 rounded-full text-slate-400 hover:text-slate-600 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   <X size={18} />
                 </button>
               </div>
 
               <div className="p-6 space-y-4">
-                <div className="p-4 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50 flex flex-col items-center justify-center text-center space-y-2 relative hover:border-slate-300 transition-colors">
-                  <FileText size={32} className="text-slate-400 animate-pulse" />
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold text-slate-700">Sélectionner le fichier PDF numérisé</p>
-                    <p className="text-[10px] text-slate-400 font-medium">Uniquement au format .pdf (Max. 50Mo)</p>
-                  </div>
-                  <input 
-                    type="file" 
-                    accept="application/pdf"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-                        alert("Le fichier doit obligatoirement être un document PDF.");
-                        return;
-                      }
+                <div className={`p-6 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-center space-y-3 relative transition-all ${
+                  isUploadingScan 
+                    ? 'border-brand-primary bg-brand-primary/5 cursor-wait' 
+                    : 'border-slate-200 bg-slate-50/50 hover:border-brand-primary/50'
+                }`}>
+                  {isUploadingScan ? (
+                    <>
+                      <Loader2 size={36} className="text-brand-primary animate-spin" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-bold text-slate-800">Téléversement et indexation en cours...</p>
+                        <p className="text-[10px] text-slate-500 font-medium">Veuillez patienter quelques instants</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={36} className="text-slate-400 animate-pulse" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-bold text-slate-700">Sélectionner ou glisser le fichier PDF numérisé</p>
+                        <p className="text-[10px] text-slate-400 font-medium">Document PDF uniquement (Max. 50Mo)</p>
+                      </div>
+                      <input 
+                        type="file" 
+                        accept="application/pdf"
+                        disabled={isUploadingScan}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+                            alert("Le fichier doit obligatoirement être un document PDF.");
+                            return;
+                          }
 
-                      try {
-                        const targetId = uploadingScanItemId;
-                        const res = await api.postFile(`/api/inventory/${targetId}/upload-scan`, file);
-                        
-                        if (res.success) {
-                          setMassInventory(prev => prev.map(m => {
-                            const itemId = targetId.startsWith('centralized_') ? targetId.replace('centralized_', '') : targetId;
-                            const matchId = m.sourceType === 'centralized' ? m.reference : m.id;
-                            if (matchId === itemId) {
-                              return { ...m, scanFile: res.scanFile };
+                          try {
+                            setIsUploadingScan(true);
+                            const targetId = uploadingScanItemId;
+                            const res = await api.postFile(`/api/inventory/${targetId}/upload-scan`, file);
+                            
+                            if (res.success) {
+                              const updatedFileArray = res.scanFiles || (res.scanFile ? [res.scanFile] : []);
+                              const newScanFileStr = JSON.stringify(updatedFileArray);
+
+                              const updateItemState = (list: any[]) => list.map(m => {
+                                const itemId = targetId.startsWith('centralized_') ? targetId.replace('centralized_', '') : targetId;
+                                const matchId = m.sourceType === 'centralized' ? m.reference : m.id;
+                                if (matchId === itemId || m.reference === itemId || m.id === itemId) {
+                                  return { ...m, scanFile: newScanFileStr };
+                                }
+                                return m;
+                              });
+
+                              setMassInventory(updateItemState);
+                              setAuditSearchResults(updateItemState);
+                              
+                              setUploadingScanItemId(null);
+                              alert("Le scan PDF a été importé et lié avec succès !");
+                            } else {
+                              alert("Erreur lors du transfert : " + (res.error || "Raison inconnue"));
                             }
-                            return m;
-                          }));
-                          
-                          setUploadingScanItemId(null);
-                          alert("Le scan PDF a été importé et lié avec succès !");
-                        } else {
-                          alert("Erreur lors du transfert : " + (res.error || "Raison inconnue"));
-                        }
-                      } catch (err: any) {
-                        alert("Erreur lors du transfert : " + err.message);
-                      }
-                    }}
-                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                  />
+                          } catch (err: any) {
+                            alert("Erreur lors du transfert : " + err.message);
+                          } finally {
+                            setIsUploadingScan(false);
+                          }
+                        }}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      />
+                    </>
+                  )}
                 </div>
                 
                 <p className="text-[10px] text-slate-400 text-center leading-relaxed font-semibold uppercase">
-                  Le fichier PDF sera stocké et associé à ce dossier. Vous pourrez le consulter en un clic à tout moment depuis les résultats de recherche.
+                  Le document numérisé sera immédiatement lié au dossier et consultable ou téléchargeable à tout moment.
                 </p>
               </div>
             </motion.div>
@@ -10363,52 +11087,70 @@ export const AdminDashboard = ({ initialTab = 'requests' }: { initialTab?: 'requ
 
       {/* View Scan PDF Modal / Overlay Sidebar */}
       <AnimatePresence>
-        {pdfViewerFile && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
-            <motion.div
-              initial={{ x: '100%', opacity: 0.9 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: '100%', opacity: 0.9 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
-            >
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
-                <div className="space-y-0.5">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
-                  <p className="font-extrabold text-sm truncate max-w-xl text-slate-100 uppercase tracking-tight" title={pdfViewerTitle}>{pdfViewerTitle}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <a 
-                    href={`/api/scans/${pdfViewerFile}`} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-[10px] font-black bg-slate-800 text-white rounded-lg px-3 py-1.5 hover:bg-slate-700 transition"
-                  >
-                    <ExternalLink size={12} />
-                    <span>PLEIN ÉCRAN</span>
-                  </a>
-                  <button 
-                    onClick={() => {
-                      setPdfViewerFile(null);
-                      setPdfViewerTitle('');
-                    }}
-                    className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
+        {pdfViewerFile && (() => {
+          const parsed = parseScanFiles(pdfViewerFile);
+          const rawFile = parsed[0] || String(pdfViewerFile).replace(/^[\["']+|[\]"']+$/g, '').trim();
+          const scanUrl = `/api/scans/${encodeURIComponent(rawFile)}`;
+          const displayFileName = rawFile.substring(rawFile.indexOf('_') + 1) || rawFile;
 
-              <div className="flex-1 min-h-0 bg-slate-100 relative">
-                <iframe
-                  src={`/api/scans/${pdfViewerFile}#toolbar=1`}
-                  className="w-full h-full border-0 bg-white"
-                  title="Document original numérisé"
-                />
-              </div>
-            </motion.div>
-          </div>
-        )}
+          return (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
+              <motion.div
+                initial={{ x: '100%', opacity: 0.9 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: '100%', opacity: 0.9 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
+              >
+                <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
+                  <div className="space-y-0.5 min-w-0 pr-4">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
+                    <p className="font-extrabold text-sm truncate text-slate-100 uppercase tracking-tight" title={pdfViewerTitle || displayFileName}>{pdfViewerTitle || displayFileName}</p>
+                    <p className="text-[10px] text-slate-400 font-mono truncate">{displayFileName}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <a 
+                      href={scanUrl} 
+                      download={displayFileName}
+                      className="flex items-center gap-1.5 text-[10px] font-black bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg px-3 py-2 transition cursor-pointer"
+                      title="Télécharger le fichier PDF"
+                    >
+                      <Download size={13} />
+                      <span className="hidden sm:inline">TÉLÉCHARGER</span>
+                    </a>
+                    <a 
+                      href={scanUrl} 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="flex items-center gap-1.5 text-[10px] font-black bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg px-3 py-2 transition cursor-pointer"
+                      title="Ouvrir en plein écran"
+                    >
+                      <ExternalLink size={13} />
+                      <span>PLEIN ÉCRAN</span>
+                    </a>
+                    <button 
+                      onClick={() => {
+                        setPdfViewerFile(null);
+                        setPdfViewerTitle('');
+                      }}
+                      className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer ml-1"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 min-h-0 bg-slate-100 relative">
+                  <iframe
+                    src={`${scanUrl}#toolbar=1`}
+                    className="w-full h-full border-0 bg-white"
+                    title="Document original numérisé"
+                  />
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Validation Modal for Admin */}

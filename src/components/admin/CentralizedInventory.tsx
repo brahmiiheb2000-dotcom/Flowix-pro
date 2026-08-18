@@ -45,6 +45,7 @@ import { Folder, Box, ManualEntry, Tab } from '../../types';
 import Barcode from 'react-barcode';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../../lib/api';
+import { fetchActiveCommunicationsMap, CommunicationInfo } from '../../utils/communicationTracker';
 
 // --- CONSTANTS ---
 const DEPOTS = ['S1', 'S2', 'S3'];
@@ -293,6 +294,7 @@ export const CentralizedInventory = () => {
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [manualEntries, setManualEntries] = useState<ManualEntry[]>([]);
   const [archivalRules, setArchivalRules] = useState<any[]>([]);
+  const [commMap, setCommMap] = useState<Map<string, CommunicationInfo>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [activeBoxId, setActiveBoxId] = useState<string | null>(null);
   const [smartMode, setSmartMode] = useState(false);
@@ -454,8 +456,14 @@ export const CentralizedInventory = () => {
           console.error("Server fetch error:", serverErr);
         }
 
-        // Fetch archival-rules
+        // Fetch archival-rules and active communications
         await fetchArchivalRules();
+        try {
+          const comms = await fetchActiveCommunicationsMap();
+          setCommMap(comms);
+        } catch (commErr) {
+          console.warn("Error fetching communications:", commErr);
+        }
 
         setFolders(storedFolders);
         setBoxes(storedBoxes);
@@ -561,6 +569,7 @@ export const CentralizedInventory = () => {
               archivalRules={archivalRules}
               onReloadRules={fetchArchivalRules}
               setActiveTab={setActiveTab}
+              commMap={commMap}
             />
           )}
           {activeTab === 'localisation' && (
@@ -3275,7 +3284,7 @@ const LocalisationModule = ({ boxes, setBoxes, folders, selectedBoxIds, setSelec
   );
 };
 
-const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules = [], onReloadRules, setActiveTab }: any) => {
+const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules = [], onReloadRules, setActiveTab, commMap = new Map() }: any) => {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -3659,13 +3668,25 @@ const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules 
       const terms = q.split(/[\s,;]+/).filter(Boolean);
       if (terms.length > 1) {
         result = result.filter((f: any) => {
+          const refUpper = String(f.reference || '').trim().toUpperCase();
+          const comm = commMap.get(refUpper);
+          const isComm = f.isCommunicated || comm?.isCommunicated || f.communicationStatus === 'Communiqué';
+          const borrowerStr = String(f.communicationBorrower || comm?.borrower || '').toLowerCase();
+
           return terms.some(term => {
             const refMatch = f.reference && f.reference.toLowerCase().includes(term);
             const boxMatch = f.boxNumber && f.boxNumber.toLowerCase().includes(term);
             const dirMatch = f.direction && f.direction.toLowerCase().includes(term);
             const intituleMatch = f.intitule && f.intitule.toLowerCase().includes(term);
             const codeDuaMatch = f.codeDua && f.codeDua.toLowerCase().includes(term);
-            return refMatch || boxMatch || dirMatch || intituleMatch || codeDuaMatch;
+            const commMatch = isComm && (
+              'communiqué'.includes(term) ||
+              'communique'.includes(term) ||
+              'prêté'.includes(term) ||
+              'pret'.includes(term) ||
+              borrowerStr.includes(term)
+            );
+            return refMatch || boxMatch || dirMatch || intituleMatch || codeDuaMatch || commMatch;
           });
         });
       } else {
@@ -3680,6 +3701,18 @@ const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules 
           const dirMatch = f.direction && f.direction.toLowerCase().includes(term);
           const intituleMatch = f.intitule && f.intitule.toLowerCase().includes(term);
           const codeDuaMatch = f.codeDua && f.codeDua.toLowerCase().includes(term);
+
+          const refUpper = String(f.reference || '').trim().toUpperCase();
+          const comm = commMap.get(refUpper);
+          const isComm = f.isCommunicated || comm?.isCommunicated || f.communicationStatus === 'Communiqué';
+          const borrowerStr = String(f.communicationBorrower || comm?.borrower || '').toLowerCase();
+          const commMatch = isComm && (
+            'communiqué'.includes(term) ||
+            'communique'.includes(term) ||
+            'prêté'.includes(term) ||
+            'pret'.includes(term) ||
+            borrowerStr.includes(term)
+          );
           
           let ruleMatch = false;
           if (f.ruleId) {
@@ -3697,13 +3730,13 @@ const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules 
             locMatch = loc.includes(term);
           }
           
-          return refMatch || boxMatch || locMatch || statusMatch || dirMatch || intituleMatch || codeDuaMatch || ruleMatch;
+          return refMatch || boxMatch || locMatch || statusMatch || dirMatch || intituleMatch || codeDuaMatch || ruleMatch || commMatch;
         });
       }
     }
 
     return result;
-  }, [folders, debouncedSearch, boxes, activeSubTab, selectedDirection, archivalRules]);
+  }, [folders, debouncedSearch, boxes, activeSubTab, selectedDirection, archivalRules, commMap]);
 
   const totalPages = Math.ceil(filteredFolders.length / itemsPerPage);
   const paginatedFolders = useMemo(() => {
@@ -4151,17 +4184,56 @@ const InventaireModule = ({ folders, boxes, setFolders, setBoxes, archivalRules 
                     </div>
                   </td>
                   <td className="px-8 py-5 text-right flex-nowrap shrink-0">
-                    <div className="flex justify-end">
-                      <span className={cn(
-                        "text-[9px] font-black uppercase tracking-[0.05em] px-3 py-1 rounded-full flex items-center gap-1.5",
-                        f.status === 'verified' ? "bg-green-100 text-green-700 border border-green-200" :
-                        f.status === 'pointed' ? "bg-brand-secondary text-brand-primary border border-brand-primary/10" :
-                        "bg-slate-100 text-slate-400 border border-slate-200"
-                      )}>
-                        {f.status === 'verified' && <Check size={10} strokeWidth={4} />}
-                        {f.status === 'verified' ? 'Stocké & Vérifié' : 
-                         f.status === 'pointed' ? 'Pointé' : 'En Attente'}
-                      </span>
+                    <div className="flex flex-col items-end gap-1">
+                      {(() => {
+                        const refUpper = String(f.reference || '').trim().toUpperCase();
+                        const commInfo = commMap.get(refUpper);
+                        const isComm = f.isCommunicated || (commInfo && commInfo.isCommunicated) || f.communicationStatus === 'Communiqué';
+                        const borrower = f.communicationBorrower || commInfo?.borrower;
+                        const dateComm = f.communicationDate || commInfo?.dateComm;
+
+                        if (isComm) {
+                          return (
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-wider bg-amber-500 text-white shadow-sm border border-amber-600 animate-pulse">
+                                <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                COMMUNIQUÉ (En cours)
+                              </span>
+                              {borrower && (
+                                <span className="text-[10px] font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 truncate max-w-[200px]" title={`Emprunteur: ${borrower}`}>
+                                  👤 {borrower}
+                                </span>
+                              )}
+                              {dateComm && (
+                                <span className="text-[9px] text-slate-500 font-medium">
+                                  📅 {String(dateComm).split('T')[0]}
+                                </span>
+                              )}
+                              <span className="text-[9px] text-slate-400 font-semibold">
+                                ({f.status === 'verified' ? 'Stocké' : (f.status === 'pointed' ? 'Pointé' : 'En Attente')})
+                              </span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={cn(
+                              "text-[9px] font-black uppercase tracking-[0.05em] px-3 py-1 rounded-full flex items-center gap-1.5",
+                              f.status === 'verified' ? "bg-green-100 text-green-700 border border-green-200" :
+                              f.status === 'pointed' ? "bg-brand-secondary text-brand-primary border border-brand-primary/10" :
+                              "bg-slate-100 text-slate-400 border border-slate-200"
+                            )}>
+                              {f.status === 'verified' && <Check size={10} strokeWidth={4} />}
+                              {f.status === 'verified' ? 'Stocké & Vérifié' : 
+                               f.status === 'pointed' ? 'Pointé' : 'En Attente'}
+                            </span>
+                            {f.status === 'verified' && (
+                              <span className="text-[9px] font-bold text-emerald-700">✓ Disponible</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </td>
                 </tr>

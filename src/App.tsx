@@ -160,6 +160,15 @@ export default function App() {
 
   const switchRole = async (newRole: UserRole) => {
     setRole(newRole);
+    try {
+      const res = await api.post('/api/switch-role', { role: newRole });
+      if (res?.user) {
+        setUser(res.user);
+        setProfile(res.user);
+      }
+    } catch (err) {
+      console.error("Role switch error:", err);
+    }
   };
 
   const handleSignOut = async () => {

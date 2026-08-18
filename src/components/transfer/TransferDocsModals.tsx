@@ -989,3 +989,7 @@ export const BordereauFinalEliminationModal: React.FC<BordereauFinalEliminationP
   );
 };
 
+export { PVTransfertModal } from './PVTransfertModal';
+export type { PVTransfertBatchData } from './PVTransfertModal';
+
+

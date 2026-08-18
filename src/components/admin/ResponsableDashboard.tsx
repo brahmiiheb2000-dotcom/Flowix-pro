@@ -44,7 +44,7 @@ import {
   SlidersHorizontal
 } from 'lucide-react';
 import { api } from '../../lib/api';
-import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem, BordereauFinalInventaireModal, BordereauFinalEliminationModal } from '../transfer/TransferDocsModals';
+import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem, BordereauFinalInventaireModal, BordereauFinalEliminationModal, PVTransfertModal } from '../transfer/TransferDocsModals';
 
 // Simple Alert Toast in French
 interface AlertInfo {
@@ -1146,9 +1146,10 @@ export function ResponsableDashboard() {
                             {isValidated && (
                               <button
                                 onClick={() => setViewingBatchSlip(batch)}
-                                className="px-4 py-2.5 bg-blue-600/80 hover:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-md"
+                                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-all shadow-md"
+                                title="Consulter et imprimer le Procès-Verbal officiel de transfert"
                               >
-                                <Printer size={14} /> Bordereau Récapitulatif
+                                <FileText size={14} /> Voir le PV de Transfert
                               </button>
                             )}
                           </div>
@@ -1274,11 +1275,25 @@ export function ResponsableDashboard() {
                               {item.dateDebut || '?'} - {item.dateFin || '?'}
                             </td>
                             <td className="p-3">
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                                item.archivalStatus === 'Active' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                              }`}>
-                                {item.archivalStatus || 'En attente d\'Audit'}
-                              </span>
+                              {item.isCommunicated || item.communicationStatus === 'Communiqué' ? (
+                                <div className="flex flex-col gap-1">
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-500 text-white shadow-sm border border-amber-600 animate-pulse">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                                    Communiqué
+                                  </span>
+                                  {item.communicationBorrower && (
+                                    <span className="text-[9px] font-bold text-amber-900 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 truncate max-w-[150px]" title={`Emprunté par ${item.communicationBorrower}`}>
+                                      👤 {item.communicationBorrower}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                                  item.archivalStatus === 'Active' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                }`}>
+                                  {item.archivalStatus || 'En attente d\'Audit'}
+                                </span>
+                              )}
                             </td>
                             <td className="p-3 text-right">
                               <button
@@ -2628,52 +2643,75 @@ export function ResponsableDashboard() {
 
       {/* View Scan PDF Modal / Overlay Sidebar */}
       <AnimatePresence>
-        {pdfViewerFile && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
-            <motion.div
-              initial={{ x: '100%', opacity: 0.9 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: '100%', opacity: 0.9 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
-            >
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
-                <div className="space-y-0.5">
-                  <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
-                  <p className="font-extrabold text-sm truncate max-w-xl text-slate-100 uppercase tracking-tight" title={pdfViewerTitle}>{pdfViewerTitle}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <a 
-                    href={`/api/scans/${pdfViewerFile}`} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="flex items-center gap-1 text-[10px] font-black bg-slate-800 text-white rounded-lg px-3 py-1.5 hover:bg-slate-700 transition"
-                  >
-                    <ExternalLink size={12} />
-                    <span>PLEIN ÉCRAN</span>
-                  </a>
-                  <button 
-                    onClick={() => {
-                      setPdfViewerFile(null);
-                      setPdfViewerTitle('');
-                    }}
-                    className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
+        {pdfViewerFile && (() => {
+          let cleanFileName = String(pdfViewerFile).trim();
+          if (cleanFileName.startsWith('[') && cleanFileName.endsWith(']')) {
+            try {
+              const parsed = JSON.parse(cleanFileName);
+              if (Array.isArray(parsed) && parsed.length > 0) cleanFileName = parsed[0];
+            } catch (e) {}
+          }
+          cleanFileName = cleanFileName.replace(/^[\["']+|[\]"']+$/g, '').trim();
+          const scanUrl = `/api/scans/${encodeURIComponent(cleanFileName)}`;
+          const displayFileName = cleanFileName.substring(cleanFileName.indexOf('_') + 1) || cleanFileName;
 
-              <div className="flex-1 min-h-0 bg-slate-100 relative">
-                <iframe
-                  src={`/api/scans/${pdfViewerFile}#toolbar=1`}
-                  className="w-full h-full border-0 bg-white"
-                  title="Document original numérisé"
-                />
-              </div>
-            </motion.div>
-          </div>
-        )}
+          return (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end">
+              <motion.div
+                initial={{ x: '100%', opacity: 0.9 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: '100%', opacity: 0.9 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="bg-white h-full w-full max-w-4xl shadow-2xl flex flex-col border-l border-slate-200"
+              >
+                <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
+                  <div className="space-y-0.5 min-w-0 pr-4">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded border border-emerald-900">Visionneuse de Document Officiel</span>
+                    <p className="font-extrabold text-sm truncate text-slate-100 uppercase tracking-tight" title={pdfViewerTitle || displayFileName}>{pdfViewerTitle || displayFileName}</p>
+                    <p className="text-[10px] text-slate-400 font-mono truncate">{displayFileName}</p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <a 
+                      href={scanUrl} 
+                      download={displayFileName}
+                      className="flex items-center gap-1 text-[10px] font-black bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg px-3 py-1.5 transition"
+                      title="Télécharger le document"
+                    >
+                      <Download size={12} />
+                      <span className="hidden sm:inline">TÉLÉCHARGER</span>
+                    </a>
+                    <a 
+                      href={scanUrl} 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="flex items-center gap-1 text-[10px] font-black bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg px-3 py-1.5 transition"
+                    >
+                      <ExternalLink size={12} />
+                      <span>PLEIN ÉCRAN</span>
+                    </a>
+                    <button 
+                      onClick={() => {
+                        setPdfViewerFile(null);
+                        setPdfViewerTitle('');
+                      }}
+                      className="p-1.5 hover:bg-slate-800 rounded-full text-slate-300 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <X size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1 min-h-0 bg-slate-100 relative">
+                  <iframe
+                    src={`${scanUrl}#toolbar=1`}
+                    className="w-full h-full border-0 bg-white"
+                    title="Document original numérisé"
+                  />
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       {/* Validation Modal for Responsable */}
@@ -3180,12 +3218,24 @@ export function ResponsableDashboard() {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200 flex items-center justify-between">
-              <button
-                onClick={() => setInspectingBatch(null)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
-              >
-                Fermer l'Inspection
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setInspectingBatch(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all"
+                >
+                  Fermer l'Inspection
+                </button>
+                <button
+                  onClick={() => {
+                    const b = inspectingBatch;
+                    setViewingBatchSlip(b);
+                  }}
+                  className="px-4 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all shadow-xs"
+                  title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                >
+                  <FileText size={14} /> Voir le PV de Transfert
+                </button>
+              </div>
 
               <div className="flex items-center gap-3">
                 <button
@@ -3214,159 +3264,13 @@ export function ResponsableDashboard() {
         </div>
       )}
 
-      {/* --- MODAL BORDEREAU DE VERSEMENT OFFICIEL & STOCKAGE SCIELLÉ --- */}
+      {/* --- MODAL PROCÈS-VERBAL & BORDEREAU DE TRANSFERT D'ARCHIVES --- */}
       {viewingBatchSlip && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-slate-200">
-            <div className="p-5 bg-emerald-900 text-white flex items-center justify-between print:hidden">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-emerald-700 flex items-center justify-center">
-                  <ShieldCheck size={20} />
-                </div>
-                <div>
-                  <h3 className="font-extrabold text-base">Bordereau de Versement et Stockage Scellé</h3>
-                  <p className="text-xs text-emerald-200">Document officiel validé par la Session Responsable Audit</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => window.print()}
-                  className="px-4 py-2 bg-white text-emerald-900 hover:bg-emerald-50 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-sm cursor-pointer"
-                >
-                  <Printer size={14} /> Imprimer le Bordereau
-                </button>
-                <button
-                  onClick={() => setViewingBatchSlip(null)}
-                  className="p-2 hover:bg-white/10 rounded-full text-emerald-200 hover:text-white"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-8 overflow-y-auto space-y-6 flex-1 text-slate-800 bg-white" id="printable-bordereau">
-              {/* Header */}
-              <div className="border-b-2 border-emerald-800 pb-6 text-center space-y-1">
-                <h1 className="text-xl font-black uppercase tracking-wider text-slate-900">
-                  BORDEREAU OFFICIEL DE VERSEMENT ET DE STOCKAGE DÉFINITIF
-                </h1>
-                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">
-                  Système Centralisé de Gestion des Archives — Audit & Conformité
-                </p>
-              </div>
-
-              {/* Metadata Grid */}
-              <div className="grid grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 text-xs">
-                <div>
-                  <p className="text-slate-500 font-bold uppercase text-[10px]">Numéro de Versement / Lot</p>
-                  <p className="font-mono font-black text-slate-900 text-sm">{viewingBatchSlip.batchNumber}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500 font-bold uppercase text-[10px]">Service / Direction Versante</p>
-                  <p className="font-black text-emerald-800 text-sm">{viewingBatchSlip.direction}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500 font-bold uppercase text-[10px]">Date d'Intégration & Validation</p>
-                  <p className="font-medium text-slate-800">{new Date(viewingBatchSlip.validatedAt || Date.now()).toLocaleString('fr-FR')}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500 font-bold uppercase text-[10px]">Responsable d'Audit Validateur</p>
-                  <p className="font-bold text-slate-800">{viewingBatchSlip.validatedBy || 'Responsable Audit'}</p>
-                </div>
-              </div>
-
-              {/* Summary Stats */}
-              <div className="grid grid-cols-3 gap-4 text-center">
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-                  <p className="text-[10px] font-bold uppercase text-emerald-700">Total Boîtes Scellées</p>
-                  <p className="text-2xl font-black text-emerald-900">{viewingBatchSlip.boxesCount || viewingBatchSlip.boxesData?.length || 0}</p>
-                </div>
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
-                  <p className="text-[10px] font-bold uppercase text-blue-700">Total Dossiers Versés</p>
-                  <p className="text-2xl font-black text-blue-900">{viewingBatchSlip.foldersCount || viewingBatchSlip.foldersData?.length || 0}</p>
-                </div>
-                <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
-                  <p className="text-[10px] font-bold uppercase text-purple-700">Statut Conservation</p>
-                  <p className="text-base font-black text-purple-900 mt-1">Conforme DUA</p>
-                </div>
-              </div>
-
-              {/* Boîtes et emplacements table */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-black uppercase text-slate-700 tracking-wider">Récapitulatif des Boîtes et Localisations Physiques</h4>
-                <table className="w-full text-left text-xs border border-slate-200">
-                  <thead className="bg-slate-100 text-slate-700 font-bold">
-                    <tr>
-                      <th className="p-2 border-b border-slate-200">N° Boîte</th>
-                      <th className="p-2 border-b border-slate-200">Code-Barres</th>
-                      <th className="p-2 border-b border-slate-200">Emplacement Salle / Rayon / Étagère</th>
-                      <th className="p-2 border-b border-slate-200 text-center">Nb Dossiers</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {(viewingBatchSlip.boxesData || []).map((box: any, idx: number) => {
-                      const boxNum = box.boxNumber || box.number || `Boîte #${idx + 1}`;
-                      const folderCount = box.foldersCount ?? box.folderCount ?? (
-                        Array.isArray(box.foldersList) && box.foldersList.length > 0
-                          ? box.foldersList.length
-                          : (viewingBatchSlip.foldersData || []).filter((f: any) => String(f.boxNumber || f.numBoite || f.generatedBoxNumber).trim() === String(boxNum).trim()).length
-                      );
-                      let locStr = box.localisation || box.location;
-                      if (!locStr || locStr === 'Centre Archives Central') {
-                        const parts: string[] = [];
-                        if (box.batiment) parts.push(box.batiment);
-                        if (box.depot && box.salle) parts.push(`${box.depot} / ${box.salle}`);
-                        else if (box.depot) parts.push(box.depot);
-                        else if (box.salle) parts.push(box.salle);
-
-                        const coords: string[] = [];
-                        if (box.rayon) coords.push(`Rayon ${box.rayon}`);
-                        if (box.travee) coords.push(`Travée ${box.travee}`);
-                        if (box.tablette) coords.push(`Étagère ${box.tablette}`);
-                        if (box.niveau) coords.push(`Niveau ${box.niveau}`);
-
-                        if (coords.length > 0) parts.push(coords.join(' - '));
-                        if (parts.length > 0) locStr = parts.join(' • ');
-                      }
-                      if (!locStr) locStr = 'Centre Archives Central';
-
-                      return (
-                        <tr key={idx}>
-                          <td className="p-2 font-mono font-bold text-emerald-800">{boxNum}</td>
-                          <td className="p-2 font-mono">{box.barcode || `BOX-${boxNum}-2026`}</td>
-                          <td className="p-2 font-bold text-slate-700">{locStr}</td>
-                          <td className="p-2 text-center font-bold font-mono">{folderCount}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Signatures */}
-              <div className="grid grid-cols-2 gap-8 pt-8 border-t border-slate-200">
-                <div className="border border-dashed border-slate-300 rounded-2xl p-4 text-center space-y-12">
-                  <p className="text-xs font-bold text-slate-600">Le Service Versant</p>
-                  <div className="text-[10px] text-slate-400">Date et Signature</div>
-                </div>
-                <div className="border border-dashed border-slate-300 rounded-2xl p-4 text-center space-y-12 bg-emerald-50/50">
-                  <p className="text-xs font-bold text-emerald-800">Le Responsable du Centre d'Archives (Validé)</p>
-                  <div className="text-[10px] text-emerald-600 font-bold">Document scellé électroniquement</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 bg-slate-100 border-t border-slate-200 flex justify-end print:hidden">
-              <button
-                onClick={() => setViewingBatchSlip(null)}
-                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold cursor-pointer"
-              >
-                Fermer
-              </button>
-            </div>
-          </div>
-        </div>
+        <PVTransfertModal
+          batch={viewingBatchSlip}
+          onClose={() => setViewingBatchSlip(null)}
+          onValidate={handleValidateIntegrationBatch}
+        />
       )}
 
     </div>

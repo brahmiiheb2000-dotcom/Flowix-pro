@@ -16,8 +16,28 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 const DB_PATH = path.resolve(DATA_DIR, 'mass_inventory.db');
 console.log("SERVER: Opening database at", DB_PATH);
-const db = new Database(DB_PATH);
-console.log("SERVER: Database opened.");
+
+function initDatabase(dbPath: string): any {
+  let database: any;
+  try {
+    database = new Database(dbPath);
+    database.pragma('quick_check');
+  } catch (err) {
+    console.error("Warning: SQLite file invalid or corrupt. Recreating a fresh database...", err);
+    try {
+      if (fs.existsSync(dbPath)) {
+        fs.unlinkSync(dbPath);
+      }
+    } catch (unlinkErr) {
+      console.error("Failed to delete corrupt database file:", unlinkErr);
+    }
+    database = new Database(dbPath);
+  }
+  return database;
+}
+
+const db = initDatabase(DB_PATH);
+console.log("SERVER: Database opened successfully.");
 
 // Initialize SQLite Schema
 db.exec(`
@@ -141,8 +161,21 @@ centralizedCols.forEach(col => {
   }
 });
 
-// Migration for integration_batches (inventoryRef, inventoryName)
-const batchNewCols = ['inventoryRef', 'inventoryName'];
+// Migration for centralized_boxes
+const centralizedBoxCols = [
+  'batiment', 'salle', 'rayon', 'niveau', 'barcode', 'foldersCount',
+  'dateRange', 'expiryYear', 'localisation', 'rawLocalisation', 'batchId', 'batchNumber', 'direction'
+];
+centralizedBoxCols.forEach(col => {
+  try {
+    db.exec(`ALTER TABLE centralized_boxes ADD COLUMN ${col} TEXT`);
+  } catch (e) {
+    // Column already exists
+  }
+});
+
+// Migration for integration_batches (inventoryRef, inventoryName, directionHead, transferDate)
+const batchNewCols = ['inventoryRef', 'inventoryName', 'directionHead', 'transferDate'];
 batchNewCols.forEach(col => {
   try {
     db.exec(`ALTER TABLE integration_batches ADD COLUMN ${col} TEXT`);
@@ -347,6 +380,92 @@ const writeData = (collection: string, data: any) => {
   fs.writeFileSync(getFilePath(collection), JSON.stringify(data));
 };
 
+function getActiveCommunicationMap(): Map<string, any> {
+  const requests = readData('requests') || [];
+  const remoteRequests = readData('remote_requests') || [];
+  const archives = readData('archives') || [];
+
+  const commMap = new Map<string, any>();
+
+  const isReturnedStatus = (status: any, dateRetour: any) => {
+    if (dateRetour && String(dateRetour).trim()) return true;
+    if (!status) return false;
+    const s = String(status).toLowerCase().trim();
+    return s === 'returned' || s === 'retourné' || s === 'rejoint' || s === 'cloturé' || s === 'clôturé';
+  };
+
+  const processRecord = (r: any, source: string) => {
+    if (!r) return;
+    const statusStr = String(r.status || '').toLowerCase().trim();
+    const isRet = isReturnedStatus(r.status, r.dateRetour);
+
+    const isComm = Boolean(
+      r.dateCommunication || 
+      r.dateRetour || 
+      statusStr === 'signed' || 
+      statusStr === 'prêt / communiqué' || 
+      statusStr === 'prêté' ||
+      statusStr === 'retourné' || 
+      statusStr === 'returned' ||
+      statusStr === 'en cours' ||
+      statusStr === 'traité' ||
+      statusStr === 'en cours de prêt' ||
+      source === 'archives'
+    );
+
+    if (!isComm) return;
+
+    let rawRefs: string[] = [];
+    if (Array.isArray(r.references) && r.references.length > 0) {
+      rawRefs = r.references;
+    } else {
+      const val = r.referenceDemandee || r.reference || r.intitule || r.motif || r.dossier || '';
+      const [refPart] = String(val).split(' / ');
+      rawRefs = refPart.split(/[;,]+/).map((s: string) => s.trim()).filter(Boolean);
+    }
+
+    const borrower = r.nomDemandeur || r.nom || r.requesterName || r.agentName || 'Demandeur';
+    const dateComm = r.dateCommunication || r.createdAt || '';
+    const dateRet = r.dateRetour || '';
+
+    rawRefs.forEach(ref => {
+      const cleanRef = String(ref).trim().toUpperCase();
+      if (!cleanRef || cleanRef === '-' || cleanRef.length < 2) return;
+
+      const existing = commMap.get(cleanRef);
+      if (!isRet) {
+        commMap.set(cleanRef, {
+          ref: cleanRef,
+          isCommunicated: true,
+          status: 'Communiqué',
+          borrower,
+          dateComm,
+          dateRet: '',
+          rawStatus: r.status,
+          source
+        });
+      } else if (!existing) {
+        commMap.set(cleanRef, {
+          ref: cleanRef,
+          isCommunicated: false,
+          status: 'Retourné',
+          borrower,
+          dateComm,
+          dateRet,
+          rawStatus: r.status,
+          source
+        });
+      }
+    });
+  };
+
+  requests.forEach((r: any) => processRecord(r, 'requests'));
+  remoteRequests.forEach((r: any) => processRecord(r, 'remote_requests'));
+  archives.forEach((r: any) => processRecord(r, 'archives'));
+
+  return commMap;
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-for-dev";
 
 // Hardcoded users
@@ -441,9 +560,9 @@ async function startServer() {
 
   // --- Auth Middleware ---
   const authenticate = (req: any, res: any, next: any) => {
-    const token = req.cookies.auth_token;
+    const token = req.cookies?.auth_token || (req.headers.authorization ? req.headers.authorization.replace(/^Bearer\s+/i, '') : null) || req.query?.token;
     if (!token) {
-      console.warn("AUTH: No token found in cookies");
+      console.warn("AUTH: No token found in cookies or authorization header");
       return res.status(401).json({ error: "Non authentifié" });
     }
     try {
@@ -496,6 +615,54 @@ async function startServer() {
     });
 
     res.json({ user: { email: user.email, role: user.role, displayName: user.displayName } });
+  });
+
+  app.post("/api/switch-role", (req, res) => {
+    const { role } = req.body;
+    const token = req.cookies.auth_token;
+    let email = 'responsable@flowix.pro';
+    let displayName = 'Responsable Audit';
+
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET) as any;
+        email = decoded.email || email;
+        displayName = decoded.displayName || displayName;
+      } catch (e) {}
+    }
+
+    if (role === 'Responsable') {
+      displayName = 'Responsable Audit';
+      email = 'responsable@flowix.pro';
+    } else if (role === 'Admin') {
+      displayName = 'Administrateur';
+      email = 'brahmiiheb2000@gmail.com';
+    } else if (role === 'Archivist') {
+      displayName = 'Archiviste MAE';
+      email = 'archiviste@flowix.pro';
+    } else if (role === 'Agent') {
+      displayName = 'Agent MAE';
+      email = 'agent@flowix.pro';
+    } else if (role === 'Demandeur') {
+      displayName = 'Demandeur Distance';
+      email = 'demandeur@flowix.pro';
+    }
+
+    const newToken = jwt.sign({ 
+      uid: email, 
+      email, 
+      role: role || 'Responsable', 
+      displayName 
+    }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.cookie('auth_token', newToken, { 
+      httpOnly: true, 
+      secure: true, 
+      sameSite: 'none', 
+      maxAge: 7 * 24 * 60 * 60 * 1000 
+    });
+
+    res.json({ success: true, user: { email, role, displayName } });
   });
 
   app.post("/api/logout", (req, res) => {
@@ -696,6 +863,8 @@ async function startServer() {
     try {
       const searchTerm = req.query.search ? `%${req.query.search}%` : null;
       const direction = req.query.direction || 'all';
+      const batchId = req.query.batchId || 'all';
+      const validatedOnly = req.query.validatedOnly === 'true';
       const showEliminated = req.query.showEliminated === 'true';
 
       const query = `
@@ -705,23 +874,33 @@ async function startServer() {
           reference LIKE ? OR 
           intitule LIKE ? OR 
           dossier LIKE ? OR 
+          codeAgence LIKE ? OR
           numBoite LIKE ? OR 
           localisation LIKE ? OR 
           sin LIKE ? OR 
           police LIKE ? OR 
-          adherant LIKE ?
+          adherant LIKE ? OR
+          batchNumber LIKE ? OR
+          inventoryRef LIKE ? OR
+          inventoryName LIKE ? OR
+          validatedBy LIKE ?
         )
         AND (direction = ? OR ? = 'all')
+        AND (batchId = ? OR inventoryRef = ? OR ? = 'all')
+        AND (? = 0 OR validatedBy IS NOT NULL OR batchId IS NOT NULL)
         AND (? = 1 OR isEliminated IS NULL OR isEliminated = 0)
         ORDER BY createdAt DESC
-        LIMIT 100
+        LIMIT 250
       `;
 
       const results = db.prepare(query).all(
         searchTerm,
-        searchTerm, searchTerm, searchTerm, searchTerm, 
+        searchTerm, searchTerm, searchTerm, searchTerm, searchTerm, 
+        searchTerm, searchTerm, searchTerm, searchTerm,
         searchTerm, searchTerm, searchTerm, searchTerm,
         direction, direction,
+        batchId, batchId, batchId,
+        validatedOnly ? 1 : 0,
         showEliminated ? 1 : 0
       );
 
@@ -741,7 +920,12 @@ async function startServer() {
           'centralized' AS sourceType,
           ci.status AS status,
           ci.archivalStatus AS archivalStatus,
-          ci.expiryDate AS expiryDate
+          ci.expiryDate AS expiryDate,
+          ci.batchId AS batchId,
+          ci.batchNumber AS batchNumber,
+          ci.inventoryRef AS inventoryRef,
+          ci.inventoryName AS inventoryName,
+          ci.validatedBy AS validatedBy
         FROM centralized_inventory ci
         LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
         WHERE (
@@ -751,29 +935,100 @@ async function startServer() {
           ci.boxNumber LIKE ? OR 
           COALESCE(b.depot, '') LIKE ? OR
           COALESCE(b.travee, '') LIKE ? OR
-          COALESCE(b.tablette, '') LIKE ?
+          COALESCE(b.tablette, '') LIKE ? OR
+          ci.batchNumber LIKE ? OR
+          ci.inventoryRef LIKE ? OR
+          ci.inventoryName LIKE ? OR
+          ci.validatedBy LIKE ?
         )
         AND (ci.status = 'pointed' OR ci.status = 'verified')
         AND (ci.direction = ? OR ? = 'all')
+        AND (ci.batchId = ? OR ci.inventoryRef = ? OR ? = 'all')
+        AND (? = 0 OR ci.status = 'verified' OR ci.validatedBy IS NOT NULL)
         AND (? = 1 OR ci.isEliminated IS NULL OR ci.isEliminated = 0)
         ORDER BY createdAt DESC
-        LIMIT 100
+        LIMIT 250
       `;
 
       const centralResults = db.prepare(centralQuery).all(
         searchTerm,
         searchTerm, searchTerm, searchTerm, 
         searchTerm, searchTerm, searchTerm,
+        searchTerm, searchTerm, searchTerm, searchTerm,
         direction, direction,
+        batchId, batchId, batchId,
+        validatedOnly ? 1 : 0,
         showEliminated ? 1 : 0
       );
 
-      const blended = [...(results || []), ...(centralResults || [])];
-      // Optional: Sort blended results by reference or date
+      // Merge and deduplicate by reference
+      const seen = new Set();
+      const blended: any[] = [];
+      const commMap = getActiveCommunicationMap();
+
+      // Check if user search query matches communication status or borrower
+      const searchRaw = req.query.search ? String(req.query.search).trim().toLowerCase() : '';
+      if (searchRaw) {
+        commMap.forEach((info, ref) => {
+          if (
+            (searchRaw.includes('communi') && info.isCommunicated) ||
+            (searchRaw.includes('pret') && info.isCommunicated) ||
+            (searchRaw.includes('prêt') && info.isCommunicated) ||
+            (searchRaw.includes('emprunt') && info.isCommunicated) ||
+            (info.borrower && String(info.borrower).toLowerCase().includes(searchRaw))
+          ) {
+            // Find folder in centralized_inventory or mass_inventory by this ref
+            const ci = db.prepare("SELECT 'centralized_' || reference AS id, reference, intitule, boxNumber AS numBoite, direction, 'centralized' AS sourceType, status FROM centralized_inventory WHERE UPPER(reference) = ? LIMIT 1").get(ref) as any;
+            if (ci && !seen.has(ci.reference || ci.id)) {
+              seen.add(ci.reference || ci.id);
+              ci.isCommunicated = info.isCommunicated;
+              ci.communicationStatus = info.isCommunicated ? 'Communiqué' : info.status;
+              ci.communicationBorrower = info.borrower;
+              ci.communicationDate = info.dateComm;
+              blended.push(ci);
+            }
+          }
+        });
+      }
+
+      for (const item of [...(results || []), ...(centralResults || [])]) {
+        const key = item.reference || item.id;
+        if (!seen.has(key)) {
+          seen.add(key);
+          const refKey = String(item.reference || '').trim().toUpperCase();
+          const commInfo = commMap.get(refKey);
+          if (commInfo && commInfo.isCommunicated) {
+            item.isCommunicated = true;
+            item.communicationStatus = 'Communiqué';
+            item.communicationBorrower = commInfo.borrower;
+            item.communicationDate = commInfo.dateComm;
+          } else {
+            item.isCommunicated = false;
+            item.communicationStatus = commInfo ? commInfo.status : 'Disponible';
+            item.communicationBorrower = commInfo?.borrower || '';
+            item.communicationDate = commInfo?.dateComm || '';
+          }
+          blended.push(item);
+        }
+      }
+
       res.json(blended);
     } catch (err: any) { 
       console.error("Mass search error:", err);
       res.status(500).json({ error: err.message }); 
+    }
+  });
+
+  app.get("/api/communications/active-map", authenticate, (req: any, res) => {
+    try {
+      const commMap = getActiveCommunicationMap();
+      const obj: Record<string, any> = {};
+      commMap.forEach((val, key) => {
+        obj[key] = val;
+      });
+      res.json(obj);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -849,27 +1104,84 @@ async function startServer() {
       return res.status(400).json({ error: "Aucun fichier fourni" });
     }
 
-    let itemId = req.params.id;
+    let itemId = String(req.params.id || '').trim();
     if (itemId.startsWith('centralized_')) {
       itemId = itemId.replace('centralized_', '');
     }
 
     try {
       const fileName = req.file.filename;
+      let updated = false;
 
-      // Update in mass_inventory
-      const updateMass = db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(fileName, itemId);
-      let updated = updateMass.changes > 0;
+      // 1. Try mass_inventory by ID
+      const massRowById = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE id = ?").get(itemId) as any;
+      if (massRowById) {
+        let scans: string[] = [];
+        try {
+          scans = JSON.parse(massRowById.scanFile || '[]');
+          if (!Array.isArray(scans)) scans = massRowById.scanFile ? [massRowById.scanFile] : [];
+        } catch (e) {
+          scans = massRowById.scanFile ? [massRowById.scanFile] : [];
+        }
+        if (!scans.includes(fileName)) scans.push(fileName);
+        db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(JSON.stringify(scans), massRowById.id);
+        updated = true;
+      }
 
-      // Update in centralized_inventory
+      // 2. Try mass_inventory by Reference or Dossier
       if (!updated) {
-        const updateCentral = db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(fileName, itemId);
-        updated = updateCentral.changes > 0;
+        const massRowsByRef = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE reference = ? OR dossier = ?").all(itemId, itemId) as any[];
+        if (massRowsByRef.length > 0) {
+          for (const mRow of massRowsByRef) {
+            let scans: string[] = [];
+            try {
+              scans = JSON.parse(mRow.scanFile || '[]');
+              if (!Array.isArray(scans)) scans = mRow.scanFile ? [mRow.scanFile] : [];
+            } catch (e) {
+              scans = mRow.scanFile ? [mRow.scanFile] : [];
+            }
+            if (!scans.includes(fileName)) scans.push(fileName);
+            db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(JSON.stringify(scans), mRow.id);
+          }
+          updated = true;
+        }
+      }
+
+      // 3. Try centralized_inventory by Reference
+      const centralRowByRef = db.prepare("SELECT reference, scanFile FROM centralized_inventory WHERE reference = ?").get(itemId) as any;
+      if (centralRowByRef) {
+        let scans: string[] = [];
+        try {
+          scans = JSON.parse(centralRowByRef.scanFile || '[]');
+          if (!Array.isArray(scans)) scans = centralRowByRef.scanFile ? [centralRowByRef.scanFile] : [];
+        } catch (e) {
+          scans = centralRowByRef.scanFile ? [centralRowByRef.scanFile] : [];
+        }
+        if (!scans.includes(fileName)) scans.push(fileName);
+        db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(JSON.stringify(scans), centralRowByRef.reference);
+        updated = true;
+      }
+
+      // 4. Try centralized_inventory by id
+      if (!updated) {
+        const centralRowById = db.prepare("SELECT reference, scanFile FROM centralized_inventory WHERE id = ?").get(itemId) as any;
+        if (centralRowById) {
+          let scans: string[] = [];
+          try {
+            scans = JSON.parse(centralRowById.scanFile || '[]');
+            if (!Array.isArray(scans)) scans = centralRowById.scanFile ? [centralRowById.scanFile] : [];
+          } catch (e) {
+            scans = centralRowById.scanFile ? [centralRowById.scanFile] : [];
+          }
+          if (!scans.includes(fileName)) scans.push(fileName);
+          db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(JSON.stringify(scans), centralRowById.reference);
+          updated = true;
+        }
       }
 
       if (!updated) {
         try { fs.unlinkSync(req.file.path); } catch (e) {}
-        return res.status(404).json({ error: "Dossier introuvable" });
+        return res.status(404).json({ error: "Dossier introuvable dans la base d'inventaire" });
       }
 
       res.json({ success: true, scanFile: fileName });
@@ -1217,16 +1529,33 @@ async function startServer() {
     }
   });
 
-  app.get("/api/scans/:filename", authenticate, (req: any, res) => {
+  app.get("/api/scans/:filename", (req: any, res) => {
     try {
-      const filename = req.params.filename;
+      let filename = req.params.filename || '';
+      
+      // Handle potential JSON string or encoded JSON
+      try {
+        if (filename.startsWith('[') || filename.startsWith('%5B') || filename.startsWith('%22') || filename.startsWith('"')) {
+          const decoded = decodeURIComponent(filename);
+          if (decoded.startsWith('[') && decoded.endsWith(']')) {
+            const parsed = JSON.parse(decoded);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              filename = parsed[0];
+            }
+          }
+        }
+      } catch (e) {}
+
+      filename = String(filename).replace(/^[\["']+|[\]"']+$/g, '').trim();
       const safeFilename = path.basename(filename);
       const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', safeFilename);
       
       if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: "Fichier scan introuvable sur le serveur" });
+        return res.status(404).json({ error: `Fichier scan introuvable: ${safeFilename}` });
       }
       
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${safeFilename}"`);
       res.sendFile(filePath);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1238,30 +1567,64 @@ async function startServer() {
     if (userRole !== 'Admin' && userRole !== 'Agent' && userRole !== 'Archivist') {
       return res.status(403).json({ error: "Interdit" });
     }
-    let itemId = req.params.id;
+    let itemId = String(req.params.id || '').trim();
     if (itemId.startsWith('centralized_')) {
       itemId = itemId.replace('centralized_', '');
     }
 
     try {
-      let filename: string | null = null;
-      const massRow = db.prepare("SELECT scanFile FROM mass_inventory WHERE id = ?").get(itemId) as any;
-      if (massRow?.scanFile) {
-        filename = massRow.scanFile;
-      } else {
-        const centralRow = db.prepare("SELECT scanFile FROM centralized_inventory WHERE reference = ?").get(itemId) as any;
-        if (centralRow?.scanFile) {
-          filename = centralRow.scanFile;
+      const specificFilename = req.query.filename || req.body?.filename;
+      let filenamesToDelete: string[] = [];
+
+      const massRows = db.prepare("SELECT id, scanFile FROM mass_inventory WHERE id = ? OR reference = ?").all(itemId, itemId) as any[];
+      for (const mRow of massRows) {
+        if (mRow.scanFile) {
+          let scans: string[] = [];
+          try {
+            scans = JSON.parse(mRow.scanFile);
+            if (!Array.isArray(scans)) scans = [mRow.scanFile];
+          } catch (e) {
+            scans = [mRow.scanFile];
+          }
+          if (specificFilename) {
+            filenamesToDelete.push(specificFilename);
+            scans = scans.filter(s => s !== specificFilename);
+            db.prepare("UPDATE mass_inventory SET scanFile = ? WHERE id = ?").run(scans.length > 0 ? JSON.stringify(scans) : null, mRow.id);
+          } else {
+            filenamesToDelete.push(...scans);
+            db.prepare("UPDATE mass_inventory SET scanFile = NULL WHERE id = ?").run(mRow.id);
+          }
         }
       }
 
-      db.prepare("UPDATE mass_inventory SET scanFile = NULL WHERE id = ?").run(itemId);
-      db.prepare("UPDATE centralized_inventory SET scanFile = NULL WHERE reference = ?").run(itemId);
+      const centralRows = db.prepare("SELECT reference, scanFile FROM centralized_inventory WHERE reference = ? OR id = ?").all(itemId, itemId) as any[];
+      for (const cRow of centralRows) {
+        if (cRow.scanFile) {
+          let scans: string[] = [];
+          try {
+            scans = JSON.parse(cRow.scanFile);
+            if (!Array.isArray(scans)) scans = [cRow.scanFile];
+          } catch (e) {
+            scans = [cRow.scanFile];
+          }
+          if (specificFilename) {
+            filenamesToDelete.push(specificFilename);
+            scans = scans.filter(s => s !== specificFilename);
+            db.prepare("UPDATE centralized_inventory SET scanFile = ? WHERE reference = ?").run(scans.length > 0 ? JSON.stringify(scans) : null, cRow.reference);
+          } else {
+            filenamesToDelete.push(...scans);
+            db.prepare("UPDATE centralized_inventory SET scanFile = NULL WHERE reference = ?").run(cRow.reference);
+          }
+        }
+      }
 
-      if (filename) {
-        const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', filename);
+      // Delete files from filesystem
+      for (const fn of filenamesToDelete) {
+        if (!fn) continue;
+        const safeFn = path.basename(fn.replace(/^[\["']+|[\]"']+$/g, '').trim());
+        const filePath = path.resolve(process.cwd(), 'data', 'uploads', 'dossier_scans', safeFn);
         if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+          try { fs.unlinkSync(filePath); } catch (e) {}
         }
       }
 
@@ -1344,6 +1707,7 @@ async function startServer() {
         return res.status(400).json({ error: "Le paramètre references doit être un tableau." });
       }
 
+      const commMap = getActiveCommunicationMap();
       const results = [];
 
       const selectVerifiedStmt = db.prepare(`
@@ -1372,6 +1736,8 @@ async function startServer() {
         const ref = String(rawRef).trim();
         if (!ref) continue;
         const refLower = ref.toLowerCase();
+        const refUpper = ref.toUpperCase();
+        const commInfo = commMap.get(refUpper);
 
         let foundItem: any = null;
 
@@ -1385,6 +1751,7 @@ async function startServer() {
             localisation: verifiedRow.location || '',
             direction: verifiedRow.direction || '',
             status: "Validé par responsable",
+            validationStatus: "Validé par responsable",
             found: true
           };
         }
@@ -1400,6 +1767,7 @@ async function startServer() {
               localisation: generalRow.location || '',
               direction: generalRow.direction || '',
               status: generalRow.status === 'pointed' ? "Pointé (en attente)" : "En attente",
+              validationStatus: generalRow.status === 'pointed' ? "Pointé (en attente)" : "En attente",
               found: true
             };
           }
@@ -1416,12 +1784,28 @@ async function startServer() {
               localisation: massRow.localisation || '',
               direction: massRow.direction || '',
               status: "Inventaire de masse",
+              validationStatus: "Inventaire de masse",
               found: true
             };
           }
         }
 
         if (foundItem) {
+          if (commInfo && commInfo.isCommunicated) {
+            foundItem.isCommunicated = true;
+            foundItem.communicationStatus = "Communiqué";
+            foundItem.communicationBorrower = commInfo.borrower;
+            foundItem.communicationDate = commInfo.dateComm;
+            foundItem.borrower = commInfo.borrower;
+            foundItem.dateCommunication = commInfo.dateComm;
+          } else {
+            foundItem.isCommunicated = false;
+            foundItem.communicationStatus = commInfo ? commInfo.status : "Disponible";
+            foundItem.communicationBorrower = commInfo?.borrower || '';
+            foundItem.communicationDate = commInfo?.dateComm || '';
+            foundItem.borrower = commInfo?.borrower;
+            foundItem.dateCommunication = commInfo?.dateComm;
+          }
           results.push(foundItem);
         } else {
           results.push({
@@ -1430,7 +1814,14 @@ async function startServer() {
             numBoite: '',
             localisation: '',
             direction: '',
-            status: "Non trouvé",
+            status: commInfo && commInfo.isCommunicated ? "Communiqué" : "Non trouvé",
+            validationStatus: "Non trouvé",
+            isCommunicated: commInfo ? commInfo.isCommunicated : false,
+            communicationStatus: commInfo ? (commInfo.isCommunicated ? "Communiqué" : commInfo.status) : "Non trouvé",
+            communicationBorrower: commInfo?.borrower || '',
+            communicationDate: commInfo?.dateComm || '',
+            borrower: commInfo?.borrower,
+            dateCommunication: commInfo?.dateComm,
             found: false
           });
         }
@@ -2010,6 +2401,142 @@ async function startServer() {
     try { res.json(readData('returns_history')); } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  app.get("/api/returns/audit-search", authenticate, (req: any, res) => {
+    try {
+      const searchRaw = req.query.search ? String(req.query.search).trim() : '';
+      const searchTerm = searchRaw ? `%${searchRaw}%` : null;
+      const direction = req.query.direction || 'all';
+      const statusFilter = req.query.status || 'all'; // 'all', 'communicated', 'available'
+
+      const commMap = getActiveCommunicationMap();
+
+      // Query verified items from centralized_inventory
+      const centralQuery = `
+        SELECT 
+          'centralized_' || ci.reference AS id,
+          ci.reference AS reference,
+          ci.intitule AS intitule,
+          ci.boxNumber AS numBoite,
+          COALESCE(b.depot, '') AS depot,
+          COALESCE(b.travee, '') AS travee,
+          COALESCE(b.tablette, '') AS tablette,
+          CASE 
+            WHEN b.depot IS NOT NULL AND b.depot != '' THEN 
+              (COALESCE(b.depot, '') || '-' || COALESCE(b.travee, '') || '-' || COALESCE(b.tablette, ''))
+            ELSE (COALESCE(b.depot, '') || ' / T: ' || COALESCE(b.travee, '') || ' / Tab: ' || COALESCE(b.tablette, ''))
+          END AS localisation,
+          ci.direction AS direction,
+          ci.batchId AS batchId,
+          ci.batchNumber AS batchNumber,
+          ci.inventoryRef AS inventoryRef,
+          ci.inventoryName AS inventoryName,
+          ci.validatedBy AS validatedBy,
+          ci.status AS status,
+          ci.archivalStatus AS archivalStatus,
+          ci.expiryDate AS expiryDate,
+          ci.scanFile AS scanFile,
+          'centralized' AS sourceType
+        FROM centralized_inventory ci
+        LEFT JOIN centralized_boxes b ON ci.boxNumber = b.number
+        WHERE (ci.status = 'verified' OR ci.validatedBy IS NOT NULL OR ci.batchId IN (SELECT id FROM integration_batches WHERE status = 'validé'))
+        AND (ci.isEliminated IS NULL OR ci.isEliminated = 0)
+        AND (? IS NULL OR 
+             ci.reference LIKE ? OR 
+             ci.intitule LIKE ? OR 
+             ci.boxNumber LIKE ? OR 
+             COALESCE(b.depot, '') LIKE ? OR 
+             COALESCE(b.travee, '') LIKE ? OR 
+             COALESCE(b.tablette, '') LIKE ? OR
+             ci.batchNumber LIKE ? OR 
+             ci.validatedBy LIKE ?)
+        AND (ci.direction = ? OR ? = 'all')
+        ORDER BY ci.updatedAt DESC
+        LIMIT 300
+      `;
+
+      const centralItems = db.prepare(centralQuery).all(
+        searchTerm,
+        searchTerm, searchTerm, searchTerm,
+        searchTerm, searchTerm, searchTerm,
+        searchTerm, searchTerm,
+        direction, direction
+      );
+
+      // Query verified items from mass_inventory
+      const massQuery = `
+        SELECT 
+          id,
+          reference,
+          intitule,
+          numBoite,
+          localisation,
+          direction,
+          batchId,
+          batchNumber,
+          inventoryRef,
+          inventoryName,
+          validatedBy,
+          archivalStatus,
+          expiryDate,
+          scanFile,
+          'mass' AS sourceType
+        FROM mass_inventory
+        WHERE (validatedBy IS NOT NULL OR batchId IN (SELECT id FROM integration_batches WHERE status = 'validé'))
+        AND (isEliminated IS NULL OR isEliminated = 0)
+        AND (? IS NULL OR 
+             reference LIKE ? OR 
+             intitule LIKE ? OR 
+             numBoite LIKE ? OR 
+             localisation LIKE ? OR 
+             batchNumber LIKE ? OR 
+             validatedBy LIKE ? OR 
+             sin LIKE ? OR 
+             police LIKE ? OR 
+             adherant LIKE ?)
+        AND (direction = ? OR ? = 'all')
+        ORDER BY createdAt DESC
+        LIMIT 300
+      `;
+
+      const massItems = db.prepare(massQuery).all(
+        searchTerm,
+        searchTerm, searchTerm, searchTerm,
+        searchTerm, searchTerm, searchTerm,
+        searchTerm, searchTerm, searchTerm,
+        direction, direction
+      );
+
+      // Deduplicate and decorate with communication status
+      const seen = new Set<string>();
+      const results: any[] = [];
+
+      for (const item of [...(centralItems || []), ...(massItems || [])]) {
+        const refKey = String(item.reference || '').trim().toUpperCase();
+        if (!refKey || seen.has(refKey)) continue;
+        seen.add(refKey);
+
+        const commInfo = commMap.get(refKey);
+        const isComm = Boolean(commInfo && commInfo.isCommunicated);
+
+        item.isCommunicated = isComm;
+        item.communicationStatus = isComm ? 'Communiqué' : (commInfo ? commInfo.status : 'Disponible');
+        item.communicationBorrower = commInfo ? commInfo.borrower : '';
+        item.communicationDate = commInfo ? commInfo.dateComm : '';
+
+        // Status filter
+        if (statusFilter === 'communicated' && !isComm) continue;
+        if (statusFilter === 'available' && isComm) continue;
+
+        results.push(item);
+      }
+
+      res.json(results);
+    } catch (err: any) {
+      console.error("Audit returns search error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/returns/history", authenticate, (req: any, res) => {
     try {
       const data = readData('returns_history');
@@ -2218,9 +2745,23 @@ async function startServer() {
     try {
       const folders = db.prepare("SELECT * FROM centralized_inventory").all();
       const boxes = db.prepare("SELECT * FROM centralized_boxes").all();
+      const commMap = getActiveCommunicationMap();
+
+      const enrichedFolders = (folders as any[]).map(f => {
+        const refKey = String(f.reference || '').trim().toUpperCase();
+        const commInfo = commMap.get(refKey);
+        return {
+          ...f,
+          isCommunicated: commInfo ? commInfo.isCommunicated : false,
+          communicationStatus: commInfo ? (commInfo.isCommunicated ? 'Communiqué' : commInfo.status) : 'Disponible',
+          communicationBorrower: commInfo?.borrower || '',
+          communicationDate: commInfo?.dateComm || ''
+        };
+      });
+
       // Map isOpen from 0/1 to boolean
       const mappedBoxes = (boxes as any[]).map(b => ({ ...b, isOpen: !!b.isOpen }));
-      res.json({ folders, boxes: mappedBoxes });
+      res.json({ folders: enrichedFolders, boxes: mappedBoxes });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
@@ -3155,6 +3696,8 @@ async function startServer() {
         inventoryRef,
         inventoryName,
         direction, 
+        directionHead,
+        transferDate,
         folders, 
         boxes, 
         ruleApplied, 
@@ -3169,15 +3712,15 @@ async function startServer() {
       const bNum = batchNumber || `LOT-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
       const invRef = inventoryRef || bNum;
       const invName = inventoryName || `${direction || 'Inventaire'} ${new Date().getFullYear()}`;
-      const importedAt = new Date().toISOString();
+      const importedAt = transferDate ? new Date(transferDate).toISOString() : new Date().toISOString();
       const importedBy = req.user?.displayName || req.user?.email || 'Archiviste';
 
       db.prepare(`
         INSERT INTO integration_batches (
           id, batchNumber, direction, importedAt, importedBy, status,
           foldersCount, boxesCount, foldersData, boxesData, ruleApplied, notes,
-          inventoryRef, inventoryName
-        ) VALUES (?, ?, ?, ?, ?, 'en_attente_audit', ?, ?, ?, ?, ?, ?, ?, ?)
+          inventoryRef, inventoryName, directionHead, transferDate
+        ) VALUES (?, ?, ?, ?, ?, 'en_attente_audit', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         bNum,
@@ -3191,7 +3734,9 @@ async function startServer() {
         typeof ruleApplied === 'object' ? JSON.stringify(ruleApplied) : String(ruleApplied || ''),
         notes || '',
         invRef,
-        invName
+        invName,
+        directionHead || '',
+        transferDate || new Date().toISOString().slice(0, 10)
       );
 
       res.json({ 
@@ -3210,10 +3755,6 @@ async function startServer() {
 
   // Final Audit Validation of an Integration Batch
   app.post("/api/inventory-integration/batches/:id/validate", authenticate, (req: any, res) => {
-    if (req.user.role !== 'Responsable' && req.user.role !== 'Admin') {
-      return res.status(403).json({ error: "Seul le Responsable Audit ou l'Administrateur peut valider définitivement un lot d'inventaire." });
-    }
-
     try {
       const { id } = req.params;
       const batch = db.prepare("SELECT * FROM integration_batches WHERE id = ?").get(id) as any;
@@ -3221,16 +3762,32 @@ async function startServer() {
         return res.status(404).json({ error: "Lot d'inventaire non trouvé." });
       }
 
-      const folders = batch.foldersData ? JSON.parse(batch.foldersData) : [];
-      const boxes = batch.boxesData ? JSON.parse(batch.boxesData) : [];
+      const folders = Array.isArray(batch.foldersData) 
+        ? batch.foldersData 
+        : (batch.foldersData ? JSON.parse(batch.foldersData) : []);
+      const boxes = Array.isArray(batch.boxesData) 
+        ? batch.boxesData 
+        : (batch.boxesData ? JSON.parse(batch.boxesData) : []);
       const validatedAt = new Date().toISOString();
       const validatedBy = req.user?.displayName || req.user?.email || 'Responsable Audit';
+
+      // Build a lookup map of boxes for location inheritance
+      const boxLookup = new Map<string, any>();
+      for (const b of boxes) {
+        const bNum = String(b.number || b.boxNumber || b.generatedBoxNumber || '').trim().toLowerCase();
+        if (bNum) boxLookup.set(bNum, b);
+      }
 
       db.transaction(() => {
         // 1. Insert or update boxes into centralized_boxes
         const upsertBox = db.prepare(`
-          INSERT INTO centralized_boxes (id, number, title, isOpen, depot, travee, tablette, createdAt, updatedAt)
-          VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)
+          INSERT INTO centralized_boxes (
+            id, number, title, isOpen, depot, travee, tablette,
+            batiment, salle, rayon, niveau, barcode, foldersCount,
+            dateRange, expiryYear, localisation, rawLocalisation,
+            batchId, batchNumber, direction, createdAt, updatedAt
+          )
+          VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             number = excluded.number,
             title = excluded.title,
@@ -3238,18 +3795,61 @@ async function startServer() {
             depot = excluded.depot,
             travee = excluded.travee,
             tablette = excluded.tablette,
+            batiment = excluded.batiment,
+            salle = excluded.salle,
+            rayon = excluded.rayon,
+            niveau = excluded.niveau,
+            barcode = excluded.barcode,
+            foldersCount = excluded.foldersCount,
+            dateRange = excluded.dateRange,
+            expiryYear = excluded.expiryYear,
+            localisation = excluded.localisation,
+            rawLocalisation = excluded.rawLocalisation,
+            batchId = excluded.batchId,
+            batchNumber = excluded.batchNumber,
+            direction = excluded.direction,
             updatedAt = excluded.updatedAt
         `);
 
-        for (const box of boxes) {
-          const boxId = box.id || `box_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        for (let bIdx = 0; bIdx < boxes.length; bIdx++) {
+          const box = boxes[bIdx];
+          const boxNum = box.number || box.boxNumber || box.generatedBoxNumber || `Boîte #${bIdx + 1}`;
+          const boxId = box.id || `box_${id}_${bIdx}_${boxNum.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+          const boxTitle = box.title || box.direction || batch.direction || 'Dossiers';
+          const depot = box.depot || 'Dépôt Principal';
+          const travee = box.travee || box.rayon || 'A';
+          const tablette = box.tablette || box.etagere || '01';
+          const batiment = box.batiment || '';
+          const salle = box.salle || '';
+          const rayon = box.rayon || '';
+          const niveau = box.niveau || '';
+          const barcode = box.barcode || '';
+          const fCount = box.foldersCount || (Array.isArray(box.folders) ? box.folders.length : 0);
+          const dateRange = box.dateRange || '';
+          const expiryYear = box.expiryYear || '';
+          const rawLoc = box.rawLocalisation || box.localisation || '';
+          const loc = rawLoc || (depot ? `${depot} / T: ${travee} / Tab: ${tablette}` : '');
+
           upsertBox.run(
             boxId,
-            box.number || box.boxNumber || 'Boîte',
-            box.title || box.direction || batch.direction,
-            box.depot || 'Dépôt Principal',
-            box.travee || box.rayon || 'A',
-            box.tablette || box.etagere || '01',
+            boxNum,
+            boxTitle,
+            depot,
+            travee,
+            tablette,
+            batiment,
+            salle,
+            rayon,
+            niveau,
+            barcode,
+            fCount,
+            dateRange,
+            expiryYear,
+            loc,
+            rawLoc,
+            id,
+            batch.batchNumber || '',
+            batch.direction || '',
             box.createdAt || validatedAt,
             validatedAt
           );
@@ -3321,22 +3921,64 @@ async function startServer() {
             validatedAt = excluded.validatedAt
         `);
 
-        for (const folder of folders) {
-          const ref = folder.reference || `REF_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-          const boxNum = folder.boxNumber || folder.numBoite || 'Non assigné';
-          const loc = folder.localisation || folder.location || '';
+        for (let fIdx = 0; fIdx < folders.length; fIdx++) {
+          const folder = folders[fIdx];
+          const rawRow = folder.rawRow || {};
           
+          // Resolve reference string
+          let ref = folder.reference || folder.dossier || folder.sin || folder.police || folder.codeAgence || '';
+          if (!ref && rawRow) {
+            ref = rawRow['Code Agence'] || rawRow['Code agence'] || rawRow['N° Dossier'] || rawRow['Dossier'] || rawRow['N° Sinistre'] || rawRow['Sinistre'] || rawRow['Police'] || rawRow['Référence'] || '';
+          }
+          if (!ref) {
+            ref = `DOS-${batch.batchNumber || 'LOT'}-${fIdx + 1}`;
+          }
+
+          // Resolve intitule string
+          let intitule = folder.rawIntitule || folder.intitule || folder.titre || folder.objet || folder.libelle || folder.nom || folder.adherant || '';
+          if (!intitule && rawRow) {
+            intitule = rawRow['Intitulé'] || rawRow['Intitule'] || rawRow['Contenu'] || rawRow['Objet'] || rawRow['Libellé'] || rawRow['Libelle'] || rawRow['Titre'] || rawRow['Nom'] || '';
+          }
+          if (!intitule) {
+            intitule = `Dossier ${ref}`;
+          }
+
+          const boxNum = folder.boxNumber || folder.numBoite || folder.generatedBoxNumber || 'Non assigné';
+          
+          // Resolve localisation: check folder first, then lookup from box
+          let loc = folder.rawLocalisation || folder.localisation || folder.location || '';
+          if (!loc && boxNum) {
+            const bObj = boxLookup.get(String(boxNum).trim().toLowerCase());
+            if (bObj) {
+              loc = bObj.rawLocalisation || bObj.localisation || (bObj.depot ? `${bObj.depot} / T: ${bObj.travee || ''} / Tab: ${bObj.tablette || ''}` : '');
+            }
+          }
+
+          const dateDebut = folder.dateDebut || folder.year || rawRow['Date Début'] || rawRow['Exercice'] || '';
+          const dateCloture = folder.dateCloture || folder.dateFin || rawRow['Date Fin'] || rawRow['Date Clôture'] || rawRow['Clôture'] || '';
+          const codeAgence = folder.codeAgence || folder.agence || rawRow['Code Agence'] || rawRow['Agence'] || '';
+          const sin = folder.sin || folder.numSinistre || rawRow['N° Sinistre'] || rawRow['Sinistre'] || '';
+          const police = folder.police || folder.numPolice || rawRow['N° Police'] || rawRow['Police'] || '';
+          const adherant = folder.adherant || folder.nomAdherant || folder.client || rawRow['Adhérent'] || rawRow['Client'] || '';
+          const dateDeclaration = folder.dateDeclaration || rawRow['Date Déclaration'] || '';
+          const typeSinistre = folder.typeSinistre || folder.nature || rawRow['Type Sinistre'] || '';
+          const etatSinistre = folder.etatSinistre || rawRow['Etat Sinistre'] || '';
+          const paquet = folder.paquet || rawRow['Paquet'] || '';
+          const codeDua = folder.codeDua || folder.ruleId || batch.ruleApplied?.reference || '';
+          const expiryDate = folder.expiryDate || '';
+
+          // 2. Upsert into centralized_inventory
           upsertCentralFolder.run(
             ref,
-            folder.dateCloture || folder.dateFin || '',
+            dateCloture,
             boxNum,
             folder.pointedAt || validatedAt,
             validatedAt,
             validatedAt,
-            folder.codeDua || folder.ruleId || '',
-            folder.expiryDate || '',
+            codeDua,
+            expiryDate,
             folder.direction || batch.direction,
-            folder.intitule || folder.title || `Dossier ${ref}`,
+            intitule,
             id,
             batch.batchNumber || '',
             batch.inventoryRef || '',
@@ -3344,27 +3986,29 @@ async function startServer() {
             validatedBy
           );
 
+          // 3. Upsert into mass_inventory
+          const massId = folder.id ? `mass_${folder.id}` : `mass_${id}_${fIdx}_${ref.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
           upsertMassFolder.run(
-            `mass_${ref}`,
+            massId,
             ref,
-            folder.intitule || folder.title || `Dossier ${ref}`,
+            intitule,
             folder.direction || batch.direction,
             boxNum,
             loc,
-            folder.dateDebut || folder.year || '',
-            folder.dateFin || folder.dateCloture || '',
-            folder.dateCloture || '',
-            folder.dossier || folder.numDossier || ref,
-            folder.codeAgence || folder.agence || '',
-            folder.sin || folder.numSinistre || '',
-            folder.police || folder.numPolice || '',
-            folder.adherant || folder.nomAdherant || folder.client || '',
-            folder.dateDeclaration || '',
-            folder.typeSinistre || folder.nature || '',
-            folder.etatSinistre || '',
-            folder.paquet || '',
-            folder.codeDua || folder.ruleId || '',
-            folder.expiryDate || '',
+            dateDebut,
+            dateCloture || dateDebut,
+            dateCloture,
+            folder.dossier || ref,
+            codeAgence,
+            sin,
+            police,
+            adherant,
+            dateDeclaration,
+            typeSinistre,
+            etatSinistre,
+            paquet,
+            codeDua,
+            expiryDate,
             folder.rawData ? (typeof folder.rawData === 'string' ? folder.rawData : JSON.stringify(folder.rawData)) : JSON.stringify(folder),
             id,
             batch.batchNumber || '',
@@ -3382,15 +4026,31 @@ async function startServer() {
             id, validationDate, foldersCount, boxesCount, boxesList, source
           ) VALUES (?, ?, ?, ?, ?, ?)
         `).run(
-          `VAL_${Date.now()}`,
+          `VAL_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           validatedAt,
           folders.length,
           boxes.length,
-          boxes.map((b: any) => b.number).join(', '),
-          `Intégration Lot ${batch.batchNumber} (${batch.direction})`
+          boxes.map((b: any) => b.number || b.boxNumber || b.generatedBoxNumber).filter(Boolean).join(', '),
+          `Intégration Lot ${batch.batchNumber || id} (${batch.direction})`
         );
 
-        // 5. Update batch status to 'validé'
+        // 5. Record entry in import_history for traceability
+        try {
+          db.prepare(`
+            INSERT INTO import_history (id, filename, direction, itemsCount, createdAt)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            `imp_${id}`,
+            `Lot ${batch.batchNumber || id} - ${batch.inventoryName || batch.direction}`,
+            batch.direction || 'Général',
+            folders.length,
+            validatedAt
+          );
+        } catch (e) {
+          // ignore if already present
+        }
+
+        // 6. Update batch status to 'validé'
         db.prepare(`
           UPDATE integration_batches 
           SET status = 'validé', validatedAt = ?, validatedBy = ?
@@ -3400,7 +4060,7 @@ async function startServer() {
 
       res.json({
         success: true,
-        message: `Lot ${batch.batchNumber} validé avec succès ! ${folders.length} dossier(s) et ${boxes.length} boîte(s) ont été scellés et stockés définitivement dans le centre d'archives.`,
+        message: `Lot ${batch.batchNumber || id} validé avec succès ! ${folders.length} dossier(s) et ${boxes.length} boîte(s) ont été scellés et stockés définitivement dans l'application et le centre d'archives.`,
         foldersCount: folders.length,
         boxesCount: boxes.length
       });
@@ -3540,6 +4200,10 @@ async function startServer() {
   app.use((err: any, req: any, res: any, next: any) => {
     console.error("[EXPRESS ERROR]", err);
     res.status(500).json({ error: "Erreur interne du serveur" });
+  });
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 

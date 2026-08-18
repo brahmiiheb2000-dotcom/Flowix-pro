@@ -35,11 +35,14 @@ import {
   Filter
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { PVTransfertModal } from '../transfer/PVTransfertModal';
 
 interface ExcelFolderRow {
   id: string;
   reference: string;
+  codeAgence?: string;
   intitule: string;
+  rawIntitule?: string;
   numBoite?: string;
   dateDebut?: string;
   dateCloture?: string;
@@ -85,6 +88,7 @@ interface GeneratedBox {
   travee: string;
   tablette: string;
   niveau: string;
+  rawLocalisation?: string;
   locationSource?: 'excel' | 'bulk' | 'manual';
   hasExcelLocation?: boolean;
   createdAt: string;
@@ -94,19 +98,36 @@ interface GeneratedBox {
 export const parseLocationData = (row: any) => {
   const keys = Object.keys(row);
   
-  // 1. Check granular keys
-  const batKey = keys.find(k => /b[aâ]timent|b[aâ]t|building|immeuble/i.test(k));
-  const salleKey = keys.find(k => /salle|local|magasin|piece|room/i.test(k));
-  const depotKey = keys.find(k => /d[eé]p[oô]t|entrepot|stock/i.test(k));
-  const rayonKey = keys.find(k => /rayon|rayonnage|rangee|rack|aisle/i.test(k));
-  const traveeKey = keys.find(k => /trav[eé]e|bay|colonne|section/i.test(k));
-  const tabKey = keys.find(k => /tablette|[eé]tag[eè]re|shelf|table/i.test(k));
-  const nivKey = keys.find(k => /niveau|pos|position|[eé]tage|level/i.test(k));
-  
-  // 2. Check combined location key
-  const locKey = keys.find(k => /localis|emplac|adresse|site|lieu|coord|stockage/i.test(k));
-  const rawLoc = locKey && row[locKey] ? String(row[locKey]).trim() : '';
+  // 1. Check direct combined location key FIRST (exact Excel column like "Localisation", "Emplacement", "S1-B-208", etc.)
+  const locKey = keys.find(k => /(?:localis|emplac|adresse|site|lieu|coord|stockage|box_loc|rangement|^loc$|^pos$|^position$)/i.test(k))
+    || keys.find(k => /localis|emplac|adresse|site|lieu|coord|stockage/i.test(k));
 
+  let rawLoc = locKey && row[locKey] !== undefined && row[locKey] !== null ? String(row[locKey]).trim() : '';
+
+  // If no explicit location header, check if any column value matches standard location patterns (e.g. S1-B-208, A-102, R1-T2)
+  if (!rawLoc) {
+    for (const k of keys) {
+      const val = String(row[k] || '').trim();
+      if (/^[A-Z0-9]{1,4}-[A-Z0-9]{1,4}(?:-[A-Z0-9]{1,6})?(?:-[A-Z0-9]{1,4})?$/i.test(val) && 
+          !/^\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}$/.test(val) && 
+          !/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+        if (!/date|ref|sin|police|dossier|annee|year|tel|montant|prime/i.test(k)) {
+          rawLoc = val;
+          break;
+        }
+      }
+    }
+  }
+
+  // 2. Check granular keys
+  const batKey = keys.find(k => k !== locKey && /b[aâ]timent|b[aâ]t|building|immeuble/i.test(k));
+  const salleKey = keys.find(k => k !== locKey && /salle|local|magasin|piece|room/i.test(k));
+  const depotKey = keys.find(k => k !== locKey && /d[eé]p[oô]t|entrepot|stock/i.test(k));
+  const rayonKey = keys.find(k => k !== locKey && /rayon|rayonnage|rangee|rack|aisle/i.test(k));
+  const traveeKey = keys.find(k => k !== locKey && /trav[eé]e|bay|colonne|section/i.test(k));
+  const tabKey = keys.find(k => k !== locKey && /tablette|[eé]tag[eè]re|shelf|table/i.test(k));
+  const nivKey = keys.find(k => k !== locKey && /niveau|pos|position|[eé]tage|level/i.test(k));
+  
   let batiment = batKey && row[batKey] ? String(row[batKey]).trim() : '';
   let salle = salleKey && row[salleKey] ? String(row[salleKey]).trim() : '';
   let depot = depotKey && row[depotKey] ? String(row[depotKey]).trim() : '';
@@ -115,7 +136,7 @@ export const parseLocationData = (row: any) => {
   let tablette = tabKey && row[tabKey] ? String(row[tabKey]).trim() : '';
   let niveau = nivKey && row[nivKey] ? String(row[nivKey]).trim() : '';
 
-  // If granular fields are missing, try extracting from rawLoc
+  // If granular fields are missing, try extracting from rawLoc if it contains structured parts
   if (rawLoc) {
     if (!batiment) {
       const batMatch = rawLoc.match(/(?:b[aâ]timent|b[aâ]t\.?)\s*[:\-_]?\s*([A-Za-z0-9\s]+?)(?=[/\-,|]|$)/i);
@@ -159,7 +180,7 @@ export const parseLocationData = (row: any) => {
     }
   }
 
-  const hasLocation = Boolean(batiment || salle || depot || rayon || travee || tablette || niveau || rawLoc);
+  const hasLocation = Boolean(rawLoc || batiment || salle || depot || rayon || travee || tablette || niveau);
 
   return {
     batiment,
@@ -169,7 +190,7 @@ export const parseLocationData = (row: any) => {
     travee,
     tablette,
     niveau,
-    rawLoc,
+    rawLoc, // Exact imported string (e.g. "S1-B-208")
     hasLocation
   };
 };
@@ -245,10 +266,12 @@ export const InventoryIntegrationWizard: React.FC<{
   const [isProcessing, setIsProcessing] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  // Identification & Référencement de l'inventaire (ex: 001/2026 et nom d'inventaire)
+  // Identification & Référencement de l'inventaire (ex: 001/2026, nom, direction, responsable, date)
   const currentYear = new Date().getFullYear();
   const [inventoryRef, setInventoryRef] = useState<string>(`001/${currentYear}`);
   const [inventoryName, setInventoryName] = useState<string>(`Inventaire Sinistre Matériel ${currentYear}`);
+  const [directionHead, setDirectionHead] = useState<string>('');
+  const [transferDate, setTransferDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
 
   // Étape 1 : Fichier & Importation
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; size: number }[]>([]);
@@ -317,6 +340,7 @@ export const InventoryIntegrationWizard: React.FC<{
   // Étape 7 : Suivi et Session Responsable Audit
   const [existingBatches, setExistingBatches] = useState<any[]>([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
+  const [viewingPVTransfertBatch, setViewingPVTransfertBatch] = useState<any | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -484,13 +508,27 @@ export const InventoryIntegrationWizard: React.FC<{
 
             // Intelligent heuristics to find columns without collision
             const keys = Object.keys(row);
+            const isComptab = selectedDirection?.toLowerCase().includes('comptab') || selectedDirection?.toLowerCase().includes('finance');
+
             const boxKey = keys.find(k => /(?:^|[\s_.-])(?:boite|box|carton|paquet|colis|num_boite|n_boite)(?:$|[\s_.-])/i.test(k)) || keys.find(k => /boite|box|carton/i.test(k)) || '';
-            const refKey = keys.find(k => k !== boxKey && /(?:dossier|sinistre|police|contrat|adherent|reference|ref)(?:$|[\s_.-])/i.test(k)) 
-              || keys.find(k => k !== boxKey && /dossier|sinistre|police|contrat|adherent|reference|ref/i.test(k))
-              || keys.find(k => k !== boxKey && /(?:^|[\s_.-])(?:numero|num|code)(?:$|[\s_.-])/i.test(k))
-              || keys.find(k => k !== boxKey && !/date|annee|exercice|direction|service|departement/i.test(k))
-              || keys[0] || '';
-            const titleKey = keys.find(k => k !== boxKey && k !== refKey && /intitule|titre|objet|nom|adherant|assure|beneficiaire|police|description|designation/i.test(k)) || '';
+            
+            // Look for Code Agence (used specifically in Comptabilité)
+            const agenceKey = keys.find(k => k !== boxKey && /(?:code[\s_.-]?agence|agence[\s_.-]?ctt|code[\s_.-]?ctt|^agence$|^code$|^ctt$)/i.test(k)) || '';
+
+            // Look for Reference key (Code Agence if Comptabilité, else standard reference/sinistre)
+            const refKey = (isComptab && agenceKey)
+              ? agenceKey
+              : (keys.find(k => k !== boxKey && /(?:dossier|sinistre|police|contrat|adherent|reference|ref)(?:$|[\s_.-])/i.test(k)) 
+                || (agenceKey || '')
+                || keys.find(k => k !== boxKey && /dossier|sinistre|police|contrat|adherent|reference|ref/i.test(k))
+                || keys.find(k => k !== boxKey && /(?:^|[\s_.-])(?:numero|num|code)(?:$|[\s_.-])/i.test(k))
+                || keys.find(k => k !== boxKey && !/date|annee|exercice|direction|service|departement|localis|batiment|depot|salle|rayon|travee|tablette/i.test(k))
+                || keys[0] || '');
+
+            // Look for Intitulé / Contenu exact column (e.g. caisse 117, libellé, titre, etc.)
+            const titleKey = keys.find(k => k !== boxKey && k !== refKey && /(?:intitul|contenu|libell|titre|objet|nom|adherant|assure|beneficiaire|police|description|designation|caisse|journal|compte|detail|piece)/i.test(k))
+              || keys.find(k => k !== boxKey && k !== refKey && k !== agenceKey && !/date|annee|exercice|direction|service|departement|localis|batiment|depot|salle|rayon|travee|tablette/i.test(k))
+              || '';
             
             // Look for start and closure dates
             const startKey = keys.find(k => /d[eé]but|ouv|cr[eé]at|start|survenance|emission|souscription/i.test(k)) || '';
@@ -501,8 +539,11 @@ export const InventoryIntegrationWizard: React.FC<{
             // Extract location info directly from row
             const parsedLoc = parseLocationData(row);
 
-            const rawRef = String(row[refKey] || '').trim();
-            if (!rawRef && !row[titleKey]) return; // skip completely empty rows
+            const rawRef = String(row[refKey] || (agenceKey ? row[agenceKey] : '') || '').trim();
+            const rawTitle = titleKey && row[titleKey] !== undefined && row[titleKey] !== null ? String(row[titleKey]).trim() : '';
+            const codeAgenceVal = agenceKey && row[agenceKey] !== undefined ? String(row[agenceKey]).trim() : (isComptab ? rawRef : '');
+
+            if (!rawRef && !rawTitle) return; // skip completely empty rows
 
             const rawErrors: string[] = [];
             if (!rawRef) rawErrors.push("Référence absente");
@@ -546,7 +587,9 @@ export const InventoryIntegrationWizard: React.FC<{
               id: `row_${Date.now()}_${i}_${idx}_${Math.random().toString(36).substr(2, 4)}`,
               rawRow: { ...row },
               reference: rawRef || `AUTO-REF-${allRows.length + 1}`,
-              intitule: titleKey && row[titleKey] ? String(row[titleKey]).trim() : (rawRef ? `Dossier ${rawRef}` : ''),
+              codeAgence: codeAgenceVal || undefined,
+              intitule: rawTitle || (rawRef ? `Dossier ${rawRef}` : ''),
+              rawIntitule: rawTitle || undefined,
               numBoite: boxKey && row[boxKey] ? String(row[boxKey]).trim() : undefined,
               dateDebut: startVal || `01/01/${closureYear}`,
               dateCloture: dateVal || `31/12/${closureYear}`,
@@ -562,7 +605,7 @@ export const InventoryIntegrationWizard: React.FC<{
               niveau: parsedLoc.niveau,
               rawLocalisation: parsedLoc.rawLoc,
               hasExcelLocation: parsedLoc.hasLocation,
-              localisation: parsedLoc.hasLocation ? formatBoxLocationString(parsedLoc) : undefined,
+              localisation: parsedLoc.rawLoc || (parsedLoc.hasLocation ? formatBoxLocationString(parsedLoc) : undefined),
               rawErrors
             });
           });
@@ -656,7 +699,7 @@ export const InventoryIntegrationWizard: React.FC<{
 
         if (!boxesMap[formattedBoxCode]) {
           // Check if row has extracted location
-          const hasLoc = Boolean(row.hasExcelLocation);
+          const hasLoc = Boolean(row.hasExcelLocation || row.rawLocalisation);
           boxesMap[formattedBoxCode] = {
             id: `box_${formattedBoxCode}_${Date.now()}`,
             number: formattedBoxCode,
@@ -667,6 +710,7 @@ export const InventoryIntegrationWizard: React.FC<{
             dateRange: '',
             expiryYear: row.expiryDate || '',
             barcode: barcodeCode,
+            rawLocalisation: row.rawLocalisation,
             batiment: row.batiment || defaultLocation.batiment,
             depot: row.depot || defaultLocation.depot,
             salle: row.salle || defaultLocation.salle,
@@ -678,8 +722,9 @@ export const InventoryIntegrationWizard: React.FC<{
             hasExcelLocation: hasLoc,
             createdAt: new Date().toISOString()
           };
-        } else if (!boxesMap[formattedBoxCode].hasExcelLocation && row.hasExcelLocation) {
+        } else if (!boxesMap[formattedBoxCode].hasExcelLocation && (row.hasExcelLocation || row.rawLocalisation)) {
           // Inherit excel location if earlier folder didn't have one
+          boxesMap[formattedBoxCode].rawLocalisation = row.rawLocalisation || boxesMap[formattedBoxCode].rawLocalisation;
           boxesMap[formattedBoxCode].batiment = row.batiment || boxesMap[formattedBoxCode].batiment;
           boxesMap[formattedBoxCode].depot = row.depot || boxesMap[formattedBoxCode].depot;
           boxesMap[formattedBoxCode].salle = row.salle || boxesMap[formattedBoxCode].salle;
@@ -711,7 +756,7 @@ export const InventoryIntegrationWizard: React.FC<{
         const barcodeCode = `BOX-${boxCode.replace(/\s+/g, '_')}-${new Date().getFullYear()}`;
 
         if (!boxesMap[boxCode]) {
-          const hasLoc = Boolean(row.hasExcelLocation);
+          const hasLoc = Boolean(row.hasExcelLocation || row.rawLocalisation);
           boxesMap[boxCode] = {
             id: `box_${boxCode}_${Date.now()}`,
             number: boxCode,
@@ -722,6 +767,7 @@ export const InventoryIntegrationWizard: React.FC<{
             dateRange: '',
             expiryYear: row.expiryDate || '',
             barcode: barcodeCode,
+            rawLocalisation: row.rawLocalisation,
             batiment: row.batiment || defaultLocation.batiment,
             depot: row.depot || defaultLocation.depot,
             salle: row.salle || defaultLocation.salle,
@@ -733,7 +779,8 @@ export const InventoryIntegrationWizard: React.FC<{
             hasExcelLocation: hasLoc,
             createdAt: new Date().toISOString()
           };
-        } else if (!boxesMap[boxCode].hasExcelLocation && row.hasExcelLocation) {
+        } else if (!boxesMap[boxCode].hasExcelLocation && (row.hasExcelLocation || row.rawLocalisation)) {
+          boxesMap[boxCode].rawLocalisation = row.rawLocalisation || boxesMap[boxCode].rawLocalisation;
           boxesMap[boxCode].batiment = row.batiment || boxesMap[boxCode].batiment;
           boxesMap[boxCode].depot = row.depot || boxesMap[boxCode].depot;
           boxesMap[boxCode].salle = row.salle || boxesMap[boxCode].salle;
@@ -772,11 +819,12 @@ export const InventoryIntegrationWizard: React.FC<{
     let appliedCount = 0;
     const updatedBoxes = generatedBoxes.map(b => {
       // Find matching folder with excel location
-      const matchingFolder = parsedRows.find(r => (r.numBoite === b.number || r.generatedBoxNumber === b.number) && r.hasExcelLocation);
+      const matchingFolder = parsedRows.find(r => (r.numBoite === b.number || r.generatedBoxNumber === b.number) && (r.hasExcelLocation || r.rawLocalisation));
       if (matchingFolder) {
         appliedCount++;
         return {
           ...b,
+          rawLocalisation: matchingFolder.rawLocalisation || b.rawLocalisation,
           batiment: matchingFolder.batiment || b.batiment,
           depot: matchingFolder.depot || b.depot,
           salle: matchingFolder.salle || b.salle,
@@ -793,12 +841,15 @@ export const InventoryIntegrationWizard: React.FC<{
 
     setGeneratedBoxes(updatedBoxes);
 
-    // Synchronize parsedRows localisation string
+    // Synchronize parsedRows localisation string without erasing rawLocalisation
     const updatedRows = parsedRows.map(row => {
+      if (row.rawLocalisation) {
+        return row;
+      }
       const box = updatedBoxes.find(b => b.number === row.numBoite || b.number === row.generatedBoxNumber);
       return {
         ...row,
-        localisation: box ? formatBoxLocationString(box) : row.localisation
+        localisation: box ? (box.rawLocalisation || formatBoxLocationString(box)) : row.localisation
       };
     });
 
@@ -832,8 +883,11 @@ export const InventoryIntegrationWizard: React.FC<{
 
     setGeneratedBoxes(updatedBoxes);
 
-    // Update rows with full formatted location string
+    // Update rows with full formatted location string while preserving rows that have Excel rawLocalisation
     const updatedRows = parsedRows.map(row => {
+      if (row.rawLocalisation) {
+        return row;
+      }
       const box = updatedBoxes.find(b => b.number === row.numBoite || b.number === row.generatedBoxNumber);
       return {
         ...row,
@@ -913,9 +967,13 @@ export const InventoryIntegrationWizard: React.FC<{
         inventoryRef: inventoryRef.trim() || `001/${new Date().getFullYear()}`,
         inventoryName: inventoryName.trim() || `Inventaire ${selectedDirection} ${new Date().getFullYear()}`,
         direction: selectedDirection,
+        directionHead: directionHead.trim() || undefined,
+        transferDate: transferDate || new Date().toISOString().slice(0, 10),
         folders: parsedRows.map(r => ({
           reference: r.reference,
-          intitule: r.intitule,
+          codeAgence: r.codeAgence,
+          intitule: r.rawIntitule || r.intitule,
+          rawIntitule: r.rawIntitule,
           numBoite: r.numBoite || r.generatedBoxNumber,
           boxNumber: r.numBoite || r.generatedBoxNumber,
           direction: r.direction || selectedDirection,
@@ -928,7 +986,8 @@ export const InventoryIntegrationWizard: React.FC<{
           expiryDate: r.expiryDate || (r.year ? String(parseInt(r.year) + (r.retentionYears || customRetentionYears || 5)) : ''),
           dateElimination: r.dateElimination || (r.expiryDate ? `${r.expiryDate}-12-31` : ''),
           finalDisposition: r.finalDisposition || customDisposition || 'EL',
-          localisation: r.localisation || formatBoxLocationString(defaultLocation),
+          localisation: r.rawLocalisation || r.localisation || formatBoxLocationString(defaultLocation),
+          rawLocalisation: r.rawLocalisation || undefined,
           barcode: r.barcode,
           observation: r.observation || '',
           rawRow: r.rawRow || undefined
@@ -942,6 +1001,8 @@ export const InventoryIntegrationWizard: React.FC<{
           foldersCount: b.foldersCount,
           foldersList: b.foldersList,
           barcode: b.barcode,
+          rawLocalisation: b.rawLocalisation || undefined,
+          localisation: b.rawLocalisation || formatBoxLocationString(b),
           batiment: b.batiment,
           depot: b.depot,
           salle: b.salle,
@@ -983,6 +1044,8 @@ export const InventoryIntegrationWizard: React.FC<{
     setSubmittedBatchId(null);
     setInventoryRef(`001/${new Date().getFullYear()}`);
     setInventoryName(`Inventaire ${selectedDirection} ${new Date().getFullYear()}`);
+    setDirectionHead('');
+    setTransferDate(new Date().toISOString().slice(0, 10));
   };
 
   return (
@@ -1125,7 +1188,7 @@ export const InventoryIntegrationWizard: React.FC<{
             )}
           </div>
 
-          {/* Identification de l'Inventaire (Référence 001/2026 & Nom) */}
+          {/* Identification de l'Inventaire (Direction, Responsable, Date, Référence 001/2026 & Nom) */}
           <div className="bg-gradient-to-r from-emerald-50/90 via-teal-50/60 to-slate-50 border border-emerald-200 rounded-2xl p-5 shadow-xs space-y-4">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-emerald-700 text-white flex items-center justify-center shadow-xs shrink-0">
@@ -1133,15 +1196,85 @@ export const InventoryIntegrationWizard: React.FC<{
               </div>
               <div>
                 <h4 className="text-xs font-black text-emerald-950 uppercase tracking-wider">
-                  Identification & Référencement de la Campagne d'Inventaire
+                  Identification, Direction & Paramètres de l'Inventaire
                 </h4>
                 <p className="text-[11px] text-emerald-800">
-                  Renseignez la référence officielle (ex: 001/2026) et le libellé de l'inventaire transmis pour validation.
+                  Renseignez la direction versante, le responsable, la date du transfert ainsi que la référence officielle.
                 </p>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Direction / Service Versant */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-700 uppercase flex items-center gap-1">
+                  <span>Direction / Service Versant</span>
+                  <span className="text-emerald-700 font-bold">*</span>
+                </label>
+                <select
+                  value={selectedDirection}
+                  onChange={e => {
+                    const newDir = e.target.value;
+                    setSelectedDirection(newDir);
+                    const pref = DEFAULT_PREFIX_BY_DIRECTION[newDir] || 'GEN';
+                    setAutoBoxPrefix(pref);
+                    if (!inventoryName || inventoryName.startsWith('Inventaire ')) {
+                      setInventoryName(`Inventaire ${newDir} ${currentYear}`);
+                    }
+                  }}
+                  className="w-full bg-white border border-slate-300 focus:border-emerald-600 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-900 focus:outline-none shadow-xs"
+                >
+                  <option value="Sinistre Matériel">Sinistre Matériel</option>
+                  <option value="Sinistre Corporel">Sinistre Corporel</option>
+                  <option value="Comptabilité">Comptabilité & Finance</option>
+                  <option value="Production">Production & Souscription</option>
+                  <option value="Ressources Humaines">Ressources Humaines</option>
+                  <option value="Juridique">Juridique & Contentieux</option>
+                  <option value="Recouvrement">Recouvrement</option>
+                  <option value="Direction Générale">Direction Générale</option>
+                  <option value="Informatique">Informatique (DSI)</option>
+                  <option value="Général">Général / Multi-Services</option>
+                </select>
+                <span className="text-[9px] text-slate-500 block">
+                  Service émetteur du versement d'archives.
+                </span>
+              </div>
+
+              {/* Responsable de Direction */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-700 uppercase flex items-center gap-1">
+                  <span>Responsable de la Direction</span>
+                  <span className="text-emerald-700 font-bold">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={directionHead}
+                  onChange={e => setDirectionHead(e.target.value)}
+                  placeholder="Ex: M. Ahmed Ben Ali - Chef de Service"
+                  className="w-full bg-white border border-slate-300 focus:border-emerald-600 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-900 focus:outline-none shadow-xs placeholder:text-slate-400"
+                />
+                <span className="text-[9px] text-slate-500 block">
+                  Signataire et demandeur du PV de transfert.
+                </span>
+              </div>
+
+              {/* Date du Transfert */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-700 uppercase flex items-center gap-1">
+                  <span>Date du Transfert / Inventaire</span>
+                  <span className="text-emerald-700 font-bold">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={transferDate}
+                  onChange={e => setTransferDate(e.target.value)}
+                  className="w-full bg-white border border-slate-300 focus:border-emerald-600 rounded-xl px-3.5 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none shadow-xs"
+                />
+                <span className="text-[9px] text-slate-500 block">
+                  Date de réalisation et de prise en charge.
+                </span>
+              </div>
+
               {/* Référence d'inventaire */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black text-slate-700 uppercase flex items-center gap-1">
@@ -1161,7 +1294,7 @@ export const InventoryIntegrationWizard: React.FC<{
               </div>
 
               {/* Nom d'inventaire */}
-              <div className="space-y-1 md:col-span-2">
+              <div className="space-y-1 sm:col-span-2">
                 <label className="text-[10px] font-black text-slate-700 uppercase flex items-center gap-1">
                   <span>Nom / Intitulé de l'Inventaire</span>
                   <span className="text-emerald-700 font-bold">*</span>
@@ -1266,7 +1399,9 @@ export const InventoryIntegrationWizard: React.FC<{
                   <table className="w-full text-left text-xs border-collapse">
                     <thead className="bg-slate-100 text-[10px] font-black text-slate-500 uppercase sticky top-0">
                       <tr>
-                        <th className="px-4 py-2.5">Réf. Dossier</th>
+                        <th className="px-4 py-2.5">
+                          {selectedDirection.toLowerCase().includes('comptab') || selectedDirection.toLowerCase().includes('ctt') ? 'Code Agence' : 'Réf. Dossier'}
+                        </th>
                         <th className="px-4 py-2.5">Intitulé / Objet</th>
                         <th className="px-4 py-2.5">Boîte Origine</th>
                         <th className="px-4 py-2.5">Date / Exercice</th>
@@ -1277,8 +1412,12 @@ export const InventoryIntegrationWizard: React.FC<{
                     <tbody className="divide-y divide-slate-100 font-medium">
                       {previewRows.slice(0, 20).map((row, idx) => (
                         <tr key={row.id || idx} className="hover:bg-slate-50/70">
-                          <td className="px-4 py-2 font-mono font-bold text-slate-800">{row.reference}</td>
-                          <td className="px-4 py-2 text-slate-700 max-w-[250px] truncate" title={row.intitule}>{row.intitule}</td>
+                          <td className="px-4 py-2 font-mono font-bold text-slate-800">
+                            {row.codeAgence || row.reference}
+                          </td>
+                          <td className="px-4 py-2 text-slate-700 max-w-[250px] truncate" title={row.rawIntitule || row.intitule}>
+                            {row.rawIntitule || row.intitule}
+                          </td>
                           <td className="px-4 py-2 text-slate-500 font-mono">{row.numBoite || '-'}</td>
                           <td className="px-4 py-2 text-slate-600">{row.dateCloture || row.year || '-'}</td>
                           <td className="px-4 py-2 text-slate-600">{row.direction}</td>
@@ -2388,6 +2527,13 @@ export const InventoryIntegrationWizard: React.FC<{
 
                     <div className="flex items-center gap-2 flex-wrap">
                       <button
+                        onClick={() => setViewingPVTransfertBatch(batch)}
+                        className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
+                        title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                      >
+                        <FileText size={13} /> Voir le PV de Transfert
+                      </button>
+                      <button
                         onClick={() => {
                           setInspectingBatchLines(batch);
                           setBatchLinesSearch('');
@@ -2567,8 +2713,15 @@ export const InventoryIntegrationWizard: React.FC<{
 
               <div className="flex items-center gap-2 flex-wrap">
                 <button
+                  onClick={() => setViewingPVTransfertBatch(inspectingBatchLines)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
+                  title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                >
+                  <FileText size={14} /> Voir le PV de Transfert
+                </button>
+                <button
                   onClick={() => handleExportBatchLinesToExcel(inspectingBatchLines, inspectingBatchLines.foldersData || inspectingBatchLines.folders || [])}
-                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
+                  className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
                 >
                   <Download size={14} /> Exporter Excel
                 </button>
@@ -2937,6 +3090,16 @@ export const InventoryIntegrationWizard: React.FC<{
             })()}
           </div>
         </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* --- MODAL PROCÈS-VERBAL DE TRANSFERT D'ARCHIVES --- */}
+      {/* ========================================================================= */}
+      {viewingPVTransfertBatch && (
+        <PVTransfertModal
+          batch={viewingPVTransfertBatch}
+          onClose={() => setViewingPVTransfertBatch(null)}
+        />
       )}
     </div>
   );

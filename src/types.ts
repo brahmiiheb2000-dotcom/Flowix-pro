@@ -21,6 +21,10 @@ export interface Folder {
   category?: string;
   expiryDate?: string;
   archivalStatus?: string;
+  isCommunicated?: boolean;
+  communicationStatus?: string;
+  communicationBorrower?: string;
+  communicationDate?: string;
 }
 
 export interface Box {

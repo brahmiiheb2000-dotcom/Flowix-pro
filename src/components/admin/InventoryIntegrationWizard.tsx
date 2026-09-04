@@ -32,7 +32,8 @@ import {
   ExternalLink,
   Plus,
   Download,
-  Filter
+  Filter,
+  QrCode
 } from 'lucide-react';
 import { api } from '../../lib/api';
 import { PVTransfertModal } from '../transfer/PVTransfertModal';
@@ -2529,9 +2530,9 @@ export const InventoryIntegrationWizard: React.FC<{
                       <button
                         onClick={() => setViewingPVTransfertBatch(batch)}
                         className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-all shadow-xs"
-                        title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                        title="Générer et imprimer la Fiche QR Code et le Procès-Verbal officiel de transfert"
                       >
-                        <FileText size={13} /> Voir le PV de Transfert
+                        <QrCode size={13} className="text-emerald-200" /> Générer Transfert (Fiche QR & PV)
                       </button>
                       <button
                         onClick={() => {
@@ -2715,9 +2716,9 @@ export const InventoryIntegrationWizard: React.FC<{
                 <button
                   onClick={() => setViewingPVTransfertBatch(inspectingBatchLines)}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-sm cursor-pointer transition-all"
-                  title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                  title="Générer et imprimer la Fiche QR Code et le Procès-Verbal officiel de transfert"
                 >
-                  <FileText size={14} /> Voir le PV de Transfert
+                  <QrCode size={14} className="text-emerald-200" /> Générer Transfert (Fiche QR & PV)
                 </button>
                 <button
                   onClick={() => handleExportBatchLinesToExcel(inspectingBatchLines, inspectingBatchLines.foldersData || inspectingBatchLines.folders || [])}

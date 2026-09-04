@@ -10,9 +10,10 @@ import { motion, AnimatePresence } from 'motion/react';
 import { LogOut, User as UserIcon, FileText, Clock, Layers, FileStack, BarChart3, RefreshCw, Inbox, Send, Bell, Check } from 'lucide-react';
 import { Button } from './components/UI';
 import { cn } from './lib/utils';
-import { api } from './lib/api';
+import { api, setAuthToken } from './lib/api';
 
 import { RemoteRequestForm } from './components/RemoteRequestForm';
+import { PVMobileViewer } from './components/transfer/PVMobileViewer';
 
 type UserRole = 'Admin' | 'Agent' | 'Archivist' | 'Demandeur' | 'Responsable';
 
@@ -173,6 +174,7 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
+      setAuthToken(null);
       await api.post('/api/logout', {});
       setUser(null);
       setRole(null);
@@ -198,6 +200,10 @@ export default function App() {
 
   if (pathname === '/demande-distance') {
     return <RemoteRequestForm />;
+  }
+
+  if (pathname === '/pv-transfert' || pathname === '/pv-view' || pathname.startsWith('/pv-transfert/') || pathname.startsWith('/pv-view/')) {
+    return <PVMobileViewer />;
   }
 
   const remotePendingCount = remoteRequests.length;

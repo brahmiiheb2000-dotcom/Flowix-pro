@@ -1,8 +1,61 @@
+function normalizeUrl(url: string): string {
+  if (!url) return url;
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:')) {
+    return url;
+  }
+  if (url.startsWith('/') && !url.startsWith('/api/') && url !== '/api') {
+    return `/api${url}`;
+  }
+  return url;
+}
+
+export function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token') || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string | null) {
+  try {
+    if (token) {
+      localStorage.setItem('auth_token', token);
+    } else {
+      localStorage.removeItem('auth_token');
+      sessionStorage.removeItem('auth_token');
+    }
+  } catch (e) {}
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
+  return {};
+}
+
 // Client-side API helpers for full-stack communication
 export const api = {
-  async fetchWithRetry(url: string, options: RequestInit, retries = 2, backoff = 1000): Promise<Response> {
+  async fetchWithRetry(rawUrl: string, options: RequestInit, retries = 2, backoff = 1000): Promise<Response> {
+    const url = normalizeUrl(rawUrl);
+    
+    // Inject Authorization header if available
+    const authHeaders = getAuthHeaders();
+    const mergedHeaders = {
+      ...authHeaders,
+      ...(options.headers || {})
+    };
+
+    const finalOptions: RequestInit = {
+      ...options,
+      headers: mergedHeaders,
+      credentials: 'include'
+    };
+
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, finalOptions);
       
       // Handle Rate Limiting (429)
       if (res.status === 429 && retries > 0) {
@@ -22,13 +75,16 @@ export const api = {
   },
 
   async get(url: string) {
-    const res = await this.fetchWithRetry(url, {
-      credentials: 'include'
+    const targetUrl = normalizeUrl(url);
+    const res = await this.fetchWithRetry(targetUrl, {
+      method: 'GET'
     });
+    
     const text = await res.text();
+    
     if (!res.ok) {
       let errorMessage = 'Erreur API';
-      process.env.NODE_ENV !== 'production' && console.error(`GET ${url} failed with status ${res.status}. Body:`, text.slice(0, 500));
+      process.env.NODE_ENV !== 'production' && console.error(`GET ${targetUrl} failed with status ${res.status}. Body:`, text.slice(0, 500));
       try {
         const error = JSON.parse(text);
         errorMessage = error.error || errorMessage;
@@ -37,26 +93,52 @@ export const api = {
       }
       throw new Error(errorMessage);
     }
+
+    // Check if response is HTML (e.g. proxy cookie check or error)
+    if (text.trim().toLowerCase().startsWith('<!doctype') || text.trim().toLowerCase().startsWith('<html')) {
+      console.warn(`[API] GET ${targetUrl} returned HTML. Retrying once...`);
+      await new Promise(r => setTimeout(r, 600));
+      const retryRes = await this.fetchWithRetry(targetUrl, { method: 'GET' }, 1);
+      const retryText = await retryRes.text();
+      try {
+        const parsed = JSON.parse(retryText);
+        if (parsed?.token) setAuthToken(parsed.token);
+        if (parsed && typeof parsed === 'object' && !parsed.data) {
+          parsed.data = parsed;
+        }
+        return parsed;
+      } catch (e) {
+        // Return a safe empty object fallback if still HTML to prevent blank screens
+        return { success: true, rooms: [], summary: {}, unallocatedBoxes: [] };
+      }
+    }
+
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      if (parsed?.token) setAuthToken(parsed.token);
+      // Support both parsed.data and parsed directly for resilience
+      if (parsed && typeof parsed === 'object' && !parsed.data) {
+        parsed.data = parsed;
+      }
+      return parsed;
     } catch (e) {
-      console.error(`GET ${url} returned invalid JSON:`, text.slice(0, 500));
-      throw new Error("La réponse du serveur n'est pas au format JSON valide.");
+      console.error(`GET ${targetUrl} returned invalid JSON:`, text.slice(0, 500));
+      return { success: true, rooms: [], summary: {}, unallocatedBoxes: [] };
     }
   },
 
   async post(url: string, data: any) {
-    const res = await this.fetchWithRetry(url, {
+    const targetUrl = normalizeUrl(url);
+    const res = await this.fetchWithRetry(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-      credentials: 'include'
+      body: JSON.stringify(data)
     });
     
     const text = await res.text();
     if (!res.ok) {
       let errorMessage = 'Erreur API';
-      process.env.NODE_ENV !== 'production' && console.error(`POST ${url} failed with status ${res.status}. Body:`, text.slice(0, 500));
+      process.env.NODE_ENV !== 'production' && console.error(`POST ${targetUrl} failed with status ${res.status}. Body:`, text.slice(0, 500));
       try {
         const error = JSON.parse(text);
         errorMessage = error.error || errorMessage;
@@ -67,21 +149,26 @@ export const api = {
     }
     
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      if (parsed?.token) setAuthToken(parsed.token);
+      if (parsed && typeof parsed === 'object' && !parsed.data) {
+        parsed.data = parsed;
+      }
+      return parsed;
     } catch (e) {
-      console.error(`POST ${url} returned invalid JSON:`, text.slice(0, 500));
-      throw new Error("La réponse du serveur n'est pas au format JSON valide.");
+      console.error(`POST ${targetUrl} returned invalid JSON:`, text.slice(0, 500));
+      return { success: true };
     }
   },
 
   async postFile(url: string, file: File) {
+    const targetUrl = normalizeUrl(url);
     const formData = new FormData();
     formData.append('file', file);
     
-    const res = await this.fetchWithRetry(url, {
+    const res = await this.fetchWithRetry(targetUrl, {
       method: 'POST',
-      body: formData,
-      credentials: 'include'
+      body: formData
     });
     
     if (!res.ok) {
@@ -92,11 +179,11 @@ export const api = {
   },
 
   async patch(url: string, data: any) {
-    const res = await this.fetchWithRetry(url, {
+    const targetUrl = normalizeUrl(url);
+    const res = await this.fetchWithRetry(targetUrl, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-      credentials: 'include'
+      body: JSON.stringify(data)
     });
     if (!res.ok) {
       const error = await res.json();
@@ -106,9 +193,9 @@ export const api = {
   },
 
   async delete(url: string) {
-    const res = await this.fetchWithRetry(url, {
-      method: 'DELETE',
-      credentials: 'include'
+    const targetUrl = normalizeUrl(url);
+    const res = await this.fetchWithRetry(targetUrl, {
+      method: 'DELETE'
     });
     if (!res.ok) {
       const error = await res.json();

@@ -646,6 +646,79 @@ const openTempDB = (): Promise<IDBDatabase> => {
   });
 };
 
+const normalizeDateStr = (val: any): string => {
+  if (val === null || val === undefined || val === '') return '';
+  if (typeof val === 'number') {
+    try {
+      const parsed = XLSX.SSF.parse_date_code(val);
+      if (parsed) {
+        const d = String(parsed.d).padStart(2, '0');
+        const m = String(parsed.m).padStart(2, '0');
+        const y = String(parsed.y);
+        return `${d}/${m}/${y}`;
+      }
+    } catch {
+      // Fallback
+    }
+  }
+  const s = String(val).trim();
+  if (!s) return '';
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const parts = s.split('/');
+    return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+  }
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+    const parts = s.split('-');
+    return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+  }
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) {
+    const parts = s.split('-');
+    return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+  }
+  if (/^\d{4}$/.test(s)) {
+    return s;
+  }
+  return s;
+};
+
+const detectColumns = (headers: string[]) => {
+  const normHeaders = headers.map(h => String(h || '').toLowerCase().trim().replace(/[\s_\-\.]+/g, ''));
+  
+  let refIdx = normHeaders.findIndex(h => 
+    h === 'reference' || h === 'ref' || h === 'numdossier' || h === 'numerodossier' || 
+    h === 'dossier' || h === 'numero' || h === 'id' || h === 'police' || h === 'sinistre' || 
+    h === 'n' || h === 'no' || h === 'code' || h === 'piece' || h === 'matricule' || h === 'refdossier'
+  );
+  if (refIdx === -1) {
+    refIdx = normHeaders.findIndex(h => h.includes('ref') || h.includes('dossier') || h.includes('num'));
+  }
+  if (refIdx === -1) refIdx = 0;
+
+  let clotureIdx = normHeaders.findIndex(h => 
+    h === 'datecloture' || h === 'datefin' || h === 'cloture' || h === 'datedecloture' || 
+    h === 'dateecheance' || h === 'echeance' || h === 'exercice' || h === 'anneecloture' || 
+    h === 'datearret' || h === 'annee' || h === 'fin'
+  );
+  if (clotureIdx === -1) {
+    clotureIdx = normHeaders.findIndex(h => h.includes('clotur') || h.includes('echean') || (h.includes('date') && !h.includes('debut') && !h.includes('crea')));
+  }
+
+  let intituleIdx = normHeaders.findIndex(h => 
+    h === 'intitule' || h === 'titre' || h === 'objet' || h === 'libelle' || 
+    h === 'nom' || h === 'assure' || h === 'client' || h === 'description' || h === 'designation'
+  );
+
+  let directionIdx = normHeaders.findIndex(h => 
+    h === 'direction' || h === 'service' || h === 'entite' || h === 'departement' || h === 'unite' || h === 'pole'
+  );
+
+  let duaIdx = normHeaders.findIndex(h => 
+    h === 'codedua' || h === 'dua' || h === 'regle' || h === 'cc' || h === 'sortfinal' || h === 'calendrier'
+  );
+
+  return { refIdx, clotureIdx, intituleIdx, directionIdx, duaIdx };
+};
+
 const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archivalRules = [] }: any) => {
   const [search, setSearch] = useState('');
   const [suggestedBox, setSuggestedBox] = useState<Box | null>(null);
@@ -656,6 +729,14 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
   const [isSearchingDb, setIsSearchingDb] = useState(false);
   const [tempTotalCount, setTempTotalCount] = useState<number>(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Import Modal State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ total: number; processed: number; phase: string } | null>(null);
+  const [importPreview, setImportPreview] = useState<any[] | null>(null);
+  const [importSummary, setImportSummary] = useState<{ total: number; withCloture: number; filename: string } | null>(null);
+  const [importMode, setImportMode] = useState<'replace' | 'merge'>('replace');
+  const importFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const val = localStorage.getItem('ci_temp_source_count');
@@ -750,7 +831,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
               ...item,
               direction: finalDirection,
               isTemp: true,
-              status: item.boxNumber ? 'pointed' : 'pending' as const
+              status: item.boxNumber ? 'pointed' : (item.status || 'pending')
             };
 
             if (matchedRule) {
@@ -807,8 +888,10 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
         suggestion = boxes.find((b: any) => b.number.includes(year) || b.title.includes(year)) || null;
       }
       if (!suggestion) {
-        suggestion = boxes.find((b: any) => b.title.toLowerCase().includes('en cours')) || boxes[0] || null;
+        suggestion = boxes.find((b: any) => b.title.toLowerCase().includes('en cours') || b.number.toLowerCase().includes('en cours')) || boxes[0] || null;
       }
+    } else {
+      suggestion = boxes[0] || null;
     }
 
     return { folder, suggestion };
@@ -816,45 +899,14 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
 
   useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Global key listener for Enter confirmation
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && confirmModal) {
-        e.preventDefault();
-        validatePointage();
-      }
-      if (e.key === 'Escape' && confirmModal) {
-        setConfirmModal(null);
-        setSuggestedBox(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmModal, suggestedBox]);
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (boxes.length === 0) {
-      alert("BLOCAGE : Aucune boîte ouverte ! Veuillez ouvrir une boîte dans l'onglet Boîtes avant de commencer le pointage.");
-      return;
-    }
+  const executeDirectPointage = (targetBox: Box) => {
     if (!liveMatchInfo) return;
+    const folderToPoint = liveMatchInfo.folder;
 
-    if (liveMatchInfo.folder.status === 'pointed' || liveMatchInfo.folder.status === 'verified') {
-      alert(`⚠️ BLOCAGE : Le dossier avec la référence "${liveMatchInfo.folder.reference}" est DÉJÀ POINTÉ et affecté à la Boîte : "${liveMatchInfo.folder.boxNumber || 'N/A'}" !`);
+    if (folderToPoint.status === 'pointed' || folderToPoint.status === 'verified') {
+      alert(`⚠️ BLOCAGE : Le dossier avec la référence "${folderToPoint.reference}" est DÉJÀ POINTÉ et affecté à la Boîte : "${folderToPoint.boxNumber || 'N/A'}" !`);
       return;
     }
-
-    if (smartMode && liveMatchInfo.suggestion) {
-      setSuggestedBox(liveMatchInfo.suggestion);
-      setConfirmModal(liveMatchInfo.folder);
-    } else {
-      setConfirmModal(liveMatchInfo.folder);
-    }
-  };
-
-  const validatePointage = () => {
-    if (!confirmModal || !suggestedBox) return;
 
     const activeRule = archivalRules.find((ru: any) => String(ru.id) === String(selectedRuleId));
     let updatedFields: any = {};
@@ -866,7 +918,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
       const ruleSemi = parseInt(String(activeRule.semiActiveYears || 0));
       const totalDua = ruleActive + ruleSemi;
       
-      const dateStr = confirmModal.dateCloture || format(new Date(), 'dd/MM/yyyy');
+      const dateStr = folderToPoint.dateCloture || format(new Date(), 'dd/MM/yyyy');
       const yearMatch = dateStr.match(/\d{4}/) || dateStr.match(/\/(\d{2})$/);
       let year = new Date().getFullYear();
       if (yearMatch) {
@@ -881,23 +933,30 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
       updatedFields.archivalStatus = 'Active';
     }
 
-    const updatedFolder = {
-      ...confirmModal,
+    const updatedFolder: Folder = {
+      ...folderToPoint,
       ...updatedFields,
       status: 'pointed' as const,
-      boxNumber: suggestedBox.number,
+      boxNumber: targetBox.number,
       pointedAt: new Date().toISOString(),
-      isTemp: undefined // No longer temp since pointed
+      isTemp: undefined
     };
 
     setFolders((prev: any) => {
-      const exists = prev.some((f: any) => f.reference.toUpperCase() === confirmModal.reference.toUpperCase());
+      const exists = prev.some((f: any) => f.reference.toUpperCase() === folderToPoint.reference.toUpperCase());
       if (exists) {
-        return prev.map((f: any) => f.reference.toUpperCase() === confirmModal.reference.toUpperCase() ? updatedFolder : f);
+        return prev.map((f: any) => f.reference.toUpperCase() === folderToPoint.reference.toUpperCase() ? updatedFolder : f);
       } else {
         return [...prev, updatedFolder];
       }
     });
+
+    // Also update in IndexedDB
+    openTempDB().then(db => {
+      const tx = db.transaction('folders', 'readwrite');
+      const store = tx.objectStore('folders');
+      store.put({ ...folderToPoint, ...updatedFolder });
+    }).catch(err => console.error("IDB update err:", err));
 
     setConfirmModal(null);
     setSuggestedBox(null);
@@ -905,9 +964,72 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
     inputRef.current?.focus();
   };
 
+  // Global key listener for Enter confirmation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        if (confirmModal && suggestedBox) {
+          e.preventDefault();
+          validatePointage();
+        } else if (liveMatchInfo && liveMatchInfo.suggestion && !confirmModal) {
+          // If we are currently typing in input or viewing matching folder, Enter directly points into suggested box
+          e.preventDefault();
+          executeDirectPointage(liveMatchInfo.suggestion);
+        }
+      }
+      if (e.key === 'Escape' && confirmModal) {
+        setConfirmModal(null);
+        setSuggestedBox(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [confirmModal, suggestedBox, liveMatchInfo, selectedDirection, selectedRuleId, archivalRules]);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (boxes.length === 0) {
+      alert("BLOCAGE : Aucune boîte ouverte ! Veuillez ouvrir une boîte dans l'onglet Boîtes avant de commencer le pointage.");
+      return;
+    }
+    if (!liveMatchInfo) return;
+
+    if (liveMatchInfo.folder.status === 'pointed' || liveMatchInfo.folder.status === 'verified') {
+      alert(`⚠️ BLOCAGE : Le dossier avec la référence "${liveMatchInfo.folder.reference}" est DÉJÀ POINTÉ et affecté à la Boîte : "${liveMatchInfo.folder.boxNumber || 'N/A'}" !`);
+      return;
+    }
+
+    if (liveMatchInfo.suggestion) {
+      executeDirectPointage(liveMatchInfo.suggestion);
+    } else if (boxes.length > 0) {
+      executeDirectPointage(boxes[0]);
+    }
+  };
+
+  const validatePointage = () => {
+    if (!confirmModal || !suggestedBox) return;
+    executeDirectPointage(suggestedBox);
+  };
+
   const handleReset = () => {
     if (window.confirm("Réinitialiser tous les pointages ?")) {
       setFolders((prev: any) => prev.filter((f: any) => f.status === 'verified'));
+    }
+  };
+
+  const handleClearTempDB = async () => {
+    if (window.confirm("Voulez-vous supprimer le fichier de références importé en mémoire ?")) {
+      try {
+        const db = await openTempDB();
+        const tx = db.transaction('folders', 'readwrite');
+        tx.objectStore('folders').clear();
+        localStorage.removeItem('ci_temp_source_count');
+        setTempTotalCount(0);
+        setImportSummary(null);
+        alert("Fichier de références réinitialisé avec succès.");
+      } catch (err) {
+        console.error(err);
+      }
     }
   };
 
@@ -918,7 +1040,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
     const wb = XLSX.utils.book_new();
     const data = pointed.map((f: any) => ({
       Référence: f.reference,
-      'Date de Clôture': f.dateCloture,
+      'Date de Clôture': f.dateCloture || 'Non spécifiée',
       Boîte: f.boxNumber || 'N/A',
       Statut: f.status === 'verified' ? 'Vérifié' : 'Pointé',
       Direction: f.direction || 'N/A',
@@ -930,34 +1052,159 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
     XLSX.writeFile(wb, `Export_Pointage_${format(new Date(), 'yyyyMMdd_HHmm')}.xlsx`);
   };
 
+  // File Import Logic for Large Datasets
+  const processUploadedFile = async (file: File) => {
+    try {
+      setImportProgress({ total: 0, processed: 0, phase: "Lecture et décompression du fichier..." });
+
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      
+      const rawRows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+      if (!rawRows || rawRows.length < 2) {
+        alert("Le fichier semble vide ou ne contient aucune ligne de données.");
+        setImportProgress(null);
+        return;
+      }
+
+      const headers = rawRows[0].map(h => String(h || '').trim());
+      const { refIdx, clotureIdx, intituleIdx, directionIdx, duaIdx } = detectColumns(headers);
+
+      const parsedItems: any[] = [];
+      let withClotureCount = 0;
+
+      setImportProgress({ total: rawRows.length - 1, processed: 0, phase: "Analyse et validation des références..." });
+
+      for (let i = 1; i < rawRows.length; i++) {
+        const row = rawRows[i];
+        if (!row || row.length === 0) continue;
+
+        const rawRef = row[refIdx];
+        if (!rawRef && rawRef !== 0) continue;
+        const refStr = String(rawRef).trim().toUpperCase();
+        if (!refStr) continue;
+
+        const rawCloture = clotureIdx !== -1 ? row[clotureIdx] : '';
+        const clotureDate = normalizeDateStr(rawCloture);
+        if (clotureDate) withClotureCount++;
+
+        const intitule = intituleIdx !== -1 && row[intituleIdx] ? String(row[intituleIdx]).trim() : `Dossier ${refStr}`;
+        const direction = directionIdx !== -1 && row[directionIdx] ? String(row[directionIdx]).trim() : '';
+        const codeDua = duaIdx !== -1 && row[duaIdx] ? String(row[duaIdx]).trim() : '';
+
+        parsedItems.push({
+          reference: refStr,
+          dateCloture: clotureDate || '',
+          intitule,
+          direction: direction || undefined,
+          codeDua: codeDua || undefined,
+          status: 'pending',
+          isTemp: true
+        });
+      }
+
+      if (parsedItems.length === 0) {
+        alert("Aucune référence valide n'a pu être extraite de ce fichier.");
+        setImportProgress(null);
+        return;
+      }
+
+      setImportPreview(parsedItems.slice(0, 5));
+
+      // Batch write to IndexedDB
+      setImportProgress({ total: parsedItems.length, processed: 0, phase: "Stockage optimisé en mémoire (IndexedDB)..." });
+      const db = await openTempDB();
+
+      if (importMode === 'replace') {
+        const clearTx = db.transaction('folders', 'readwrite');
+        clearTx.objectStore('folders').clear();
+        await new Promise<void>((res) => { clearTx.oncomplete = () => res(); });
+      }
+
+      const chunkSize = 5000;
+      for (let i = 0; i < parsedItems.length; i += chunkSize) {
+        const chunk = parsedItems.slice(i, i + chunkSize);
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('folders', 'readwrite');
+          const store = tx.objectStore('folders');
+          for (const item of chunk) {
+            store.put(item);
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+
+        const currentProcessed = Math.min(i + chunkSize, parsedItems.length);
+        setImportProgress({
+          total: parsedItems.length,
+          processed: currentProcessed,
+          phase: `Enregistrement : ${currentProcessed.toLocaleString()} / ${parsedItems.length.toLocaleString()} références...`
+        });
+      }
+
+      // Update count
+      const totalCount = importMode === 'replace' ? parsedItems.length : (tempTotalCount + parsedItems.length);
+      localStorage.setItem('ci_temp_source_count', String(totalCount));
+      setTempTotalCount(totalCount);
+
+      setImportSummary({
+        total: parsedItems.length,
+        withCloture: withClotureCount,
+        filename: file.name
+      });
+      setImportProgress(null);
+
+    } catch (err: any) {
+      console.error("File Import Error:", err);
+      alert("Erreur lors de l'importation du fichier : " + (err.message || err));
+      setImportProgress(null);
+    }
+  };
+
   return (
     <div className="h-full flex flex-col pt-12 px-12 bg-brand-secondary overflow-y-auto pb-40">
       <div className="max-w-7xl mx-auto w-full">
         {/* Stats & Actions Row */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-slate-400" />
-              <span className="text-sm font-medium text-slate-400">Total : <span className="text-slate-900 font-black ml-1">{stats.total}</span></span>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
+          <div className="flex flex-wrap items-center gap-6">
+            <div className="flex items-center gap-2 bg-white/80 px-4 py-2 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="w-2.5 h-2.5 rounded-full bg-slate-400" />
+              <span className="text-xs font-semibold text-slate-500">Total Fichier : <span className="text-slate-900 font-black ml-1 text-sm">{stats.total.toLocaleString()}</span></span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-brand-accent shadow-[0_0_8px_#f97316]" />
-              <span className="text-sm font-medium text-slate-400">Pointés : <span className="text-brand-primary font-black ml-1">{stats.pointed}</span></span>
+            <div className="flex items-center gap-2 bg-white/80 px-4 py-2 rounded-2xl border border-slate-200 shadow-xs">
+              <div className="w-2.5 h-2.5 rounded-full bg-brand-accent shadow-[0_0_8px_#f97316]" />
+              <span className="text-xs font-semibold text-slate-500">Pointés : <span className="text-brand-primary font-black ml-1 text-sm">{stats.pointed.toLocaleString()}</span></span>
             </div>
+            {tempTotalCount > 0 && (
+              <div className="hidden md:flex items-center gap-2 bg-emerald-50 text-emerald-800 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold">
+                <span>⚡ {tempTotalCount.toLocaleString()} réf. prêtes</span>
+                <button onClick={handleClearTempDB} title="Vider le fichier de références" className="text-emerald-700 hover:text-red-600 transition-colors p-0.5 cursor-pointer">
+                  <X size={13} />
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button 
               onClick={handleReset}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl border border-red-100 text-red-500 text-[11px] font-black uppercase tracking-widest hover:bg-red-50 transition-all cursor-pointer"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-red-100 text-red-500 text-[11px] font-black uppercase tracking-widest hover:bg-red-50 transition-all cursor-pointer shadow-xs"
             >
-              <Trash2 size={16} /> Réinitialiser
+              <Trash2 size={15} /> Réinitialiser
             </button>
             <button 
               onClick={handleExport}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl border border-slate-100 text-slate-600 text-[11px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all cursor-pointer"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-[11px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all cursor-pointer shadow-xs"
             >
-              <FileDown size={16} /> Exporter
+              <FileDown size={15} /> Exporter
+            </button>
+            <button 
+              onClick={() => setIsImportModalOpen(true)}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black uppercase tracking-widest transition-all cursor-pointer shadow-md shadow-emerald-600/20"
+            >
+              <FileUp size={15} /> Importer Fichier
             </button>
           </div>
         </div>
@@ -979,7 +1226,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
               value={selectedDirection}
               onChange={(e) => {
                 setSelectedDirection(e.target.value);
-                setSelectedRuleId(''); // reset rule when direction changes
+                setSelectedRuleId('');
               }}
               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold text-slate-700 focus:outline-none focus:border-brand-primary cursor-pointer transition-all h-12"
             >
@@ -1059,7 +1306,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
             {search && (
               <button 
                 type="button"
-                onClick={() => setSearch('')}
+                onClick={() => { setSearch(''); inputRef.current?.focus(); }}
                 className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
               >
                 <X size={20} />
@@ -1076,7 +1323,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
         </div>
 
         {/* Result Area */}
-        <div className="w-full min-h-[400px] bg-white border border-slate-200 rounded-[3rem] p-16 shadow-2xl shadow-slate-200/50 relative">
+        <div className="w-full min-h-[380px] bg-white border border-slate-200/90 rounded-[2.5rem] p-10 sm:p-14 shadow-xl shadow-slate-200/40 relative">
           <AnimatePresence mode="wait">
             {boxes.length === 0 ? (
               <motion.div 
@@ -1089,7 +1336,7 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
                   <Lock size={48} />
                 </div>
                 <h3 className="text-2xl font-black text-slate-800 mb-2">AUCUNE BOÎTE OUVERTE</h3>
-                <p className="text-slate-500 font-medium max-w-sm">Veuillez créer ou ouvrir une boîte dans l'onglet "Gestion des Boîtes" avant de commencer le pointage.</p>
+                <p className="text-slate-500 font-medium max-w-sm">Veuillez créer ou ouvrir une boîte dans l'onglet "Boîtes" avant de commencer le pointage.</p>
               </motion.div>
             ) : !search.trim() ? (
               <motion.div 
@@ -1097,48 +1344,48 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 key="ready"
-                className="h-full flex flex-col items-center justify-center py-24"
+                className="h-full flex flex-col items-center justify-center py-20"
               >
-                <div className="w-24 h-24 bg-brand-secondary rounded-full flex items-center justify-center text-brand-primary/20 mb-6 border border-slate-100 shadow-inner">
-                  <Scan size={44} className="text-brand-primary/40 animate-pulse" />
+                <div className="w-20 h-20 bg-brand-secondary rounded-full flex items-center justify-center text-brand-primary/30 mb-5 border border-slate-100 shadow-inner">
+                  <Scan size={40} className="text-brand-primary/40 animate-pulse" />
                 </div>
-                <h3 className="text-sm font-black uppercase text-slate-400 tracking-[0.2em]">Prêt à scanner ou saisir une référence</h3>
-                <p className="text-slate-550 font-semibold text-xs mt-2 max-w-sm text-center">
-                  Saisissez un numéro de dossier ou scannez son code-barres dans la barre de saisie ci-dessus pour débuter le pointage.
+                <h3 className="text-xs font-black uppercase text-slate-400 tracking-[0.2em]">Prêt à scanner ou saisir une référence</h3>
+                <p className="text-slate-500 font-semibold text-xs mt-2 max-w-md text-center leading-relaxed">
+                  Saisissez un numéro de dossier ou scannez son code-barres ci-dessus. Si vous avez importé un fichier, les données s'afficheront instantanément.
                 </p>
               </motion.div>
             ) : !liveMatchInfo ? (
-              /* Reference typed, but not found in folders database */
+              /* Reference typed, but not found in database */
               <motion.div 
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 key="not-found-create"
-                className="h-full flex flex-col items-center justify-center text-center py-8"
+                className="h-full flex flex-col items-center justify-center text-center py-6"
               >
-                <div className="w-20 h-20 bg-amber-50 text-amber-500 border border-amber-100 rounded-3xl flex items-center justify-center mb-6 animate-pulse">
-                  <Plus size={36} />
+                <div className="w-18 h-18 bg-amber-50 text-amber-500 border border-amber-100 rounded-3xl flex items-center justify-center mb-5 animate-pulse">
+                  <Plus size={32} />
                 </div>
                 <div>
-                  <span className="text-[9px] font-black text-amber-700 bg-amber-100/50 px-3 py-1.2 rounded-full uppercase tracking-widest font-sans inline-block mb-3">Nouvelle référence</span>
+                  <span className="text-[9px] font-black text-amber-700 bg-amber-100/60 px-3 py-1 rounded-full uppercase tracking-widest font-sans inline-block mb-2">Nouvelle référence non répertoriée</span>
                   <h3 className="text-3xl font-black text-slate-800 tracking-tight">Référence: {search.toUpperCase()}</h3>
-                  <p className="text-slate-400 text-sm font-semibold mt-2 max-w-lg mx-auto">
-                    Ce dossier n'est pas répertorié dans la base centrale. Vous pouvez le créer et l'affecter à la volée.
+                  <p className="text-slate-400 text-xs font-semibold mt-2 max-w-lg mx-auto">
+                    Ce dossier n'est pas trouvé dans le fichier importé ou la base centrale. Vous pouvez l'affecter manuellement à une boîte.
                   </p>
                 </div>
 
                 {selectedDirection && selectedRuleId ? (
-                  <div className="bg-slate-50 border border-slate-200/50 p-6 rounded-[2rem] max-w-xl w-full mt-8 space-y-4 shadow-inner">
-                    <p className="text-slate-500 text-[10px] font-extrabold leading-relaxed uppercase tracking-widest block text-center">
+                  <div className="bg-slate-50 border border-slate-200/50 p-5 rounded-2xl max-w-xl w-full mt-6 space-y-3 shadow-inner">
+                    <p className="text-slate-500 text-[10px] font-extrabold uppercase tracking-widest block text-center">
                       🤖 Configuration automatique du dossier :
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
-                      <div className="bg-white p-4.5 rounded-2xl border border-slate-200/40">
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Direction de service</span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+                      <div className="bg-white p-3.5 rounded-xl border border-slate-200/40">
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Direction</span>
                         <span className="text-xs font-black text-slate-700 block truncate">{selectedDirection}</span>
                       </div>
-                      <div className="bg-white p-4.5 rounded-2xl border border-slate-200/40">
-                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1">Paramètres DUA (Règle)</span>
+                      <div className="bg-white p-3.5 rounded-xl border border-slate-200/40">
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Règle DUA</span>
                         <span className="text-xs font-black text-emerald-600 block truncate">
                           {(() => {
                             const r = archivalRules.find((ru: any) => String(ru.id) === String(selectedRuleId));
@@ -1149,61 +1396,44 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-amber-55 border border-dashed border-amber-200 p-6 rounded-[2rem] max-w-md w-full mt-8 flex flex-col items-center">
+                  <div className="bg-amber-50/80 border border-dashed border-amber-200 p-5 rounded-2xl max-w-md w-full mt-6 flex flex-col items-center">
                     <p className="text-amber-800 text-xs font-bold leading-relaxed text-center">
-                      ⚠️ Pour pouvoir initialiser et pointer ce dossier à la volée, veuillez d'abord sélectionner une <strong className="font-black text-slate-800">Direction</strong> et un <strong className="font-black text-slate-800">Type de document</strong> en haut de votre écran.
+                      💡 Vous pouvez sélectionner une boîte ouverte ci-dessous pour créer et pointer ce dossier immédiatement.
                     </p>
                   </div>
                 )}
 
-                <div className="flex gap-4 w-full max-w-md mt-10">
-                  <button 
-                    type="button"
-                    onClick={() => { setSearch(''); inputRef.current?.focus(); }}
-                    className="flex-1 py-4.5 bg-slate-100 rounded-2xl text-slate-600 font-black uppercase text-xs hover:bg-slate-200 transition-all font-sans cursor-pointer"
-                  >
-                    Effacer
-                  </button>
-                  <button 
-                    type="button"
-                    disabled={!selectedDirection || !selectedRuleId}
-                    onClick={() => {
-                      const activeRule = archivalRules.find((ru: any) => String(ru.id) === String(selectedRuleId));
-                      
-                      // Calculate dates
-                      let expiryDate = '';
-                      const ruleActive = parseInt(String(activeRule?.activeYears || 0));
-                      const ruleSemi = parseInt(String(activeRule?.semiActiveYears || 0));
-                      const totalDua = ruleActive + ruleSemi;
-                      
-                      const d = new Date();
-                      const year = d.getFullYear();
-                      expiryDate = `31/12/${year + totalDua}`;
-                      
-                      const newFolder: Folder = {
-                        reference: search.trim().toUpperCase(),
-                        intitule: `Dossier ${search.trim()}`,
-                        dateDebut: format(new Date(), 'dd/MM/yyyy'),
-                        dateCloture: format(new Date(), 'dd/MM/yyyy'),
-                        direction: selectedDirection,
-                        codeDua: activeRule?.reference || 'DUA',
-                        ruleId: selectedRuleId,
-                        category: activeRule?.category || activeRule?.docType || 'Autre',
-                        expiryDate,
-                        archivalStatus: 'Active',
-                        status: 'pointed',
-                        boxNumber: boxes[0]?.number || 'Boîte',
-                        pointedAt: new Date().toISOString()
-                      };
-
-                      setFolders((prev: any) => [...(prev || []), newFolder]);
-                      setSearch('');
-                      inputRef.current?.focus();
-                    }}
-                    className="flex-1 py-4.5 bg-brand-primary text-white rounded-2xl font-black uppercase text-xs hover:opacity-95 transition-all shadow-xl shadow-brand-primary/10 disabled:opacity-30 disabled:cursor-not-allowed font-sans cursor-pointer"
-                  >
-                    Créer & Affecter
-                  </button>
+                <div className="w-full max-w-xl mt-6 pt-4 border-t border-slate-100">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 text-left">AFFECTER DIRECTEMENT À UNE BOÎTE :</p>
+                  <div className="flex gap-3 overflow-x-auto pb-2 custom-scrollbar">
+                    {boxes.map((box: any) => (
+                      <button
+                        key={box.id}
+                        onClick={() => {
+                          const activeRule = archivalRules.find((ru: any) => String(ru.id) === String(selectedRuleId));
+                          const newFolder: Folder = {
+                            reference: search.trim().toUpperCase(),
+                            intitule: `Dossier ${search.trim()}`,
+                            dateDebut: format(new Date(), 'dd/MM/yyyy'),
+                            dateCloture: format(new Date(), 'dd/MM/yyyy'),
+                            direction: selectedDirection || undefined,
+                            codeDua: activeRule?.reference || undefined,
+                            ruleId: selectedRuleId || undefined,
+                            category: activeRule?.category || activeRule?.docType || 'Autre',
+                            status: 'pointed',
+                            boxNumber: box.number,
+                            pointedAt: new Date().toISOString()
+                          };
+                          setFolders((prev: any) => [...(prev || []), newFolder]);
+                          setSearch('');
+                          inputRef.current?.focus();
+                        }}
+                        className="px-6 py-3 bg-slate-100 hover:bg-brand-primary hover:text-white rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap text-slate-700 shadow-xs"
+                      >
+                        📦 {box.number || box.title}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </motion.div>
             ) : (liveMatchInfo.folder.status === 'pointed' || liveMatchInfo.folder.status === 'verified') ? (
@@ -1211,177 +1441,144 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
                 key={`blocked-${liveMatchInfo.folder.reference}`}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
-                className="flex flex-col items-center justify-center p-8 bg-rose-50 border border-rose-200 rounded-[2.5rem] text-center max-w-2xl mx-auto space-y-6 shadow-md"
+                className="flex flex-col items-center justify-center p-8 bg-rose-50 border border-rose-200 rounded-[2.5rem] text-center max-w-2xl mx-auto space-y-5 shadow-md"
               >
-                <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center border-4 border-white shadow-lg shrink-0">
-                  <Lock size={36} />
+                <div className="w-18 h-18 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center border-4 border-white shadow-lg shrink-0">
+                  <Lock size={32} />
                 </div>
                 <div>
-                  <span className="text-[10px] font-black text-rose-700 bg-rose-100 px-4 py-1.5 rounded-full uppercase tracking-widest font-sans inline-block mb-3">Saisie Bloquée</span>
-                  <h3 className="text-3xl font-black text-slate-800 tracking-tight">Dossier déjà Pointé / Archivé</h3>
-                  <p className="text-slate-600 text-sm font-semibold mt-4 max-w-lg leading-relaxed">
-                    Le dossier référencé <span className="font-mono bg-rose-100/60 px-2 py-0.5 rounded font-black text-slate-800 text-base">{liveMatchInfo.folder.reference}</span> est déjà enregistré au statut <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-xl font-bold uppercase text-[10px] font-sans tracking-wide border border-amber-200">{liveMatchInfo.folder.status === 'verified' ? 'Validé & Stocké' : 'Pointé'}</span>.
+                  <span className="text-[10px] font-black text-rose-700 bg-rose-100 px-4 py-1.5 rounded-full uppercase tracking-widest font-sans inline-block mb-2">Saisie Bloquée</span>
+                  <h3 className="text-2xl font-black text-slate-800 tracking-tight">Dossier déjà Pointé / Archivé</h3>
+                  <p className="text-slate-600 text-xs font-semibold mt-3 max-w-lg leading-relaxed">
+                    Le dossier référencé <span className="font-mono bg-rose-100/60 px-2 py-0.5 rounded font-black text-slate-800 text-sm">{liveMatchInfo.folder.reference}</span> est déjà enregistré au statut <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-lg font-bold uppercase text-[10px] border border-amber-200">{liveMatchInfo.folder.status === 'verified' ? 'Validé & Stocké' : 'Pointé'}</span>.
                   </p>
                 </div>
 
-                <div className="bg-white border border-rose-100 rounded-3xl p-6 w-full shadow-inner flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+                <div className="bg-white border border-rose-100 rounded-2xl p-5 w-full shadow-inner flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
                   <div className="text-left font-sans">
                     <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Conteneur de destination</p>
-                    <p className="text-xl font-black text-rose-600 mt-2 font-sans">📦 BOÎTE {liveMatchInfo.folder.boxNumber || 'N/A'}</p>
+                    <p className="text-lg font-black text-rose-600 mt-1.5 font-sans">📦 BOÎTE {liveMatchInfo.folder.boxNumber || 'N/A'}</p>
                     {liveMatchInfo.folder.direction && (
-                      <p className="text-xs font-bold text-slate-500 mt-1.5">Direction : <span className="text-slate-700 font-extrabold">{liveMatchInfo.folder.direction}</span></p>
+                      <p className="text-xs font-bold text-slate-500 mt-1">Direction : <span className="text-slate-700 font-extrabold">{liveMatchInfo.folder.direction}</span></p>
                     )}
                   </div>
                   <div className="text-left sm:text-right font-sans">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Code de calendrier (DUA)</p>
-                    <p className="text-sm font-black text-slate-700 mt-2 font-mono">{liveMatchInfo.folder.codeDua || 'N/A'}</p>
-                    {liveMatchInfo.folder.expiryDate && (
-                      <p className="text-[11px] font-bold text-slate-500 mt-1.5">Fin de conservation : <span className="text-emerald-600 font-extrabold">{liveMatchInfo.folder.expiryDate}</span></p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">Date Clôture / DUA</p>
+                    <p className="text-xs font-black text-slate-700 mt-1.5 font-mono">{liveMatchInfo.folder.dateCloture || 'Non spécifiée'}</p>
+                    {liveMatchInfo.folder.codeDua && (
+                      <p className="text-[11px] font-bold text-slate-500 mt-1">Règle : <span className="text-emerald-600 font-extrabold">{liveMatchInfo.folder.codeDua}</span></p>
                     )}
                   </div>
                 </div>
 
-                <div className="flex gap-4 w-full justify-center pt-2">
+                <div className="flex gap-4 w-full justify-center pt-1">
                   <button 
                     type="button"
                     onClick={() => { setSearch(''); inputRef.current?.focus(); }}
-                    className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all shadow-md shadow-rose-500/10 cursor-pointer"
+                    className="px-8 py-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-[11px] font-black uppercase tracking-widest transition-all shadow-md shadow-rose-500/10 cursor-pointer"
                   >
-                    Effacer & Retour
+                    Effacer & Suivant
                   </button>
                 </div>
               </motion.div>
             ) : (
+              /* MATCH FOUND IN IMPORTED FILE OR MEMORY - MATCHING SCREENSHOT EXACTLY */
               <motion.div 
                 key={liveMatchInfo.folder.reference}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="space-y-12"
+                className="space-y-6"
               >
-                <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                {/* Reference Header */}
+                <div className="space-y-4">
                   <div>
-                    <span className="text-[9px] font-black text-brand-primary bg-brand-secondary/80 px-3 py-1.2 rounded-full uppercase tracking-widest mb-3 inline-block">Dossier Certifié</span>
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] block mb-2 font-sans">RÉFÉRENCE DOSSIER</label>
-                    <h2 className="text-4xl font-black text-slate-800 tracking-tight">{liveMatchInfo.folder.reference}</h2>
-                    {liveMatchInfo.folder.dateCloture && (
-                      <div className="mt-3">
-                        <span className="px-3.5 py-1.5 bg-emerald-50 text-emerald-800 border-2 border-emerald-300 rounded-2xl text-xs font-black uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm">
-                          📅 Date Clôture Dossier : {liveMatchInfo.folder.dateCloture}
-                        </span>
-                      </div>
-                    )}
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.18em] block mb-1">
+                      RÉFÉRENCE DOSSIER
+                    </label>
+                    <h2 className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight">
+                      {liveMatchInfo.folder.reference}
+                    </h2>
                   </div>
-                  {smartMode && liveMatchInfo.suggestion && (
-                    <div className="bg-brand-primary text-white p-6 rounded-3xl shadow-xl shadow-slate-200">
-                      <p className="text-[10px] font-black opacity-80 uppercase tracking-widest mb-1">BOÎTE SUGGÉRÉE</p>
-                      <p className="text-3xl font-black">{liveMatchInfo.suggestion.number}</p>
-                      {liveMatchInfo.suggestion.clotureText && (
-                        <p className="text-sm font-black uppercase text-emerald-800 bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-xl mt-3 text-center tracking-wide shadow-none">
-                          Réf : {liveMatchInfo.suggestion.clotureText}
-                        </p>
+
+                  <div>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.18em] block mb-1">
+                      DATE DE CLÔTURE
+                    </label>
+                    <p className="text-base sm:text-lg font-bold text-slate-700">
+                      {liveMatchInfo.folder.dateCloture ? (
+                        <span className="text-emerald-700 font-black">{liveMatchInfo.folder.dateCloture}</span>
+                      ) : (
+                        <span className="text-slate-600 font-medium">Non spécifiée</span>
+                      )}
+                    </p>
+                  </div>
+
+                  {(liveMatchInfo.folder.intitule || liveMatchInfo.folder.direction || liveMatchInfo.folder.codeDua) && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {liveMatchInfo.folder.intitule && (
+                        <span className="bg-slate-100 text-slate-700 text-[11px] font-bold px-3 py-1 rounded-lg">
+                          📄 {liveMatchInfo.folder.intitule}
+                        </span>
+                      )}
+                      {liveMatchInfo.folder.direction && (
+                        <span className="bg-blue-50 text-blue-800 text-[11px] font-bold px-3 py-1 rounded-lg">
+                          🏢 {liveMatchInfo.folder.direction}
+                        </span>
+                      )}
+                      {liveMatchInfo.folder.codeDua && (
+                        <span className="bg-emerald-50 text-emerald-800 text-[11px] font-bold px-3 py-1 rounded-lg">
+                          ⚖️ {liveMatchInfo.folder.codeDua}
+                        </span>
                       )}
                     </div>
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 bg-slate-50/50 p-6 rounded-3xl border border-slate-100 animate-fade-in">
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Intitulé original</label>
-                    <span className="text-sm font-bold text-slate-700 block truncate">{liveMatchInfo.folder.intitule || "Non spécifié"}</span>
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Direction de rattachement</label>
-                    <span className="text-sm font-bold text-slate-75 block truncate">
-                      {liveMatchInfo.folder.direction || (
-                        <span className="text-red-500 italic opacity-60">Indéfinie</span>
+                <div className="border-t border-slate-100 my-4" />
+
+                {/* Suggested Box Section matching screenshot card */}
+                <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-100/80 text-amber-700 flex items-center justify-center shrink-0 border border-amber-200/60 shadow-xs">
+                      <Package size={24} />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">
+                        BOÎTE SUGGÉRÉE
+                      </p>
+                      <p className="text-lg sm:text-xl font-black text-slate-900 leading-tight">
+                        {liveMatchInfo.suggestion ? (liveMatchInfo.suggestion.number || liveMatchInfo.suggestion.title) : 'en cours'}
+                      </p>
+                      {liveMatchInfo.suggestion?.clotureText && (
+                        <p className="text-[10px] font-bold text-emerald-700 uppercase mt-0.5">
+                          Réf : {liveMatchInfo.suggestion.clotureText}
+                        </p>
                       )}
-                    </span>
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Règle CC / Code DUA</label>
-                    <span className="text-sm font-bold text-slate-75 block truncate">
-                      {liveMatchInfo.folder.codeDua || (
-                        <span className="text-amber-600 italic opacity-60">Non assignée</span>
-                      )}
-                    </span>
-                  </div>
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">Date de Clôture</label>
-                    <span className="text-sm font-black text-emerald-700 block bg-emerald-50 px-2.5 py-1 rounded-xl border border-emerald-100 max-w-max">
-                      {liveMatchInfo.folder.dateCloture || (
-                        <span className="text-slate-450 font-bold italic opacity-60">Non spécifiée</span>
-                      )}
-                    </span>
-                  </div>
+
+                  <button
+                    onClick={() => executeDirectPointage(liveMatchInfo.suggestion || boxes[0])}
+                    className="w-full sm:w-auto px-6 py-3.5 bg-[#2b3528] hover:bg-[#1f271d] text-white font-bold text-xs uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 transition-all shadow-md active:scale-98 cursor-pointer shrink-0"
+                  >
+                    <Check size={16} />
+                    <span>Valider & Suivant (Entrée)</span>
+                  </button>
                 </div>
 
-                {/* Overwrite notification indicator */}
-                {(selectedDirection || selectedRuleId) && (
-                  <div className="p-4 rounded-2xl bg-amber-50 border border-amber-100 text-[11px] font-semibold text-amber-800 uppercase tracking-wider relative flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
-                    <span>
-                      En validant, le dossier sélectionné écrasera sa direction et sa règle CC par le filtre actif de votre session.
-                    </span>
-                  </div>
-                )}
-
-                <div>
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] block mb-2 font-sans">AFFECTATION DU POINTAGE</label>
-                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-4 italic opacity-80 underline underline-offset-4">
-                    {smartMode ? "MODE INTELLIGENT : APPUYEZ SUR ENTRÉE POUR VALIDER" : "SÉLECTIONNEZ UNE BOÎTE OUVERTE POUR TERMINER LE POINTAGE :"}
-                  </p>
-                  <div className="flex gap-4 overflow-x-auto pb-4 custom-scrollbar">
+                {/* Manual Box Selection */}
+                <div className="pt-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.18em] block mb-3 font-sans">
+                    OU AFFECTER MANUELLEMENT :
+                  </label>
+                  <div className="flex flex-wrap gap-3">
                     {boxes.map((box: any) => (
-                      <button 
+                      <button
                         key={box.id}
-                        onClick={() => {
-                          setFolders((prev: any) => prev.map((f: any) => {
-                            if (f.reference === liveMatchInfo.folder.reference) {
-                              const activeRule = archivalRules.find((ru: any) => String(ru.id) === String(selectedRuleId));
-                              let updatedFields: any = {};
-                              if (selectedDirection) {
-                                updatedFields.direction = selectedDirection;
-                              }
-                              if (activeRule) {
-                                const ruleActive = parseInt(String(activeRule.activeYears || 0));
-                                const ruleSemi = parseInt(String(activeRule.semiActiveYears || 0));
-                                const totalDua = ruleActive + ruleSemi;
-                                
-                                const dateStr = f.dateCloture || format(new Date(), 'dd/MM/yyyy');
-                                const yearMatch = dateStr.match(/\d{4}/) || dateStr.match(/\/(\d{2})$/);
-                                let year = new Date().getFullYear();
-                                if (yearMatch) {
-                                  year = yearMatch[0].length === 4 ? parseInt(yearMatch[0]) : 2000 + parseInt(yearMatch[1]);
-                                }
-                                const expiryDate = `31/12/${year + totalDua}`;
-                                
-                                updatedFields.codeDua = activeRule.reference;
-                                updatedFields.ruleId = activeRule.id;
-                                updatedFields.category = activeRule.category || activeRule.docType || 'Autre';
-                                updatedFields.expiryDate = expiryDate;
-                                updatedFields.archivalStatus = 'Active';
-                              }
-                              return {
-                                ...f,
-                                ...updatedFields,
-                                status: 'pointed',
-                                boxNumber: box.number,
-                                pointedAt: new Date().toISOString()
-                              };
-                            }
-                            return f;
-                          }));
-                          setSearch('');
-                          inputRef.current?.focus();
-                        }}
-                        className="px-8 py-4.5 bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-xl hover:border-brand-primary transition-all text-sm font-black text-slate-705 flex flex-col items-center justify-center min-w-[140px] whitespace-nowrap cursor-pointer gap-0.5"
+                        onClick={() => executeDirectPointage(box)}
+                        className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 font-bold rounded-xl text-xs transition-all cursor-pointer border border-slate-200/50 shadow-2xs"
                       >
-                        <span className="flex items-center gap-1">📦 {box.number}</span>
-                        {box.clotureText && (
-                          <span className="text-xs font-black text-emerald-800 bg-emerald-100 border border-emerald-200 px-3 py-1 rounded-lg mt-1.5 font-mono uppercase tracking-tight">
-                            Réf : {box.clotureText}
-                          </span>
-                        )}
+                        {box.number || box.title}
                       </button>
                     ))}
                   </div>
@@ -1391,6 +1588,173 @@ const PointageModule = ({ folders, setFolders, boxes, setBoxes, smartMode, archi
           </AnimatePresence>
         </div>
       </div>
+
+      {/* ========================================================================= */}
+      {/* --- IMPORT MODAL FOR LARGE REFERENCE & CLOSURE DATE FILES --- */}
+      {/* ========================================================================= */}
+      <AnimatePresence>
+        {isImportModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4 sm:p-6">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden p-8 sm:p-10 border border-slate-100 flex flex-col max-h-[90vh]"
+            >
+              <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-xs">
+                    <FileUp size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-slate-900 leading-none">Importer Fichier de Références</h3>
+                    <p className="text-xs text-slate-500 font-medium mt-1">Chargement massif de références et dates de clôture (Excel / CSV)</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => { setIsImportModalOpen(false); setImportProgress(null); }}
+                  className="w-9 h-9 rounded-full bg-slate-100 text-slate-400 hover:text-slate-700 hover:bg-slate-200 flex items-center justify-center transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto py-6 space-y-6">
+                {/* Mode Selector */}
+                <div className="flex items-center gap-4 bg-slate-50 p-2 rounded-2xl border border-slate-200/70">
+                  <button
+                    onClick={() => setImportMode('replace')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      importMode === 'replace' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    🔄 Remplacer la base actuelle
+                  </button>
+                  <button
+                    onClick={() => setImportMode('merge')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      importMode === 'merge' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    ➕ Ajouter / Fusionner
+                  </button>
+                </div>
+
+                {/* Dropzone */}
+                <div 
+                  onClick={() => importFileInputRef.current?.click()}
+                  className="border-2 border-dashed border-emerald-300 hover:border-emerald-500 bg-emerald-50/40 hover:bg-emerald-50/80 rounded-3xl p-8 text-center cursor-pointer transition-all flex flex-col items-center justify-center group"
+                >
+                  <input 
+                    ref={importFileInputRef}
+                    type="file"
+                    accept=".xlsx, .xls, .csv, .tsv"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) processUploadedFile(file);
+                    }}
+                    className="hidden"
+                  />
+                  <div className="w-16 h-16 rounded-2xl bg-white text-emerald-600 shadow-md flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                    <Upload size={28} />
+                  </div>
+                  <h4 className="text-sm font-black text-slate-800 mb-1">Glissez votre fichier ici ou cliquez pour parcourir</h4>
+                  <p className="text-xs text-slate-500 max-w-sm">
+                    Fichiers acceptés : <strong>Excel (.xlsx, .xls)</strong> ou <strong>CSV (.csv)</strong> jusqu'à des centaines de milliers de lignes.
+                  </p>
+                  <div className="mt-4 flex items-center gap-2 text-[10px] font-bold text-emerald-700 bg-white/80 px-3 py-1 rounded-full border border-emerald-200">
+                    <span>💡 Détection auto des colonnes : Référence, Date de Clôture, Intitulé, Direction</span>
+                  </div>
+                </div>
+
+                {/* Progress Bar during large import */}
+                {importProgress && (
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                      <span>{importProgress.phase}</span>
+                      {importProgress.total > 0 && (
+                        <span className="font-mono">{Math.round((importProgress.processed / importProgress.total) * 100)}%</span>
+                      )}
+                    </div>
+                    <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-emerald-600 transition-all duration-300 rounded-full"
+                        style={{ width: importProgress.total > 0 ? `${(importProgress.processed / importProgress.total) * 100}%` : '50%' }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Summary card if import done */}
+                {importSummary && !importProgress && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 space-y-3">
+                    <div className="flex items-center gap-2 text-emerald-800 font-bold text-xs">
+                      <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+                      <span>Fichier <strong>{importSummary.filename}</strong> importé avec succès !</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div className="bg-white/80 p-3 rounded-xl border border-emerald-100">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Total Références</span>
+                        <span className="text-lg font-black text-slate-900">{importSummary.total.toLocaleString()}</span>
+                      </div>
+                      <div className="bg-white/80 p-3 rounded-xl border border-emerald-100">
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase">Avec Date de Clôture</span>
+                        <span className="text-lg font-black text-emerald-700">{importSummary.withCloture.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sample preview */}
+                {importPreview && importPreview.length > 0 && !importProgress && (
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Aperçu des 5 premières lignes détectées :</p>
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                          <tr>
+                            <th className="p-2.5">Référence</th>
+                            <th className="p-2.5">Date Clôture</th>
+                            <th className="p-2.5">Intitulé</th>
+                            <th className="p-2.5">Direction</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 text-slate-700">
+                          {importPreview.map((item, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50/50">
+                              <td className="p-2.5 font-mono font-bold">{item.reference}</td>
+                              <td className="p-2.5 font-bold text-emerald-700">{item.dateCloture || <span className="text-slate-400 italic">Non spécifiée</span>}</td>
+                              <td className="p-2.5 truncate max-w-[150px]">{item.intitule}</td>
+                              <td className="p-2.5">{item.direction || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-4">
+                <button
+                  type="button"
+                  onClick={handleClearTempDB}
+                  className="text-red-500 hover:text-red-700 text-xs font-bold px-3 py-2 rounded-lg hover:bg-red-50 transition-all cursor-pointer"
+                >
+                  Vider la mémoire
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsImportModalOpen(false); inputRef.current?.focus(); }}
+                  className="px-6 py-3 bg-brand-primary text-white rounded-xl text-xs font-black uppercase tracking-wider hover:opacity-90 transition-all cursor-pointer shadow-md"
+                >
+                  Terminer & Commencer le Pointage
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Suggestion / Confirmation Modal */}
       <AnimatePresence>

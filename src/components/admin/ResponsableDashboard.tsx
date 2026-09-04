@@ -41,9 +41,12 @@ import {
   Filter,
   CalendarRange,
   Tag,
-  SlidersHorizontal
+  SlidersHorizontal,
+  QrCode,
+  Building2
 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { StorageDepotsManager } from '../storage/StorageDepotsManager';
 import { BordereauPreliminaireModal, ValidationTransfertModal, FicheAcceptationModal, TransferRequestItem, BordereauFinalInventaireModal, BordereauFinalEliminationModal, PVTransfertModal } from '../transfer/TransferDocsModals';
 
 // Simple Alert Toast in French
@@ -53,7 +56,7 @@ interface AlertInfo {
 }
 
 export function ResponsableDashboard() {
-  const [activeTab, setActiveTab] = useState<'audit' | 'transfers' | 'rules' | 'organigramme' | 'users' | 'barcodes' | 'backup' | 'search' | 'analytics'>('audit');
+  const [activeTab, setActiveTab] = useState<'audit' | 'storage' | 'transfers' | 'rules' | 'organigramme' | 'users' | 'barcodes' | 'backup' | 'search' | 'analytics'>('audit');
   const [toast, setToast] = useState<AlertInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [pdfViewerFile, setPdfViewerFile] = useState<string | null>(null);
@@ -486,6 +489,7 @@ export function ResponsableDashboard() {
       const itemsToFinalize = pendingInventories.filter(i => selectedInventories.includes(i.reference));
       await api.post('/api/audit/finalize-inventory', { references: selectedInventories });
       showToast(`L'audit final de validation a été scellé pour ${selectedInventories.length} dossier(s) ! Bordereau final généré.`, "success");
+      try { window.dispatchEvent(new CustomEvent('storage-depot-updated')); } catch (e) {}
       setViewingFinalInventoryBatch(itemsToFinalize.length > 0 ? itemsToFinalize : selectedInventories.map(ref => ({ reference: ref, intitule: 'Dossier Inventorié', direction: 'Service Versant' })));
       setSelectedInventories([]);
       loadAllData();
@@ -503,6 +507,7 @@ export function ResponsableDashboard() {
       const elimsToFinalize = eliminationRequests.filter(er => selectedEliminations.includes(er.id));
       await api.post('/api/elimination/validate-pv', { requestIds: selectedEliminations });
       showToast(`Élimination finale validée pour ${selectedEliminations.length} PV(s) ! Procès-verbal final généré.`, "success");
+      try { window.dispatchEvent(new CustomEvent('storage-depot-updated')); } catch (e) {}
       setViewingFinalEliminationBatch(elimsToFinalize.length > 0 ? elimsToFinalize : selectedEliminations.map(id => ({ id, pvNumber: `PV-${id}`, reference: 'REF-ELIM', intitule: 'Dossier à éliminer' })));
       setSelectedEliminations([]);
       loadAllData();
@@ -518,6 +523,7 @@ export function ResponsableDashboard() {
     try {
       const res = await api.post(`/api/inventory-integration/batches/${batchId}/validate`, {});
       showToast(res.message || "Lot validé avec succès et stockage scellé dans le centre d'archives !", "success");
+      try { window.dispatchEvent(new CustomEvent('storage-depot-updated')); } catch (e) {}
       const target = integrationBatches.find(b => b.id === batchId);
       if (target) {
         setViewingBatchSlip({
@@ -817,6 +823,20 @@ export function ResponsableDashboard() {
         >
           <CheckSquare className="w-3.5 h-3.5" />
           <span>Audit & Validations</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('storage')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all whitespace-nowrap cursor-pointer ${
+            activeTab === 'storage' 
+              ? 'bg-gradient-to-r from-emerald-700 via-teal-800 to-slate-900 text-white shadow-lg shadow-emerald-900/30 ring-1 ring-emerald-400/50' 
+              : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Building2 className={`w-4 h-4 ${activeTab === 'storage' ? 'text-emerald-300' : 'text-emerald-600'}`} />
+          <span>PLAN INTERACTIF GÉOGRAPHIQUE DU DÉPÔT D'ARCHIVES</span>
+          <span className="px-1.5 py-0.5 text-[9px] font-black uppercase rounded bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+            2D / 3D
+          </span>
         </button>
         <button
           onClick={() => setActiveTab('transfers')}
@@ -1146,10 +1166,11 @@ export function ResponsableDashboard() {
                             {isValidated && (
                               <button
                                 onClick={() => setViewingBatchSlip(batch)}
-                                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-all shadow-md"
-                                title="Consulter et imprimer le Procès-Verbal officiel de transfert"
+                                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black flex items-center gap-2 cursor-pointer transition-all shadow-md"
+                                title="Générer et imprimer la Fiche QR Code et le Procès-Verbal de transfert"
                               >
-                                <FileText size={14} /> Voir le PV de Transfert
+                                <QrCode size={14} className="text-emerald-200" />
+                                <span>Générer Transfert (Fiche QR Code & PV)</span>
                               </button>
                             )}
                           </div>
@@ -1412,6 +1433,13 @@ export function ResponsableDashboard() {
             </div>
 
           </div>
+        )}
+
+        {/* TAB: STOCKAGE & DÉPÔTS D'ARCHIVES */}
+        {activeTab === 'storage' && (
+          <StorageDepotsManager
+            onOpenPV={(batch) => setViewingBatchSlip(batch)}
+          />
         )}
 
         {/* TAB: DEMANDES DE TRANSFERT */}

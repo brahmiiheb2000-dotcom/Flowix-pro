@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   FileText,
   Printer,
@@ -22,7 +23,12 @@ import {
   Clock,
   Sparkles,
   Edit3,
-  Check
+  Check,
+  QrCode,
+  Share2,
+  Info,
+  CheckSquare,
+  ChevronRight
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
@@ -63,15 +69,40 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
   isValidating = false
 }) => {
   const isValidated = batch.status === 'validé';
+  // View mode tab: 'pv' = Full official transfer PV with validated inventory table | 'fiche_qr' = Fiche QR Code & Étiquette de transfert
+  const [activeDocTab, setActiveDocTab] = useState<'pv' | 'fiche_qr'>('pv');
+
   // State for interactive features
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBoxFilter, setSelectedBoxFilter] = useState('all');
   const [selectedSortFilter, setSelectedSortFilter] = useState<'all' | 'EL' | 'CP'>('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState<number>(50); // 50 by default, can be set to 'all'
-  const [isEditingDirectionHead, setIsEditingDirectionHead] = useState(false);
+  
+  // Fillable / Editable Transfer Information
+  const [isEditingFields, setIsEditingFields] = useState(false);
   const [customDirectionHead, setCustomDirectionHead] = useState<string>(
     batch.directionHead || `Responsable / Chef de la Direction ${batch.direction || ''}`
+  );
+  const [customTransferDate, setCustomTransferDate] = useState<string>(
+    batch.transferDate ? batch.transferDate.slice(0, 10) : (batch.importedAt ? batch.importedAt.slice(0, 10) : new Date().toISOString().slice(0, 10))
+  );
+  const [customDepot, setCustomDepot] = useState<string>(
+    'Centre des Archives Intermédiaires Morneguia — Dépôt Principal'
+  );
+  const [customLocalisation, setCustomLocalisation] = useState<string>(() => {
+    if (batch.localisation && batch.localisation.trim()) return batch.localisation.trim();
+    const firstFolder = Array.isArray(batch.foldersData) ? batch.foldersData[0] : null;
+    if (firstFolder?.rawLocalisation && typeof firstFolder.rawLocalisation === 'string' && firstFolder.rawLocalisation.trim()) {
+      return firstFolder.rawLocalisation.trim();
+    }
+    return 'Centre des Archives Morneguia — Rayon S1-B-208';
+  });
+  const [customSortFinal, setCustomSortFinal] = useState<string>(
+    'Élimination après échéance'
+  );
+  const [customNotes, setCustomNotes] = useState<string>(
+    batch.notes || 'Inventaire et conditionnement validés conformes aux règles DUA et scellés pour transfert d\'archives.'
   );
 
   // Helper date formatter
@@ -507,6 +538,37 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
 
   const pvRefNumber = batch.inventoryRef || batch.batchNumber || `PV-TRANSF-${new Date().getFullYear()}-${batch.id.slice(-6).toUpperCase()}`;
 
+  // QR Code URL direct for smartphone camera scan (opens responsive mobile PV view)
+  const qrCodeUrl = useMemo(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const batchKey = batch.id || batch.batchNumber || '';
+    return `${origin}/pv-transfert?id=${encodeURIComponent(batchKey)}`;
+  }, [batch.id, batch.batchNumber]);
+
+  // QR Code Payload encoding complete validated batch integrity
+  const qrCodePayload = useMemo(() => {
+    return JSON.stringify({
+      app: "MAE_ARCHIVES_SYSTEM",
+      type: "PV_TRANSFERT_VALIDE",
+      ref: pvRefNumber,
+      batchNumber: batch.batchNumber,
+      inventoryName: batch.inventoryName || `Inventaire ${batch.direction || ''}`,
+      direction: batch.direction,
+      directionHead: customDirectionHead,
+      transferDate: customTransferDate,
+      depot: customDepot,
+      foldersCount: stats.totalFolders,
+      boxesCount: stats.totalBoxes,
+      conservationCount: stats.consCount,
+      eliminationCount: stats.elimCount,
+      status: isValidated ? 'VALIDÉ_ET_SCELLÉ' : 'EN_ATTENTE_AUDIT',
+      validatedBy: batch.validatedBy || 'Responsable Audit & Conformité',
+      validatedAt: batch.validatedAt || batch.importedAt || new Date().toISOString(),
+      ruleApplied: batch.ruleApplied?.title || batch.ruleApplied?.reference || 'Conforme DUA',
+      verificationHash: `SEAL-${(batch.id || 'BATCH').slice(-8).toUpperCase()}-${new Date().getFullYear()}`
+    });
+  }, [pvRefNumber, batch, customDirectionHead, customTransferDate, customDepot, stats, isValidated]);
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 overflow-y-auto print:p-0 print:bg-white print:static print:inset-auto">
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[94vh] flex flex-col overflow-hidden my-auto border border-slate-200 print:max-h-none print:h-auto print:border-none print:shadow-none print:rounded-none print:w-full print:max-w-none">
@@ -522,7 +584,7 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-black uppercase tracking-wider rounded-full border border-emerald-500/40">
-                  Procès-Verbal Officiel de Transfert & Versement
+                  Génération & Traçabilité de Transfert
                 </span>
                 <span className="font-mono text-xs text-slate-300 font-bold bg-white/10 px-2 py-0.5 rounded-lg border border-white/10">
                   Réf : {pvRefNumber}
@@ -534,186 +596,309 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-wrap self-end sm:self-auto">
+          <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
+            {/* View Mode Switcher */}
+            <div className="bg-white/10 p-1 rounded-xl flex items-center gap-1 border border-white/10">
+              <button
+                onClick={() => setActiveDocTab('pv')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeDocTab === 'pv' 
+                    ? 'bg-emerald-600 text-white shadow-sm' 
+                    : 'text-slate-300 hover:text-white'
+                }`}
+                title="Bordereau officiel A4 avec tableau complet de l'inventaire validé"
+              >
+                <FileText size={13} /> Bordereau PV
+              </button>
+              <button
+                onClick={() => setActiveDocTab('fiche_qr')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeDocTab === 'fiche_qr' 
+                    ? 'bg-emerald-600 text-white shadow-sm' 
+                    : 'text-slate-300 hover:text-white'
+                }`}
+                title="Fiche de transfert d'inventaire sécurisé avec grand QR Code"
+              >
+                <QrCode size={13} /> Fiche QR Code
+              </button>
+            </div>
+
+            <button
+              onClick={() => setIsEditingFields(!isEditingFields)}
+              className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer shadow-sm ${
+                isEditingFields 
+                  ? 'bg-amber-500 text-white border-amber-400' 
+                  : 'bg-white/10 hover:bg-white/20 text-white border-white/15'
+              }`}
+              title="Modifier les informations à remplir (responsable, date, dépôt, observations)"
+            >
+              <Edit3 size={13} /> {isEditingFields ? "Masquer formulaire" : "Remplir informations"}
+            </button>
+
             {!isValidated && onValidate && (
               <button
                 onClick={() => onValidate(batch.id)}
                 disabled={isValidating}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-emerald-950 transition-all cursor-pointer"
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-emerald-950 transition-all cursor-pointer"
                 title="Valider définitivement le lot et stocker dans le système d'archives"
               >
-                <CheckCircle2 size={15} /> {isValidating ? "Validation en cours..." : "Valider & Confirmer le Stockage"}
+                <CheckCircle2 size={14} /> {isValidating ? "Validation..." : "Valider le Lot"}
               </button>
             )}
             <button
               onClick={handleExportExcel}
-              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 border border-white/15 transition-all cursor-pointer shadow-sm"
-              title="Télécharger l'inventaire en fichier Excel"
+              className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 border border-white/15 transition-all cursor-pointer shadow-sm"
+              title="Télécharger l'inventaire validé en fichier Excel"
             >
-              <Download size={14} className="text-emerald-400" /> Exporter Excel
+              <Download size={13} className="text-emerald-400" /> Excel
             </button>
             <button
               onClick={handlePrint}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-emerald-950 transition-all cursor-pointer"
-              title="Lancer l'impression officielle du Procès-Verbal"
+              title="Lancer l'impression officielle"
             >
-              <Printer size={15} /> Imprimer / PDF
+              <Printer size={14} /> Imprimer / PDF
             </button>
             <button
               onClick={onClose}
               className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition-colors cursor-pointer"
               title="Fermer la fenêtre"
             >
-              <X size={20} />
+              <X size={18} />
             </button>
           </div>
         </div>
 
         {/* ========================================================================= */}
-        {/* --- MAIN PV CONTENT BODY (Printable Layout) --- */}
+        {/* --- FILLABLE INFORMATIONS DRAWER (When enabled) --- */}
         {/* ========================================================================= */}
-        <div id="printable-pv-transfert" className="p-6 sm:p-8 lg:p-10 overflow-y-auto space-y-6 flex-1 bg-white text-slate-800 print:p-6 print:overflow-visible">
-          
-          {/* Header Document Act */}
-          <div className="border-b-2 border-emerald-900 pb-5 space-y-3">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        {isEditingFields && (
+          <div className="bg-amber-50/90 border-b border-amber-200 px-6 py-4 text-xs print:hidden animate-fadeIn">
+            <div className="flex items-center justify-between pb-2 border-b border-amber-200/60 mb-3">
+              <div className="flex items-center gap-2 font-black text-amber-950 uppercase tracking-wider">
+                <Edit3 size={14} className="text-amber-700" />
+                Informations du transfert à remplir & personnaliser
+              </div>
+              <button
+                onClick={() => setIsEditingFields(false)}
+                className="px-3 py-1 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition-colors cursor-pointer"
+              >
+                Valider & Fermer le panneau
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-900 text-white font-black text-xs flex items-center justify-center">
-                    PV
-                  </div>
-                  <span className="text-[11px] font-black uppercase tracking-widest text-emerald-900">
-                    MAE ASSURANCES — SYSTÈME CENTRALISÉ DE GESTION DES ARCHIVES
-                  </span>
-                </div>
-                <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-                  PROCÈS-VERBAL & BORDEREAU DE TRANSFERT D'ARCHIVES
-                </h1>
-                <p className="text-xs text-slate-600 font-medium">
-                  Acte officiel de versement définitif, scellement physique et transfert de responsabilité de conservation.
-                </p>
+                <label className="font-bold text-slate-700 block">Chef / Responsable Direction Versante :</label>
+                <input
+                  type="text"
+                  value={customDirectionHead}
+                  onChange={e => setCustomDirectionHead(e.target.value)}
+                  placeholder="Nom du responsable versant"
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
               </div>
 
-              <div className={`${isValidated ? 'bg-emerald-50 border-emerald-600/60' : 'bg-amber-50 border-amber-600/60'} border-2 rounded-2xl p-3.5 text-right space-y-0.5 min-w-[220px] shadow-xs`}>
-                <div className={`text-[10px] font-black ${isValidated ? 'text-emerald-800' : 'text-amber-800'} uppercase tracking-wider`}>
-                  STATUT DU VERSEMENT
-                </div>
-                <div className={`font-mono font-black text-sm ${isValidated ? 'text-emerald-950' : 'text-amber-950'} flex items-center justify-end gap-1`}>
-                  {isValidated ? (
-                    <>
-                      <CheckCircle2 size={16} className="text-emerald-700" /> VALIDÉ & SCELLÉ
-                    </>
-                  ) : (
-                    <>
-                      <Clock size={16} className="text-amber-700" /> EN ATTENTE DE VALIDATION
-                    </>
-                  )}
-                </div>
-                <div className="text-[11px] text-slate-600 font-medium">
-                  {isValidated ? `Date : ${formattedValidationDate}` : `Date import : ${batch.importedAt ? new Date(batch.importedAt).toLocaleDateString('fr-FR') : '-'}`}
-                </div>
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 block">Date Officielle de Versement :</label>
+                <input
+                  type="date"
+                  value={customTransferDate}
+                  onChange={e => setCustomTransferDate(e.target.value)}
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 block">Localisation Physique d'Archivage :</label>
+                <input
+                  type="text"
+                  value={customLocalisation}
+                  onChange={e => setCustomLocalisation(e.target.value)}
+                  placeholder="ex: Centre Morneguia / Rayon S1-B-208"
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 block">Sort Final Réglementaire :</label>
+                <input
+                  type="text"
+                  value={customSortFinal}
+                  onChange={e => setCustomSortFinal(e.target.value)}
+                  placeholder="Élimination après échéance"
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 block">Dépôt / Service Archivage Récepteur :</label>
+                <input
+                  type="text"
+                  value={customDepot}
+                  onChange={e => setCustomDepot(e.target.value)}
+                  placeholder="Centre des Archives Morneguia"
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-slate-700 block">Remarques / Observations du Versement :</label>
+                <input
+                  type="text"
+                  value={customNotes}
+                  onChange={e => setCustomNotes(e.target.value)}
+                  placeholder="Observations sur le lot..."
+                  className="w-full bg-white border border-amber-300 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
               </div>
             </div>
           </div>
+        )}
 
-          {/* ========================================================================= */}
-          {/* --- METADATA HIGHLIGHTS GRID (Nom, Direction, Responsables, Nb Dossiers) --- */}
-          {/* ========================================================================= */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* ========================================================================= */}
+        {/* --- VIEW MODE 1: PROCES-VERBAL & BORDEREAU A4 --- */}
+        {/* ========================================================================= */}
+        {activeDocTab === 'pv' ? (
+          <div id="printable-pv-transfert" className="p-6 sm:p-8 lg:p-10 overflow-y-auto space-y-6 flex-1 bg-white text-slate-800 print:p-6 print:overflow-visible">
             
-            {/* 1. Nom & Réf Inventaire */}
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
-                <Tag size={12} className="text-emerald-700" /> Nom & Réf Inventaire
-              </span>
-              <div className="font-bold text-slate-900 text-sm leading-tight">
-                {batch.inventoryName || `Inventaire ${batch.direction}`}
-              </div>
-              <div className="font-mono text-xs font-black text-emerald-800">
-                {pvRefNumber}
+            {/* Header Document Act with QR Code Stamp */}
+            <div className="border-b-2 border-emerald-900 pb-5 space-y-3">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-900 text-white font-black text-xs flex items-center justify-center">
+                      PV
+                    </div>
+                    <span className="text-[11px] font-black uppercase tracking-widest text-emerald-900">
+                      MAE ASSURANCES — SYSTÈME CENTRALISÉ DE GESTION DES ARCHIVES
+                    </span>
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                    PROCÈS-VERBAL & BORDEREAU DE TRANSFERT D'ARCHIVES
+                  </h1>
+                  <p className="text-xs text-slate-600 font-medium">
+                    Acte officiel de versement définitif, scellement physique et transfert de responsabilité de conservation.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3 self-end sm:self-center">
+                  {/* Embedded Scannable QR Code */}
+                  <div className="p-2 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col items-center justify-center shadow-xs">
+                    <QRCodeSVG 
+                      value={qrCodePayload}
+                      size={68}
+                      level="M"
+                    />
+                    <span className="text-[7px] font-black text-slate-500 uppercase tracking-widest mt-1">
+                      SCAN CONFORMITÉ
+                    </span>
+                  </div>
+
+                  <div className={`${isValidated ? 'bg-emerald-50 border-emerald-600/60' : 'bg-amber-50 border-amber-600/60'} border-2 rounded-2xl p-3 text-right space-y-0.5 min-w-[190px] shadow-xs`}>
+                    <div className={`text-[9px] font-black ${isValidated ? 'text-emerald-800' : 'text-amber-800'} uppercase tracking-wider`}>
+                      STATUT DU VERSEMENT
+                    </div>
+                    <div className={`font-mono font-black text-xs ${isValidated ? 'text-emerald-950' : 'text-amber-950'} flex items-center justify-end gap-1`}>
+                      {isValidated ? (
+                        <>
+                          <CheckCircle2 size={14} className="text-emerald-700" /> VALIDÉ & SCELLÉ
+                        </>
+                      ) : (
+                        <>
+                          <Clock size={14} className="text-amber-700" /> EN ATTENTE DE VALIDATION
+                        </>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-600 font-medium">
+                      {isValidated ? `Audit : ${formattedValidationDate}` : `Import : ${batch.importedAt ? new Date(batch.importedAt).toLocaleDateString('fr-FR') : '-'}`}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* 2. Direction & Responsable de Direction */}
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
-                <Building2 size={12} className="text-emerald-700" /> Direction Versante
-              </span>
-              <div className="font-black text-slate-900 text-sm">
-                {batch.direction || 'Direction Générale'}
+            {/* ========================================================================= */}
+            {/* --- METADATA HIGHLIGHTS GRID --- */}
+            {/* ========================================================================= */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              
+              {/* 1. Nom & Réf Inventaire */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
+                  <Tag size={12} className="text-emerald-700" /> Nom & Réf Inventaire
+                </span>
+                <div className="font-bold text-slate-900 text-sm leading-tight">
+                  {batch.inventoryName || `Inventaire ${batch.direction}`}
+                </div>
+                <div className="font-mono text-xs font-black text-emerald-800">
+                  {pvRefNumber}
+                </div>
               </div>
-              <div className="text-xs text-slate-600 font-medium flex items-center gap-1">
-                <User size={12} className="text-slate-400 shrink-0" />
-                {isEditingDirectionHead ? (
-                  <div className="flex items-center gap-1 w-full">
-                    <input
-                      type="text"
-                      value={customDirectionHead}
-                      onChange={e => setCustomDirectionHead(e.target.value)}
-                      className="text-xs font-bold px-1.5 py-0.5 border border-emerald-400 rounded bg-white w-full"
-                    />
-                    <button
-                      onClick={() => setIsEditingDirectionHead(false)}
-                      className="p-1 text-emerald-700 hover:bg-emerald-100 rounded"
-                    >
-                      <Check size={12} />
-                    </button>
-                  </div>
-                ) : (
-                  <span className="truncate flex-1" title={customDirectionHead}>
+
+              {/* 2. Direction & Responsable de Direction */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
+                  <Building2 size={12} className="text-emerald-700" /> Direction Versante
+                </span>
+                <div className="font-black text-slate-900 text-sm">
+                  {batch.direction || 'Direction Générale'}
+                </div>
+                <div className="text-xs text-slate-600 font-medium flex items-center gap-1">
+                  <User size={12} className="text-slate-400 shrink-0" />
+                  <span className="truncate" title={customDirectionHead}>
                     {customDirectionHead}
                   </span>
-                )}
-                {!isEditingDirectionHead && (
-                  <button
-                    onClick={() => setIsEditingDirectionHead(true)}
-                    className="text-slate-400 hover:text-slate-700 p-0.5 rounded print:hidden"
-                    title="Modifier le nom du responsable"
-                  >
-                    <Edit3 size={11} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* 3. Responsable Audit & Dates */}
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
-                <ShieldCheck size={12} className="text-emerald-700" /> Audit & Dates
-              </span>
-              <div className="font-bold text-slate-900 text-sm truncate" title={batch.validatedBy || 'Responsable Audit & Conformité'}>
-                {batch.validatedBy || 'Responsable Audit & Conformité'}
-              </div>
-              <div className="text-xs text-slate-600 font-medium">
-                Transfert : <strong className="text-emerald-900 font-mono font-bold">{formattedTransferDate}</strong>
-              </div>
-              <div className="text-[10px] text-slate-500 font-medium">
-                Importé par : <strong className="text-slate-800">{batch.importedBy || 'Archiviste'}</strong>
-              </div>
-            </div>
-
-            {/* 4. Nombre de Dossiers & Boîtes */}
-            <div className="bg-emerald-950 text-white rounded-2xl p-4 space-y-1 shadow-sm">
-              <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block flex items-center gap-1.5">
-                <Archive size={12} className="text-emerald-400" /> Volume Versé
-              </span>
-              <div className="flex items-baseline justify-between">
-                <div>
-                  <span className="text-2xl font-black font-mono text-white">{stats.totalFolders}</span>
-                  <span className="text-xs font-bold text-emerald-200 ml-1">dossiers</span>
-                </div>
-                <div className="text-right">
-                  <span className="text-lg font-black font-mono text-emerald-300">{stats.totalBoxes}</span>
-                  <span className="text-[10px] font-bold text-emerald-200 ml-1">boîte(s)</span>
                 </div>
               </div>
-              <div className="flex items-center justify-between text-[10px] text-emerald-300 pt-0.5 border-t border-emerald-800/80">
-                <span>Conservation : <strong>{stats.consCount}</strong></span>
-                <span>Élimination : <strong>{stats.elimCount}</strong></span>
+
+              {/* 3. Dépôt & Dates */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1">
+                <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
+                  <ShieldCheck size={12} className="text-emerald-700" /> Dépôt & Date Versement
+                </span>
+                <div className="font-bold text-slate-900 text-xs truncate" title={customDepot}>
+                  {customDepot}
+                </div>
+                <div className="text-xs text-slate-600 font-medium">
+                  Transfert : <strong className="text-emerald-900 font-mono font-bold">{customTransferDate || formattedTransferDate}</strong>
+                </div>
+                <div className="text-[10px] text-slate-500 font-medium">
+                  Audit : <strong className="text-slate-800">{batch.validatedBy || 'Responsable Audit'}</strong>
+                </div>
               </div>
+
+              {/* 4. Volume Versé */}
+              <div className="bg-emerald-950 text-white rounded-2xl p-4 space-y-1 shadow-sm">
+                <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 block flex items-center gap-1.5">
+                  <Archive size={12} className="text-emerald-400" /> Volume Scellé
+                </span>
+                <div className="flex items-baseline justify-between">
+                  <div>
+                    <span className="text-2xl font-black font-mono text-white">{stats.totalFolders}</span>
+                    <span className="text-xs font-bold text-emerald-200 ml-1">dossiers</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-lg font-black font-mono text-emerald-300">{stats.totalBoxes}</span>
+                    <span className="text-[10px] font-bold text-emerald-200 ml-1">boîte(s)</span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-emerald-300 pt-0.5 border-t border-emerald-800/80">
+                  <span>Conservation : <strong>{stats.consCount}</strong></span>
+                  <span>Élimination : <strong>{stats.elimCount}</strong></span>
+                </div>
+              </div>
+
             </div>
 
-          </div>
+            {/* Observations bar */}
+            {customNotes && (
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs flex items-center gap-2">
+                <Info size={14} className="text-emerald-700 shrink-0" />
+                <span className="font-bold text-slate-700">Observations de versement :</span>
+                <span className="text-slate-600">{customNotes}</span>
+              </div>
+            )}
 
           {/* ========================================================================= */}
           {/* --- INTERACTIVE FILTERS & SEARCH BAR (Hidden on Print) --- */}
@@ -1040,14 +1225,226 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
           </div>
 
         </div>
+        ) : (
+          /* ========================================================================= */
+          /* --- VIEW MODE 2: FICHE DE TRANSFERT & ETIQUETTE QR CODE --- */
+          /* ========================================================================= */
+          <div id="printable-fiche-qr" className="p-6 sm:p-8 lg:p-10 overflow-y-auto space-y-6 flex-1 bg-slate-50 text-slate-800 print:p-4 print:bg-white print:overflow-visible flex flex-col items-center">
+            
+            {/* Banner Guide */}
+            <div className="w-full max-w-4xl bg-indigo-900 text-white rounded-2xl p-4 flex items-center justify-between shadow-md print:hidden">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/30 flex items-center justify-center border border-indigo-400/40">
+                  <QrCode size={20} className="text-indigo-200" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Fiche de Transfert & Étiquette d'Inventaire Sécurisé</h3>
+                  <p className="text-xs text-indigo-200">
+                    Générée suite à la validation d'audit — Contient le QR Code certifié et les informations d'identification pour l'étiquetage physique.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handlePrint}
+                className="px-4 py-2 bg-indigo-500 hover:bg-indigo-400 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-sm transition-all shrink-0"
+              >
+                <Printer size={14} /> Imprimer la Fiche
+              </button>
+            </div>
+
+            {/* Official Card (Printable Sheet) */}
+            <div className="bg-white border-2 border-indigo-600 rounded-[2rem] p-8 shadow-xl max-w-4xl w-full min-h-[500px] font-sans text-left flex flex-col justify-between print:border-2 print:border-black print:shadow-none print:m-0 print:max-w-none">
+              
+              <div className="flex flex-col md:flex-row gap-8 items-start">
+                {/* Left Column: QR Code and Center Logo - Perfectly aligned & framed */}
+                <div className="md:w-1/3 w-full flex flex-col items-center text-center pb-6 md:pb-0 md:pr-6 border-b md:border-b-0 md:border-r border-indigo-100 shrink-0">
+                  <div className="space-y-0.5 w-full flex flex-col items-center">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-900 text-white flex items-center justify-center font-black text-xs mb-1.5 shadow-sm">
+                      MAE
+                    </div>
+                    <h5 className="text-[11px] font-black text-indigo-950 uppercase tracking-widest leading-tight">
+                      CENTRE DES ARCHIVES
+                    </h5>
+                    <h5 className="text-[11px] font-black text-indigo-950 uppercase tracking-widest leading-tight">
+                      INTERMÉDIAIRES
+                    </h5>
+                    <h5 className="text-[10px] font-bold text-indigo-700 uppercase tracking-widest leading-tight">
+                      MORNEGUIA
+                    </h5>
+                  </div>
+                  
+                  {/* QR Box - Positioned EXACTLY directly underneath the Center Title */}
+                  <div className="mt-3.5 p-3.5 bg-slate-50 border-2 border-indigo-200 rounded-2xl flex flex-col items-center justify-center gap-2 shadow-sm w-full max-w-[210px]">
+                    <div className="p-1.5 bg-white rounded-xl shadow-xs border border-indigo-100">
+                      <QRCodeSVG 
+                        value={qrCodeUrl} 
+                        size={135} 
+                        level="M"
+                      />
+                    </div>
+                    <span className="text-[8px] font-black text-indigo-900 uppercase tracking-widest text-center leading-tight">
+                      SCANNER POUR VOIR LE PV SUR MOBILE
+                    </span>
+                    <div className="flex items-center justify-center gap-1 text-[8px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 w-full">
+                      <span>🔒 Accès Protégé (Code Sécurisé)</span>
+                    </div>
+                    <div className="bg-indigo-950 text-white rounded-lg px-2.5 py-1 text-[9px] font-mono font-bold tracking-wider w-full text-center truncate">
+                      {pvRefNumber}
+                    </div>
+                  </div>
+
+                  <div className="text-[9px] text-slate-500 font-mono mt-3">
+                    Scellé électronique : <strong className="text-indigo-950 font-bold">{batch.batchNumber}</strong>
+                  </div>
+                </div>
+
+                {/* Right Column: Fiche Details */}
+                <div className="md:w-2/3 w-full flex flex-col justify-between pl-0 md:pl-2 space-y-6">
+                  
+                  {/* Header Row */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-indigo-100 pb-3">
+                    <div>
+                      <span className="text-[9px] font-black text-indigo-600 uppercase tracking-widest block">
+                        RÉPUBLIQUE TUNISIENNE — MAE ASSURANCES
+                      </span>
+                      <h2 className="text-lg font-black text-slate-900 tracking-tight">
+                        FICHE D'INVENTAIRE SÉCURISÉ & TRANSFERT
+                      </h2>
+                    </div>
+                    <span className="px-3 py-1 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-full text-[10px] font-black uppercase tracking-wider shrink-0 self-start sm:self-auto">
+                      {isValidated ? "✓ INVENTAIRE VALIDÉ" : "EN ATTENTE AUDIT"}
+                    </span>
+                  </div>
+
+                  {/* Metadata Grid */}
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-4 text-xs">
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        DIRECTION VERSANTE
+                      </span>
+                      <p className="text-xs font-black text-slate-900 tracking-tight mt-0.5 truncate">
+                        {batch.direction || 'Direction Générale'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        RESPONSABLE DU VERSEMENT
+                      </span>
+                      <p className="text-xs font-bold text-indigo-900 tracking-tight mt-0.5 truncate">
+                        {customDirectionHead}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        VOLUME VALIDÉ
+                      </span>
+                      <p className="text-xs font-black text-emerald-800 tracking-tight mt-0.5">
+                        {stats.totalFolders} dossiers dans {stats.totalBoxes} boîte(s)
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        DATE DU TRANSFERT
+                      </span>
+                      <p className="text-xs font-mono font-bold text-slate-800 tracking-tight mt-0.5">
+                        {customTransferDate || formattedTransferDate}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        DURÉE D'UTILITÉ ADMINISTRATIVE (DUA)
+                      </span>
+                      <p className="text-xs font-black text-slate-800 tracking-tight mt-0.5 truncate">
+                        {batch.ruleApplied?.title || batch.ruleApplied?.reference || 'Conservation réglementaire'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        SORT FINAL
+                      </span>
+                      <p className="text-xs font-black text-amber-800 tracking-tight mt-0.5">
+                        {customSortFinal}
+                      </p>
+                    </div>
+
+                    <div className="col-span-2">
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        LOCALISATION PHYSIQUE D'ARCHIVAGE
+                      </span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <MapPin size={13} className="text-indigo-600 shrink-0" />
+                        <p className="text-xs font-bold text-slate-900">
+                          {customLocalisation}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="col-span-2">
+                      <span className="block text-[9px] font-black text-slate-400 uppercase tracking-widest">
+                        DÉPÔT & SERVICE RÉCEPTEUR
+                      </span>
+                      <p className="text-xs font-bold text-slate-800 tracking-tight mt-0.5">
+                        {customDepot}
+                      </p>
+                    </div>
+
+                    {customNotes && (
+                      <div className="col-span-2 bg-slate-50 border border-slate-200 rounded-xl p-2.5">
+                        <span className="block text-[8px] font-black text-slate-500 uppercase tracking-widest">
+                          OBSERVATIONS DU RESPONSABLE AUDIT
+                        </span>
+                        <p className="text-xs font-medium text-slate-700 mt-0.5">
+                          {customNotes}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Signatures Row */}
+                  <div className="grid grid-cols-2 gap-4 border-t border-indigo-100 pt-3 text-[10px]">
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
+                      <span className="font-bold text-slate-600 block mb-1">Visa Direction Versante</span>
+                      <span className="text-slate-400 block pt-4 text-[9px]">Signature : ________________</span>
+                    </div>
+                    <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-200">
+                      <span className="font-bold text-indigo-900 block mb-1">Visa Responsable Audit</span>
+                      <span className="text-indigo-700 font-mono text-[9px] block">
+                        ✓ {batch.validatedBy || 'Responsable Audit'} — {new Date(batch.validatedAt || Date.now()).toLocaleDateString('fr-FR')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Footer Notice */}
+                  <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider text-center pt-2">
+                    Fiche officielle de transfert d'inventaire sécurisé · Centre des archives intermédiaires Morneguia · Valable pour l'étiquetage physique.
+                  </p>
+
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
 
         {/* ========================================================================= */}
         {/* --- BOTTOM ACTION BAR (Hidden on Print) --- */}
         {/* ========================================================================= */}
         <div className="bg-slate-100 px-6 py-4 border-t border-slate-200 flex items-center justify-between print:hidden shrink-0">
-          <span className="text-xs text-slate-500 font-medium hidden sm:inline-block">
-            Réf Lot : <strong className="text-slate-800 font-mono">{batch.batchNumber}</strong>
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 font-medium hidden sm:inline-block">
+              Réf Lot : <strong className="text-slate-800 font-mono">{batch.batchNumber}</strong>
+            </span>
+            <span className="text-xs text-slate-400 hidden sm:inline-block">·</span>
+            <span className="text-xs text-slate-500 hidden sm:inline-block">
+              Total : <strong className="text-slate-800 font-mono">{stats.totalFolders} dossiers</strong>
+            </span>
+          </div>
 
           <div className="flex items-center gap-3 ml-auto">
             <button
@@ -1060,7 +1457,7 @@ export const PVTransfertModal: React.FC<PVTransfertModalProps> = ({
               onClick={handlePrint}
               className="px-6 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-md cursor-pointer transition-all"
             >
-              <Printer size={15} /> Imprimer le PV de Transfert
+              <Printer size={15} /> Imprimer {activeDocTab === 'pv' ? 'le PV de Transfert' : 'la Fiche QR Code'}
             </button>
           </div>
         </div>

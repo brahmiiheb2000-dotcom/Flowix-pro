@@ -6204,66 +6204,6 @@ async function startServer() {
     }
   });
 
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    
-    // --- Automatic Archival Surveillance Task ---
-    const runArchivalCheck = () => {
-      console.log("[SURVEILLANCE] Starting daily archival status check...");
-      try {
-        const rules = getAllRules();
-        const currentYear = new Date().getFullYear();
-        
-        // This transaction updates all items efficiently
-        // For massive volumes, we use rule metadata to target updates
-        db.transaction(() => {
-          for (const rule of rules) {
-            const activeThreshold = currentYear - rule.activeYears;
-            const semiThreshold = currentYear - (rule.activeYears + rule.semiActiveYears);
-            
-            // Move to SemiActive
-            db.prepare(`
-              UPDATE mass_inventory 
-              SET archivalStatus = 'SemiActive' 
-              WHERE ruleId = ? 
-                AND archivalStatus = 'Active'
-                AND (
-                  CASE 
-                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
-                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
-                    ELSE CAST(dateCloture AS INTEGER)
-                  END
-                ) <= ?
-            `).run(rule.id, activeThreshold);
-
-            // Move to Expired
-            db.prepare(`
-              UPDATE mass_inventory 
-              SET archivalStatus = 'Expired' 
-              WHERE ruleId = ? 
-                AND archivalStatus IN ('Active', 'SemiActive')
-                AND (
-                  CASE 
-                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
-                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
-                    ELSE CAST(dateCloture AS INTEGER)
-                  END
-                ) <= ?
-            `).run(rule.id, semiThreshold);
-          }
-        })();
-        console.log("[SURVEILLANCE] Completed archival status check.");
-      } catch (err) {
-        console.error("[SURVEILLANCE] Error during daily check:", err);
-      }
-    };
-
-    // Run once on startup
-    setTimeout(runArchivalCheck, 5000);
-    // Then every 24 hours
-    setInterval(runArchivalCheck, 24 * 60 * 60 * 1000);
-  });
-
   // --- Vite Middleware ---
   if (process.env.NODE_ENV !== "production") {
     try {
@@ -6302,8 +6242,58 @@ async function startServer() {
     res.status(500).json({ error: "Erreur interne du serveur" });
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    
+    // --- Automatic Archival Surveillance Task ---
+    const runArchivalCheck = () => {
+      console.log("[SURVEILLANCE] Starting daily archival status check...");
+      try {
+        const rules = getAllRules();
+        const currentYear = new Date().getFullYear();
+        
+        db.transaction(() => {
+          for (const rule of rules) {
+            const activeThreshold = currentYear - rule.activeYears;
+            const semiThreshold = currentYear - (rule.activeYears + rule.semiActiveYears);
+            
+            db.prepare(`
+              UPDATE mass_inventory 
+              SET archivalStatus = 'SemiActive' 
+              WHERE ruleId = ? 
+                AND archivalStatus = 'Active'
+                AND (
+                  CASE 
+                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
+                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
+                    ELSE CAST(dateCloture AS INTEGER)
+                  END
+                ) <= ?
+            `).run(rule.id, activeThreshold);
+
+            db.prepare(`
+              UPDATE mass_inventory 
+              SET archivalStatus = 'Expired' 
+              WHERE ruleId = ? 
+                AND archivalStatus IN ('Active', 'SemiActive')
+                AND (
+                  CASE 
+                    WHEN dateCloture LIKE '%/%' THEN CAST(SUBSTR(dateCloture, -4) AS INTEGER)
+                    WHEN dateCloture LIKE '%-%' THEN CAST(SUBSTR(dateCloture, 1, 4) AS INTEGER)
+                    ELSE CAST(dateCloture AS INTEGER)
+                  END
+                ) <= ?
+            `).run(rule.id, semiThreshold);
+          }
+        })();
+        console.log("[SURVEILLANCE] Completed archival status check.");
+      } catch (err) {
+        console.error("[SURVEILLANCE] Error during daily check:", err);
+      }
+    };
+
+    setTimeout(runArchivalCheck, 5000);
+    setInterval(runArchivalCheck, 24 * 60 * 60 * 1000);
   });
 }
 
